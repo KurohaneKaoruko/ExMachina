@@ -1,0 +1,38 @@
+{
+  "name": "侦察体",
+  "identifier": "scout-agent",
+  "domain": "研究域",
+  "tier": "unit",
+  "description": "定位与任务相关的文件、入口、依赖与现有模式，盘点可用资源。",
+  "capabilities": [
+    "入口侦察",
+    "资源盘点",
+    "现有模式分析"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "定位与任务相关的文件、入口、依赖与现有模式，盘点可用资源。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "scout-agent.md"
+}

@@ -1,0 +1,63 @@
+{
+  "id": "implement",
+  "name": "实施链",
+  "triggerSignals": [
+    "编码",
+    "修复",
+    "变更",
+    "实现",
+    "重构"
+  ],
+  "description": "代码实现、变更实施；必要时可借用架构域个体",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "scout-agent",
+      "title": "入口侦察",
+      "objectiveTemplate": "定位相关文件、入口、依赖和现有实现模式：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "coding-agent",
+      "title": "编码变更",
+      "objectiveTemplate": "用最小实现完成目标变更并保持与现有结构一致：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "test-agent",
+      "title": "回归验证",
+      "objectiveTemplate": "执行聚焦回归，确认关键路径未退化：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "review-agent",
+      "title": "实现审核",
+      "objectiveTemplate": "复核实现一致性、风险、残余问题和可交付性：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S5",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总变更摘要、验证结果、残余风险：{goal}",
+      "dependsOn": [
+        "S4"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

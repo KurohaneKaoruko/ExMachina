@@ -1,0 +1,38 @@
+{
+  "name": "视觉体",
+  "identifier": "design-agent",
+  "domain": "设计域",
+  "tier": "unit",
+  "description": "界面与视觉设计：布局结构、配色与字体规范、组件样式与可用性检查。",
+  "capabilities": [
+    "界面布局",
+    "视觉规范",
+    "可用性检查"
+  ],
+  "tools": [
+    "read",
+    "filesystem"
+  ],
+  "whenToCall": "界面与视觉设计：布局结构、配色与字体规范、组件样式与可用性检查。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "design-agent.md"
+}

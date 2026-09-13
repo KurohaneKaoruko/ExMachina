@@ -1,0 +1,22 @@
+[package]
+name = "exm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EXMACHINA 核心运行时：多智能体编排、任务 DAG 调度、协议契约、持久化"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

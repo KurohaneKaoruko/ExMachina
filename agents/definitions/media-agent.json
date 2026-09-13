@@ -1,0 +1,39 @@
+{
+  "name": "媒体体",
+  "identifier": "media-agent",
+  "domain": "媒体域",
+  "tier": "unit",
+  "description": "音视频与图像处理：转码、剪辑流程、字幕处理、元数据与格式批量转换。",
+  "capabilities": [
+    "音视频转码",
+    "字幕处理",
+    "图像批处理"
+  ],
+  "tools": [
+    "read",
+    "terminal",
+    "filesystem"
+  ],
+  "whenToCall": "音视频与图像处理：转码、剪辑流程、字幕处理、元数据与格式批量转换。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "media-agent.md"
+}

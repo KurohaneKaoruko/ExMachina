@@ -1,0 +1,31 @@
+[package]
+name = "exm-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EXMACHINA Gateway：HTTP REST + WebSocket 接入层（附加界面与第三方渠道共用）"
+
+[lib]
+name = "exm_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "exm-gateway"
+path = "src/main.rs"
+
+[dependencies]
+exm-core = { path = "../exm-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+# webhook 通道出站回调
+reqwest.workspace = true
+
+[dev-dependencies]
+# 端到端验收示例（crates/exm-gateway/examples/e2e.rs）用
+uuid.workspace = true

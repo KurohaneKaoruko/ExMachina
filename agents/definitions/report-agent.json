@@ -1,0 +1,37 @@
+{
+  "name": "汇报体",
+  "identifier": "report-agent",
+  "domain": "公共",
+  "tier": "unit",
+  "description": "汇总全部上游回流，输出结构化结论、风险与下一步；向用户转述时保持忠实。",
+  "capabilities": [
+    "汇总收束",
+    "结构化汇报",
+    "转述保真"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "汇总全部上游回流，输出结构化结论、风险与下一步；向用户转述时保持忠实。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "report-agent.md"
+}

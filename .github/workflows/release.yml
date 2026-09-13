@@ -1,0 +1,52 @@
+# 发布流水线：打 tag（v*）即产出三大平台预编译产物
+# 目标：让低性能设备（淘汰笔记本 / 老台式机 / 迷你主机）免编译、免 Node 直接部署
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: exmachina-windows-x64.zip
+          - os: ubuntu-22.04
+            artifact: exmachina-linux-x64.tar.gz
+          - os: macos-14
+            artifact: exmachina-macos-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build WebUI
+        run: npm install && npm run build:webui
+      - name: Build binaries (release)
+        run: cargo build --release -p exm-gateway -p exm-cli
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p bundle
+          cp target/release/exm-gateway target/release/exm target/release/exmachina bundle/
+          cp -r webui/dist bundle/webui-dist
+          cp -r agents bundle/agents
+          cp README.md docs -r bundle/ 2>/dev/null || cp -r README.md docs bundle/
+          tar -czf ${{ matrix.artifact }} -C bundle .
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory bundle | Out-Null
+          Copy-Item target/release/exm-gateway.exe,target/release/exm.exe,target/release/exmachina.exe bundle/
+          Copy-Item webui/dist bundle/webui-dist -Recurse
+          Copy-Item agents bundle/agents -Recurse
+          Copy-Item README.md bundle/; Copy-Item docs bundle/docs -Recurse
+          Compress-Archive -Path bundle/* -DestinationPath ${{ matrix.artifact }}
+      - name: Upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}

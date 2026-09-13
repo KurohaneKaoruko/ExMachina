@@ -1,0 +1,38 @@
+{
+  "name": "产品体",
+  "identifier": "product-agent",
+  "domain": "产品域",
+  "tier": "unit",
+  "description": "需求与产品定义：用户故事、需求拆解、验收标准、优先级与路线图。",
+  "capabilities": [
+    "需求分析",
+    "用户故事",
+    "优先级排序"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "需求与产品定义：用户故事、需求拆解、验收标准、优先级与路线图。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "product-agent.md"
+}

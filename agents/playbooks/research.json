@@ -1,0 +1,52 @@
+{
+  "id": "research",
+  "name": "研究链",
+  "triggerSignals": [
+    "背景不清",
+    "方案不明",
+    "需要调研",
+    "知识补齐"
+  ],
+  "description": "背景研究、方案比对；必要时可补挂证据体",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "context-agent",
+      "title": "背景补齐",
+      "objectiveTemplate": "补齐任务背景、依赖、约束与边界：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "compare-agent",
+      "title": "方案比对",
+      "objectiveTemplate": "对比候选方案/结论的差异、取舍与适配边界：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "compare-agent",
+      "title": "假设管理",
+      "objectiveTemplate": "列出待验证假设并设计可执行验证路径：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总研究结论、证据、风险与下一步建议：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

@@ -1,0 +1,43 @@
+{
+  "id": "product",
+  "name": "产品链",
+  "triggerSignals": [
+    "需求分析",
+    "用户故事",
+    "产品定义",
+    "路线图",
+    "优先级"
+  ],
+  "description": "需求定义与技术可行性对齐",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "product-agent",
+      "title": "需求定义",
+      "objectiveTemplate": "产出用户故事、验收断言与优先级（附价值/成本依据）：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "architect-agent",
+      "title": "技术可行性",
+      "objectiveTemplate": "评估需求的技术可行性、约束与拆解建议：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总需求清单、可行性结论与待澄清项：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

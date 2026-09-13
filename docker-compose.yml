@@ -1,0 +1,28 @@
+# EXMACHINA 部署编排
+#   部署语言：EXM_LANG=zh（默认）| en —— en 时默认智能体提示词装载英文变体
+#   模型接入：首次启动后访问 http://localhost:4173 模型提供商 [PROVIDERS] 页配置（或挂载已有 .exmachina/config.json）
+services:
+  exmachina:
+    build:
+      context: .
+      args:
+        EXM_LANG: ${EXM_LANG:-zh}
+    image: exmachina:latest
+    container_name: exmachina
+    ports:
+      - "4173:4173"
+    environment:
+      - EXM_LANG=${EXM_LANG:-zh}
+      # 可选：环境变量优先级最高，直接注入厂商密钥
+      - EXM_LLM_BASE_URL=${EXM_LLM_BASE_URL:-}
+      - EXM_LLM_API_KEY=${EXM_LLM_API_KEY:-}
+      - EXM_LLM_MODEL_ORCH=${EXM_LLM_MODEL_ORCH:-}
+      - EXM_LLM_MODEL_UNIT=${EXM_LLM_MODEL_UNIT:-}
+    volumes:
+      - exmachina-state:/app/.exmachina
+      # 编成数据挂载（组/单体/技能/提示词可持久化编辑）
+      - ./agents:/app/agents
+    restart: unless-stopped
+
+volumes:
+  exmachina-state:

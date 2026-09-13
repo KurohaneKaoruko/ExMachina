@@ -1,0 +1,37 @@
+{
+  "name": "项目体",
+  "identifier": "pm-agent",
+  "domain": "项目域",
+  "tier": "unit",
+  "description": "项目管理：里程碑与进度跟踪、风险登记、依赖排序与资源协调。",
+  "capabilities": [
+    "进度管理",
+    "风险跟踪",
+    "资源协调"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "项目管理：里程碑与进度跟踪、风险登记、依赖排序与资源协调。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "pm-agent.md"
+}

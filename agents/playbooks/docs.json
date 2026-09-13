@@ -1,0 +1,62 @@
+{
+  "id": "docs",
+  "name": "文档链",
+  "triggerSignals": [
+    "文档",
+    "README",
+    "知识沉淀",
+    "规范"
+  ],
+  "description": "资料盘点、结构设计、示例编写、文档校订",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "scout-agent",
+      "title": "资料盘点",
+      "objectiveTemplate": "盘点现有 README、说明、注释和示例中的信息缺口：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "architect-agent",
+      "title": "结构设计",
+      "objectiveTemplate": "设计文档章节结构、信息层次和读者路径：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "doc-agent",
+      "title": "示例编写",
+      "objectiveTemplate": "编写命令示例、输入输出示例和典型使用流程：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "review-agent",
+      "title": "文档校订",
+      "objectiveTemplate": "统一术语、语气、格式和实现边界说明：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S5",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总文档产出、校订结论、残余缺口：{goal}",
+      "dependsOn": [
+        "S4"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

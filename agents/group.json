@@ -1,0 +1,8 @@
+{
+  "id": "default",
+  "name": "智械集群",
+  "description": "内置默认组：全连结指挥体 + 全领域子个体集群（定义受保护）",
+  "primary": "exmachina-orchestrator",
+  "builtin": true,
+  "createdAt": "2026-09-12T06:24:21.840Z"
+}

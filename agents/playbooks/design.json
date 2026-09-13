@@ -1,0 +1,44 @@
+{
+  "id": "design",
+  "name": "设计链",
+  "triggerSignals": [
+    "界面设计",
+    "视觉",
+    "配色",
+    "布局",
+    "原型",
+    "设计规范"
+  ],
+  "description": "界面与视觉设计规范产出与核验",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "design-agent",
+      "title": "设计规范产出",
+      "objectiveTemplate": "产出布局、色板、字号层级与组件样式规范：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "review-agent",
+      "title": "可用性核查",
+      "objectiveTemplate": "对对比度、层级一致性与可点击区域做可用性核查：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总设计规范、核查结论与实现建议：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

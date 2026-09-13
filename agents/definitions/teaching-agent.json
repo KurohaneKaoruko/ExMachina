@@ -1,0 +1,37 @@
+{
+  "name": "教学体",
+  "identifier": "teaching-agent",
+  "domain": "教育域",
+  "tier": "unit",
+  "description": "知识讲解与课程设计：概念讲解、学习路径设计、示例与练习编制。",
+  "capabilities": [
+    "概念讲解",
+    "学习路径设计",
+    "练习编制"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "知识讲解与课程设计：概念讲解、学习路径设计、示例与练习编制。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "teaching-agent.md"
+}

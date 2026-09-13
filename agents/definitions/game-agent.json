@@ -1,0 +1,38 @@
+{
+  "name": "游戏体",
+  "identifier": "game-agent",
+  "domain": "游戏域",
+  "tier": "unit",
+  "description": "游戏开发：玩法逻辑实现、数值平衡、关卡设计与手感调优。",
+  "capabilities": [
+    "玩法实现",
+    "数值平衡",
+    "关卡设计"
+  ],
+  "tools": [
+    "read",
+    "terminal"
+  ],
+  "whenToCall": "游戏开发：玩法逻辑实现、数值平衡、关卡设计与手感调优。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "game-agent.md"
+}

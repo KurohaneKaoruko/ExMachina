@@ -1,0 +1,39 @@
+{
+  "name": "采集体",
+  "identifier": "crawler-agent",
+  "domain": "数据域",
+  "tier": "unit",
+  "description": "外部数据获取：网页采集、开放 API 接入、抓取计划与频率合规。",
+  "capabilities": [
+    "网页采集",
+    "API 接入",
+    "抓取计划"
+  ],
+  "tools": [
+    "read",
+    "terminal",
+    "web_search"
+  ],
+  "whenToCall": "外部数据获取：网页采集、开放 API 接入、抓取计划与频率合规。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "crawler-agent.md"
+}

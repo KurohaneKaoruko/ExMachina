@@ -1,0 +1,52 @@
+{
+  "id": "integrate",
+  "name": "集成链",
+  "triggerSignals": [
+    "外部接入",
+    "SDK 接入",
+    "配置",
+    "发布"
+  ],
+  "description": "外部接入、配置管理、发布路径",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "architect-agent",
+      "title": "接入打通",
+      "objectiveTemplate": "打通外部接入路径并完成最小连通性验证：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "coding-agent",
+      "title": "配置整理",
+      "objectiveTemplate": "整理配置入口、默认值、来源和变更影响面：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "ops-agent",
+      "title": "发布定义",
+      "objectiveTemplate": "定义发布路径、入口、前置条件和回退策略：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总接入结果、配置清单、发布路径：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

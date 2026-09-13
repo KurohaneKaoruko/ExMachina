@@ -1,0 +1,44 @@
+{
+  "id": "perf",
+  "name": "性能链",
+  "triggerSignals": [
+    "性能",
+    "压测",
+    "瓶颈",
+    "剖析",
+    "QPS",
+    "时延"
+  ],
+  "description": "性能测试与调优：基线 → 压测剖析 → 核验 → 汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "perf-agent",
+      "title": "基线与压测剖析",
+      "objectiveTemplate": "确立性能基线与口径，执行压测与剖析并定位瓶颈：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "review-agent",
+      "title": "数据核验",
+      "objectiveTemplate": "核验测量口径一致性与结论可复算性：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总瓶颈证据、优化建议与复测口径：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

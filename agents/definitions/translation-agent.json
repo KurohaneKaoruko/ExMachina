@@ -1,0 +1,38 @@
+{
+  "name": "翻译体",
+  "identifier": "translation-agent",
+  "domain": "语言域",
+  "tier": "unit",
+  "description": "翻译与本地化：多语言互译、术语统一、格式与本地化适配。",
+  "capabilities": [
+    "多语言翻译",
+    "术语统一",
+    "本地化适配"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "翻译与本地化：多语言互译、术语统一、格式与本地化适配。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "translation-agent.md"
+}

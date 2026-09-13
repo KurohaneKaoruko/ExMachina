@@ -1,0 +1,55 @@
+{
+  "id": "data",
+  "name": "数据链",
+  "triggerSignals": [
+    "数据",
+    "清洗",
+    "统计",
+    "分析",
+    "采集",
+    "图表",
+    "数据库"
+  ],
+  "description": "数据获取、处理分析、口径核验与汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "crawler-agent",
+      "title": "数据获取",
+      "objectiveTemplate": "从指定来源获取数据并给出字段映射与来源说明：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "data-agent",
+      "title": "处理与分析",
+      "objectiveTemplate": "完成清洗、转换与分析，产出可复算的处理脚本与结论：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "review-agent",
+      "title": "口径核验",
+      "objectiveTemplate": "核验数据口径、计算过程与结论一致性：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总数据结论、口径说明与残余限制：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

@@ -1,0 +1,39 @@
+{
+  "name": "运维体",
+  "identifier": "ops-agent",
+  "domain": "运维域",
+  "tier": "unit",
+  "description": "运行观测、告警处理、发布与回滚、应急演练。",
+  "capabilities": [
+    "运行观测",
+    "告警处理",
+    "发布回滚",
+    "应急演练"
+  ],
+  "tools": [
+    "read",
+    "terminal"
+  ],
+  "whenToCall": "运行观测、告警处理、发布与回滚、应急演练。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "ops-agent.md"
+}

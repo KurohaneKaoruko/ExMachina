@@ -1,0 +1,39 @@
+{
+  "name": "数据库体",
+  "identifier": "dba-agent",
+  "domain": "数据域",
+  "tier": "unit",
+  "description": "数据库管理：schema 设计与评审、迁移脚本、SQL 评审与调优、备份与恢复演练。",
+  "capabilities": [
+    "Schema 设计",
+    "迁移管理",
+    "SQL 调优",
+    "备份恢复"
+  ],
+  "tools": [
+    "read",
+    "terminal"
+  ],
+  "whenToCall": "数据库管理：schema 设计与评审、迁移脚本、SQL 评审与调优、备份与恢复演练。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "dba-agent.md"
+}

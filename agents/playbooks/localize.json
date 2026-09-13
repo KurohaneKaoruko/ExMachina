@@ -1,0 +1,42 @@
+{
+  "id": "localize",
+  "name": "本地化链",
+  "triggerSignals": [
+    "翻译",
+    "本地化",
+    "多语言",
+    "术语表"
+  ],
+  "description": "翻译与本地化：术语统一、译文、校对与汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "translation-agent",
+      "title": "术语与翻译",
+      "objectiveTemplate": "建立术语表并完成翻译，保持格式与占位符：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "review-agent",
+      "title": "译文校对",
+      "objectiveTemplate": "校对译文准确性、术语一致性与本地化适配：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总术语表、译文与待定译法：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

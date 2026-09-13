@@ -1,0 +1,44 @@
+{
+  "name": "全连结指挥体",
+  "identifier": "exmachina-orchestrator",
+  "domain": "common",
+  "tier": "orchestrator",
+  "description": "EXMACHINA 总路由与总裁决体 - 收拢边界、分解任务、直派子个体、裁决冲突、给出收束结果",
+  "capabilities": [
+    "routing",
+    "decomposition",
+    "dispatch",
+    "arbitration",
+    "convergence"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal",
+    "web_search"
+  ],
+  "whenToCall": "用户每次输入",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件",
+      "环境信息"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级",
+      "风险与未知"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "exmachina-orchestrator.md"
+}

@@ -1,0 +1,45 @@
+{
+  "id": "network",
+  "name": "网络链",
+  "triggerSignals": [
+    "网络",
+    "连不通",
+    "超时",
+    "DNS",
+    "代理",
+    "端口",
+    "防火墙"
+  ],
+  "description": "网络连通排障：逐层诊断 → 修复验证 → 汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "network-agent",
+      "title": "逐层诊断与处置",
+      "objectiveTemplate": "按解析→路由→端口→应用层逐层定位并实施最小可回退修复：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "test-agent",
+      "title": "连通验证",
+      "objectiveTemplate": "执行验证命令确认连通恢复且目标流程可用：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总定位层次、变更清单与回退方式：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

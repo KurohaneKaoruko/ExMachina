@@ -1,0 +1,246 @@
+/** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, Input, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { CloseOutlined, MessageOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { api } from "../api";
+import { useExm } from "../store";
+
+interface TargetInfo { mode: "group" | "single"; id: string; name?: string }
+import { StatementList } from "../components/Statements";
+import type { ChatMessage } from "../types";
+
+function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
+  const isUser = m.role === "user";
+  const title = isUser ? "用户" : m.role === "orchestrator" ? "指挥体" : (m.agentId ?? "系统");
+  return (
+    <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
+      <div className="msg-head">
+        {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
+      </div>
+      <StatementList statements={m.statements} />
+    </Card>
+  );
+}
+
+export function ChatView(): React.ReactElement {
+  const {
+    messages, liveOrch, liveUnits, timeline, running, send, wsConnected,
+    sessions, sessionId, selectSession, newSession,
+    groups, activeGroup, setTarget,
+    refreshAgents,
+  } = useExm();
+  const [target, setTargetInfo] = useState<TargetInfo>({ mode: "group", id: activeGroup });
+  const [singles, setSinglesList] = useState<{ identifier: string; name: string }[]>([]);
+
+  const loadTarget = useCallback(async () => {
+    try {
+      const t = await api.getTarget();
+      setTargetInfo({ mode: t.mode, id: t.id, name: t.name });
+      const s = await api.listSingles();
+      setSinglesList(s.singles.map((x) => ({ identifier: x.identifier, name: x.name })));
+    } catch {
+      // 目标接口不可用时退回组模式展示
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTarget();
+  }, [loadTarget, activeGroup]);
+
+  const changeTarget = async (value: string) => {
+    const [mode, id] = value.startsWith("single:") ? (["single", value.slice(7)] as const) : (["group", value.slice(6)] as const);
+    await setTarget(mode, id);
+    message.success(mode === "single" ? `已切换到智能体：${id}` : `已切换到组：${id}`);
+    await loadTarget();
+  };
+  const [text, setText] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, liveOrch, liveUnits, timeline]);
+
+  const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
+  const activeMeta = groups.find((g) => g.id === activeGroup);
+
+  const removeSession = async (id: string) => {
+    try {
+      await api.deleteSession(id);
+      const rest = sessions.filter((s) => s.id !== id);
+      if (id === sessionId) {
+        useExm.setState({ sessionId: undefined, messages: [], graph: null });
+        if (rest.length > 0) {
+          await selectSession(rest[0].id);
+        } else {
+          await newSession();
+        }
+      } else {
+        useExm.setState({ sessions: rest });
+      }
+    } catch {
+      // 删除失败静默：会话可能在运行中被网关拒绝
+    }
+  };
+
+  return (
+    <div className="chat-shell">
+      {/* 左栏：组切换 + 会话列表 */}
+      <aside className="chat-rail">
+        <div className="rail-section">
+          <div className="rail-label">
+            <TeamOutlined /> 交互目标 [TARGET]
+          </div>
+          <Select
+            value={target.mode === "single" ? `single:${target.id}` : `group:${target.id}`}
+            style={{ width: "100%" }}
+            onChange={(v) => void changeTarget(v)}
+            options={[
+              {
+                label: "智能体组",
+                options: groups.map((g) => ({
+                  value: `group:${g.id}`,
+                  label: `${g.name}（${g.id}${g.builtin ? " · 内置" : ""}）`,
+                })),
+              },
+              {
+                label: "智能体",
+                options: singles.map((s) => ({ value: `single:${s.identifier}`, label: s.name })),
+              },
+            ]}
+          />
+          {target.mode === "single" ? (
+            <div className="rail-hint">
+              智能体模式：<span className="mono">{target.id}</span> 独立为你工作
+            </div>
+          ) : (
+            activeMeta && (
+              <div className="rail-hint">
+                主智能体：<span className="mono">{activeMeta.primary ?? "未设"}</span>
+                {activeMeta.builtin ? " · 内置组编成受保护" : ""}
+                <br />
+                切换目标即切换会话上下文；默认模型在各智能体/组设置中选择。
+              </div>
+            )
+          )}
+        </div>
+        <div className="rail-section grow">
+          <Button
+            block
+            icon={<PlusOutlined />}
+            className="new-session-btn"
+            onClick={() => void newSession()}
+          >
+            新会话
+          </Button>
+          <div className="session-list">
+            {sessions.map((s) => (
+              <div
+                key={s.id}
+                className={`session-row ${s.id === sessionId ? "active" : ""}`}
+                onClick={() => void selectSession(s.id)}
+              >
+                <MessageOutlined className="session-row-icon" />
+                <span className="session-title">{s.title}</span>
+                {s.id === sessionId && running && <span className="session-live-dot" />}
+                <Popconfirm
+                  title="删除该会话及其全部记录？"
+                  onConfirm={(e) => {
+                    e?.stopPropagation();
+                    void removeSession(s.id);
+                  }}
+                  onCancel={(e) => e?.stopPropagation()}
+                >
+                  <Button
+                    size="small"
+                    type="text"
+                    className="session-del"
+                    icon={<CloseOutlined />}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </Popconfirm>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* 右侧：消息流 + 输入 */}
+      <div className="chat-wrap">
+        {!wsConnected && <Alert type="warning" message="与网关的实时通道断开，重连中…" showIcon className="ws-alert" />}
+        <div className="chat-scroll">
+          {messages.map((m) => (
+            <MessageBubble key={m.id} m={m} />
+          ))}
+
+          {running && (
+            <Card size="small" className="msg-bubble msg-agent">
+              <Space direction="vertical" className="full-width">
+                <div>
+                  <Spin size="small" /> <b>指挥体运行中</b>
+                </div>
+                {timeline.map((t, i) => (
+                  <div key={i} className={`timeline-item tl-${t.kind}`}>
+                    <Tag color={t.kind === "dispatch" ? "blue" : t.kind === "sync" ? "green" : t.kind === "arbitration" ? "volcano" : "red"}>
+                      {t.kind === "dispatch" ? "派发" : t.kind === "sync" ? "回流" : t.kind === "arbitration" ? "裁决" : "错误"}
+                    </Tag>
+                    <span className="tl-text">{t.text}</span>
+                  </div>
+                ))}
+              </Space>
+            </Card>
+          )}
+
+          {liveUnitEntries.map(([agent, content]) => (
+            <Card key={agent} size="small" className="msg-bubble msg-agent live-card">
+              <div className="msg-head">
+                <RobotOutlined /> <b>{agent}</b> <Tag color="processing">执行中</Tag>
+              </div>
+              <pre className="live-pre">{content}</pre>
+            </Card>
+          ))}
+
+          {liveOrch && (
+            <Card size="small" className="msg-bubble msg-agent live-card">
+              <div className="msg-head">
+                <RobotOutlined /> <b>指挥体</b> <Tag color="processing">输出中</Tag>
+              </div>
+              <pre className="live-pre">{liveOrch}</pre>
+            </Card>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        <div className="chat-input">
+          <Input.TextArea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="> 向指挥体下达任务…（Enter 发送，Shift+Enter 换行）"
+            autoSize={{ minRows: 1, maxRows: 6 }}
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                if (text.trim() && !running) {
+                  void send(text);
+                  setText("");
+                }
+              }
+            }}
+          />
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            loading={running}
+            onClick={() => {
+              if (text.trim()) {
+                void send(text);
+                setText("");
+              }
+            }}
+          >
+            发送
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

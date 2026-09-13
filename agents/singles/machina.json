@@ -1,0 +1,20 @@
+{
+  "name": "Machina",
+  "identifier": "machina",
+  "domain": "默认",
+  "tier": "orchestrator",
+  "description": "默认智能体：独立直接为你工作的通用智能体，以「本机」自称。",
+  "capabilities": [
+    "通用任务",
+    "独立执行",
+    "本机工具"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal",
+    "web_search"
+  ],
+  "whenToCall": "用户直接与智能体对话时",
+  "promptFile": "machina.md"
+}

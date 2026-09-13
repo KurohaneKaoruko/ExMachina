@@ -1,0 +1,44 @@
+{
+  "id": "dba",
+  "name": "数据库链",
+  "triggerSignals": [
+    "数据库",
+    "迁移",
+    "慢查询",
+    "备份",
+    "Schema",
+    "索引"
+  ],
+  "description": "数据库变更与调优：评审 → 实施 → 验证 → 汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "dba-agent",
+      "title": "评审与实施",
+      "objectiveTemplate": "评审变更影响并实施可回退的迁移与调优：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "test-agent",
+      "title": "变更验证",
+      "objectiveTemplate": "执行验证脚本确认数据一致性与性能口径：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总变更清单、验证结果与回退路径：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

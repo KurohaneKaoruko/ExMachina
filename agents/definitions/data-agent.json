@@ -1,0 +1,40 @@
+{
+  "name": "数据体",
+  "identifier": "data-agent",
+  "domain": "数据域",
+  "tier": "unit",
+  "description": "数据处理与分析：清洗、转换、建模、查询、统计分析与图表产出。",
+  "capabilities": [
+    "数据清洗",
+    "数据转换",
+    "建模查询",
+    "统计图表"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal"
+  ],
+  "whenToCall": "数据处理与分析：清洗、转换、建模、查询、统计分析与图表产出。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "data-agent.md"
+}

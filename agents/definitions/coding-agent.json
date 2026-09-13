@@ -1,0 +1,39 @@
+{
+  "name": "编码体",
+  "identifier": "coding-agent",
+  "domain": "实作域",
+  "tier": "unit",
+  "description": "编码实现、配置修改与重构实施；坚持最小可逆变更。",
+  "capabilities": [
+    "编码实现",
+    "配置修改",
+    "重构实施"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal"
+  ],
+  "whenToCall": "编码实现、配置修改与重构实施；坚持最小可逆变更。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "coding-agent.md"
+}
