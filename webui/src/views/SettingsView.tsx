@@ -1,101 +1,61 @@
 /**
- * 设置页：按「运行时 / 记忆 / 安全 / 自动化」分类的分区卡片布局。
- * 字段定义仍来自后端 config_schema()；LLM 接入在「模型提供商」页维护。
+ * 设置页：左侧分类导航 + 右侧单分类面板（一屏只看一类，杜绝堆叠杂乱）。
+ * 字段定义来自后端 config_schema()；LLM 接入在「模型提供商」页维护。
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Card, Input, InputNumber, message, Switch, Tag, Tooltip } from "antd";
-import { AimOutlined, DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
+import { Button, Input, InputNumber, message, Select, Switch } from "antd";
+import { DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
 
-/** 分组元数据：图标 + 一句话说明 */
+/** 分组元数据 */
 const SECTIONS: Record<string, { icon: React.ReactNode; title: string; desc: string }> = {
   runtime: { icon: <SettingOutlined />, title: "运行时", desc: "并发与资源上限" },
   memory: { icon: <DatabaseOutlined />, title: "记忆系统", desc: "召回范围与生命周期" },
   security: { icon: <SafetyCertificateOutlined />, title: "安全与审批", desc: "命令闸门与白名单" },
-  automation: { icon: <FieldTimeOutlined />, title: "自动化与心跳", desc: "定时巡检与自优化" },
+  automation: { icon: <FieldTimeOutlined />, title: "自动化", desc: "心跳巡检与自优化" },
 };
 
-/** 布尔/长文本控件的字段偏好（按 key 匹配） */
-const LONG_TEXT_KEYS = new Set(["automation.heartbeatPrompt", "security.execAllowlist"]);
+/** 特定字段用选择器而非自由文本 */
+const ENUM_OVERRIDES: Record<string, { value: string; label: string }[]> = {
+  "security.execApproval": [
+    { value: "off", label: "关闭（不拦截）" },
+    { value: "risky", label: "仅高危命令" },
+    { value: "always", label: "全部命令" },
+  ],
+};
 
 function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
   if (!cfg) return undefined;
-  switch (key) {
-    case "maxConcurrency":
-      return cfg.maxConcurrency;
-    case "maxSessionTokens":
-      return cfg.maxSessionTokens;
-    default:
-      return undefined;
-  }
-}
-
-function FieldRow({
-  field, value, onChange,
-}: {
-  field: ConfigSchemaField; value: unknown; onChange: (v: unknown) => void;
-}) {
-  const isBool = field.kind === "boolean";
-  const isLong = LONG_TEXT_KEYS.has(field.key);
-  return (
-    <div className="cfg-row">
-      <div className="cfg-main">
-        <div className="cfg-label">
-          {field.label}
-          {field.required && <Tag color="orange" className="cfg-tag">必填</Tag>}
-        </div>
-        <div className="cfg-help">{field.help}</div>
-      </div>
-      <div className="cfg-ctrl">
-        {isBool ? (
-          <Switch checked={value === undefined ? field.default === "true" : Boolean(value)} onChange={onChange} />
-        ) : isLong ? (
-          <Input.TextArea rows={2} value={String(value ?? field.default)} onChange={(e) => onChange(e.target.value)} />
-        ) : field.kind === "number" ? (
-          <InputNumber
-            value={value === undefined || value === "" ? Number(field.default) : Number(value)}
-            min={field.min} max={field.max}
-            style={{ width: 180 }}
-            onChange={(v) => onChange(v)}
-          />
-        ) : (
-          <Input style={{ width: 260 }} value={String(value ?? field.default)} onChange={(e) => onChange(e.target.value)} />
-        )}
-      </div>
-    </div>
-  );
+  if (key === "maxConcurrency") return cfg.maxConcurrency;
+  if (key === "maxSessionTokens") return cfg.maxSessionTokens;
+  return undefined;
 }
 
 export function SettingsView(): React.ReactElement {
   const { config, saveConfig } = useExm();
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
+  const [selected, setSelected] = useState<string>("runtime");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     void (async () => {
       const s = await api.configSchema();
-      // LLM 接入组由「模型提供商」页承担
       setSchema({ ...s, groups: s.groups.filter((g) => g.key !== "llm") });
       const init: Record<string, unknown> = {};
       for (const g of s.groups) {
-        for (const f of g.fields) init[f.key] = readCurrent(config, f.key);
+        for (const f of g.fields) init[f.key] = readCurrent(config ?? null, f.key);
       }
       setValues(init);
     })();
   }, [config]);
 
-  const grouped = useMemo(() => {
-    if (!schema) return [];
-    return schema.groups.map((g) => ({
-      ...g,
-      meta: SECTIONS[g.key] ?? { icon: <SettingOutlined />, title: g.label, desc: "" },
-      fields: g.fields.map((f) => ({ ...f, value: values[f.key] })),
-    }));
-  }, [schema, values]);
+  const groups = useMemo(() => schema?.groups ?? [], [schema]);
+  const current = groups.find((g) => g.key === selected) ?? groups[0];
+  const meta = current ? SECTIONS[current.key] : undefined;
 
-  const setField = (key: string, v: unknown) => setValues((prev) => ({ ...prev, [key]: v }));
+  const setField = (key: string, v: unknown) => setValues((p) => ({ ...p, [key]: v }));
 
   const save = async () => {
     setSaving(true);
@@ -103,16 +63,11 @@ export function SettingsView(): React.ReactElement {
       const body: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(values)) {
         if (v === undefined || v === "") continue;
-        const [group, field] = k.split(".");
-        if (group === "memory") {
-          body.memory = { ...((body.memory as Record<string, unknown>) ?? {}), [field]: v };
-        } else if (group === "security") {
-          body.security = { ...((body.security as Record<string, unknown>) ?? {}), [field]: v };
-        } else if (group === "automation") {
-          body.automation = { ...((body.automation as Record<string, unknown>) ?? {}), [field]: v };
-        } else {
-          body[k] = v;
-        }
+        const [g, f] = k.split(".");
+        if (g === "memory") body.memory = { ...((body.memory as Record<string, unknown>) ?? {}), [f]: v };
+        else if (g === "security") body.security = { ...((body.security as Record<string, unknown>) ?? {}), [f]: v };
+        else if (g === "automation") body.automation = { ...((body.automation as Record<string, unknown>) ?? {}), [f]: v };
+        else body[k] = v;
       }
       await saveConfig(body);
       message.success("配置已保存并热生效");
@@ -123,35 +78,85 @@ export function SettingsView(): React.ReactElement {
     }
   };
 
-  if (!schema) return <div className="pane-loading"><i /></div>;
-
   return (
-    <div className="settings-wrap">
-      <div className="settings-head">
-        <span className="settings-title">设置</span>
-        <span className="settings-sub">模型接入在「模型提供商」页维护</span>
-        <Button type="primary" loading={saving} onClick={save} style={{ marginLeft: "auto" }}>
-          保存全部
-        </Button>
-      </div>
+    <div className="settings2">
+      {/* 左侧分类导航 */}
+      <nav className="cfg-nav">
+        {groups.map((g) => (
+          <button
+            key={g.key}
+            className={`cfg-nav-item ${g.key === current?.key ? "on" : ""}`}
+            onClick={() => setSelected(g.key)}
+          >
+            <span className="cfg-nav-icon">{SECTIONS[g.key]?.icon ?? <SettingOutlined />}</span>
+            <span>{SECTIONS[g.key]?.title ?? g.label}</span>
+          </button>
+        ))}
+      </nav>
 
-      {grouped.map((g) => (
-        <Card
-          key={g.key}
-          size="small"
-          className="settings-card"
-          title={
-            <span>
-              {g.meta.icon} <b>{g.meta.title}</b>
-              {g.meta.desc && <span className="cfg-help" style={{ marginLeft: 10 }}>{g.meta.desc}</span>}
-            </span>
-          }
-        >
-          {g.fields.map((f) => (
-            <FieldRow key={f.key} field={f} value={f.value} onChange={(v) => setField(f.key, v)} />
-          ))}
-        </Card>
-      ))}
+      {/* 右侧面板：仅当前分类 */}
+      <section className="cfg-panel">
+        {current && meta ? (
+          <>
+            <header className="cfg-panel-head">
+              <h3>{meta.title}</h3>
+              <p>{meta.desc}。改动保存后热生效，无需重启。</p>
+            </header>
+            <div className="cfg-list">
+              {current.fields.map((f) => {
+                const value = values[f.key];
+                const ctrl = ENUM_OVERRIDES[f.key] ? (
+                  <Select
+                    style={{ width: 220 }}
+                    value={String(value ?? f.default)}
+                    options={ENUM_OVERRIDES[f.key]}
+                    onChange={(v) => setField(f.key, v)}
+                  />
+                ) : f.kind === "boolean" ? (
+                  <Switch
+                    checked={value === undefined ? f.default === "true" : Boolean(value)}
+                    onChange={(v) => setField(f.key, v)}
+                  />
+                ) : f.kind === "number" ? (
+                  <InputNumber
+                    style={{ width: 180 }}
+                    min={f.min}
+                    max={f.max}
+                    value={value === undefined || value === "" ? Number(f.default) : Number(value)}
+                    onChange={(v) => setField(f.key, v)}
+                  />
+                ) : f.key === "automation.heartbeatPrompt" || f.key === "security.execAllowlist" ? (
+                  <Input.TextArea
+                    style={{ width: 320 }}
+                    rows={2}
+                    value={String(value ?? f.default)}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                  />
+                ) : (
+                  <Input style={{ width: 320 }} value={String(value ?? f.default)} onChange={(e) => setField(f.key, e.target.value)} />
+                );
+                return (
+                  <div className="cfg2-row" key={f.key}>
+                    <div className="cfg2-label">
+                      <div className="cfg2-name">{f.label}</div>
+                      {f.help && <div className="cfg2-help">{f.help}</div>}
+                    </div>
+                    <div className="cfg2-ctrl">{ctrl}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="cfg2-foot">
+              <Button type="primary" loading={saving} onClick={save}>
+                保存{meta.title}
+              </Button>
+              <span className="dim">保存后热生效，无需重启</span>
+            </div>
+          </>
+        ) : (
+          <div className="pane-loading"><i /></div>
+        )}
+      </section>
     </div>
   );
 }

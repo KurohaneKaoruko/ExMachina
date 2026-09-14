@@ -817,3 +817,91 @@ body {
   flex: none;
   padding-top: 2px;
 }
+/* 设置页 v3：左导航 + 右单分类面板 */
+.settings2 {
+  display: flex;
+  gap: 20px;
+  max-width: 980px;
+  align-items: flex-start;
+}
+.cfg-nav {
+  flex: none;
+  width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cfg-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #8b949e;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+.cfg-nav-item:hover {
+  color: #c9d1d9;
+  background: #12181f;
+}
+.cfg-nav-item.on {
+  color: #e6edf3;
+  background: #12181f;
+  border-color: #1f6feb;
+}
+.cfg-nav-icon {
+  font-size: 15px;
+}
+.cfg-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #1b2230;
+  border-radius: 10px;
+  background: #0d1117;
+  padding: 18px 22px;
+}
+.cfg-panel-head h3 {
+  margin: 0 0 2px;
+  color: #e6edf3;
+  font-size: 16px;
+}
+.cfg-panel-head p {
+  margin: 0 0 14px;
+  color: #7d8590;
+  font-size: 12px;
+}
+.cfg2-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 0;
+  border-bottom: 1px dashed #1b2230;
+}
+.cfg2-row:last-child {
+  border-bottom: none;
+}
+.cfg2-name {
+  color: #c9d1d9;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.cfg2-help {
+  color: #7d8590;
+  font-size: 12px;
+  max-width: 420px;
+  line-height: 1.5;
+}
+.cfg2-ctrl {
+  flex: none;
+}
+.cfg2-foot {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
