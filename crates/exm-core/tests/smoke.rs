@@ -691,3 +691,55 @@ async fn 混合记忆_语义兜底与加成() {
     let hits3 = mem.recall("部署 要点", 5, None, None, None).unwrap();
     assert!(!hits3.is_empty() && hits3[0].entry.id == a.id);
 }
+
+/// web_fetch 工具 + 图片附件暂存：本地 axum 服务器抓取正文；stash 存取语义
+#[tokio::test]
+async fn web_fetch工具与图片暂存() {
+    use exm_core::types::ToolName;
+
+    // 最小 HTTP 页面服务器（含应被剥离的脚本与样式）
+    let app = axum::Router::new().route(
+        "/page",
+        axum::routing::get(|| async {
+            "<html><head><style>body{color:red}</style><script>alert(1)</script></head><body><h1>标题</h1><p>正文内容 甲乙丙</p></body></html>"
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // 规格注册：白名单内含 web_fetch
+    let specs = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebFetch]);
+    assert!(specs.iter().any(|s| s.name == "web_fetch"), "web_fetch 应在规格中");
+
+    let cfg = {
+        let _serial = serial_guard();
+        test_config()
+    };
+    let core = Core::with_config(cfg).expect("创建 Core 失败");
+    let tools = exm_core::tools::ToolGateway::new(
+        &core.config().workspace_root,
+        core.store.clone(),
+        core.registry.clone(),
+        core.events.clone(),
+        core.config().security.clone(),
+    );
+    let r = tools
+        .execute(
+            "machina",
+            &[ToolName::WebFetch],
+            ToolName::WebFetch,
+            &serde_json::json!({ "url": format!("http://{addr}/page") }),
+        )
+        .await;
+    assert!(r.ok, "web_fetch 应成功: {:?}", r.error);
+    assert!(r.output.contains("正文内容"), "应含正文: {}", r.output);
+    assert!(!r.output.contains("alert"), "脚本应被剥离");
+    assert!(!r.output.contains("color:red"), "样式应被剥离");
+
+    // 图片暂存：stage → take 取走即清
+    exm_core::image_stash::stage("s-img", vec!["data:image/png;base64,AAAA".to_string()]);
+    let taken = exm_core::image_stash::take("s-img");
+    assert_eq!(taken.len(), 1);
+    assert!(exm_core::image_stash::take("s-img").is_empty(), "取走即清");
+}

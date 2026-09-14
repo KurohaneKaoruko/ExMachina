@@ -49,7 +49,7 @@ interface ExmState {
   refreshAgents: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   newSession: () => Promise<void>;
-  send: (text: string) => Promise<void>;
+  send: (text: string, images?: string[]) => Promise<void>;
   saveConfig: (body: Record<string, unknown>) => Promise<void>;
   handleEvent: (evt: WsEvent) => void;
   setWs: (ok: boolean) => void;
@@ -195,9 +195,10 @@ export const useExm = create<ExmState>((set, get) => ({
     await get().selectSession(s.id);
   },
 
-  send: async (text) => {
+  send: async (text, images) => {
     const id = get().sessionId;
     if (!id || !text.trim()) return;
+    const label = images?.length ? `${text}（附图 ${images.length} 张）` : text;
     set({
       running: true,
       liveOrch: "",
@@ -210,12 +211,12 @@ export const useExm = create<ExmState>((set, get) => ({
           id: `local-${Date.now()}`,
           sessionId: id,
           role: "user",
-          statements: [{ tag: "要求", text }],
+          statements: [{ tag: "要求", text: label }],
           createdAt: new Date().toISOString(),
         },
       ],
     });
-    await api.chat(id, text);
+    await api.chat(id, text, images);
   },
 
   saveConfig: async (body) => {

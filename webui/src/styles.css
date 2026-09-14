@@ -715,3 +715,43 @@ body {
   animation: stream-flow 1.1s linear infinite;
 }
 @keyframes stream-flow { to { background-position-x: 20px; } }
+/* 多模态附件（对话输入区） */
+.attach-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0 8px;
+}
+.attach-thumb {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border: 1px solid #2a3240;
+  border-radius: 6px;
+  overflow: hidden;
+  flex: none;
+}
+.attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.attach-del {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: rgba(0, 0, 0, 0.55) !important;
+  color: #fff;
+}
+.attach-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  cursor: pointer;
+  border-radius: 6px;
+  color: #8b949e;
+  flex: none;
+}
+.attach-btn:hover {
+  color: #4cc9f0;
+}

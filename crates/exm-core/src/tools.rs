@@ -43,6 +43,59 @@ pub fn is_destructive_command(lowered: &str) -> bool {
 }
 
 /// 跨平台 shell 执行（工具闸门与审批代执行共用）
+/// 极简 HTML 正文提取：剥 script/style 块与标签、压缩空白（零正则依赖）
+fn strip_html(html: &str) -> String {
+    let lower = html.to_lowercase();
+    let mut out = String::with_capacity(html.len() / 2);
+    let bytes = html.as_bytes();
+    let mut i = 0usize;
+    let mut skip_until: Option<&str> = None;
+    while i < bytes.len() {
+        if let Some(end) = skip_until {
+            // 在被跳过的块内寻找结束标记
+            if lower[i..].starts_with(end) {
+                skip_until = None;
+                i += end.len();
+                // 吞掉闭合标签的剩余部分
+                while i < bytes.len() && html[i..].chars().next().map(|c| c != '>').unwrap_or(false) {
+                    i += 1;
+                }
+                i = (i + 1).min(bytes.len());
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if lower[i..].starts_with("<script") {
+            skip_until = Some("</script");
+        } else if lower[i..].starts_with("<style") {
+            skip_until = Some("</style");
+        } else if bytes[i] == b'<' {
+            while i < bytes.len() && bytes[i] != b'>' {
+                i += 1;
+            }
+        } else {
+            let ch = html[i..].chars().next().unwrap_or(' ');
+            out.push(if ch.is_whitespace() { ' ' } else { ch });
+            i += ch.len_utf8();
+        }
+    }
+    let mut compact = String::with_capacity(out.len());
+    let mut last_space = true;
+    for c in out.chars() {
+        if c == ' ' {
+            if !last_space {
+                compact.push(' ');
+            }
+            last_space = true;
+        } else {
+            compact.push(c);
+            last_space = false;
+        }
+    }
+    compact
+}
+
 pub fn execute_shell_command(workspace_root: &Path, cmd: &str) -> ToolResult {
     #[cfg(target_os = "windows")]
     let mut process = {
@@ -196,6 +249,14 @@ impl ToolGateway {
             "properties": { "query": { "type": "string" } },
             "required": ["query"]
         }));
+        push(ToolName::WebFetch, "抓取网页 URL 并提取正文文本（自动剥离标签与脚本）", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string", "description": "http(s) 地址" },
+                "maxChars": { "type": "integer", "description": "最多返回字符数，默认 8000" }
+            },
+            "required": ["url"]
+        }));
         push(ToolName::AgentManage, "组内个体管理（仅主智能体）：create/update/remove/setPrimary", serde_json::json!({
             "type": "object",
             "properties": {
@@ -236,7 +297,7 @@ impl ToolGateway {
             // 纵深防御：allowlist 注入之外再校验调用者身份
             ToolResult::err("agent_manage 仅限激活组主智能体使用")
         } else {
-            self.dispatch(agent_id, tool, args)
+            self.dispatch(agent_id, tool, args).await
         };
         let summary = if result.ok {
             result.output.chars().take(200).collect::<String>()
@@ -247,12 +308,13 @@ impl ToolGateway {
         result
     }
 
-    fn dispatch(&self, agent_id: &str, tool: ToolName, args: &serde_json::Value) -> ToolResult {
+    async fn dispatch(&self, agent_id: &str, tool: ToolName, args: &serde_json::Value) -> ToolResult {
         match tool {
             ToolName::Read => self.tool_read(args),
             ToolName::Filesystem => self.tool_fs(args),
             ToolName::Terminal => self.tool_terminal(agent_id, args),
             ToolName::WebSearch => self.tool_web_search(args),
+            ToolName::WebFetch => self.tool_web_fetch(args).await,
             ToolName::AgentManage => self.tool_agent_manage(args),
         }
     }
@@ -492,6 +554,40 @@ impl ToolGateway {
             "命令已拦截待人工审批（审批单 {}）：{cmd}。回流受阻原因；用户批准后由系统代执行。",
             req.id
         ))
+    }
+
+    /// 抓取网页并提取正文（大小/时长受限，标签与脚本剥离）
+    async fn tool_web_fetch(&self, args: &serde_json::Value) -> ToolResult {
+        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let max_chars = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(8000) as usize;
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return ToolResult::err("url 必须以 http(s):// 开头");
+        }
+        let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
+            Ok(c) => c,
+            Err(e) => return ToolResult::err(format!("HTTP 客户端构建失败: {e}")),
+        };
+        let resp = match client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => return ToolResult::err(format!("抓取失败: {e}")),
+        };
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return ToolResult::err(format!("HTTP {status}"));
+        }
+        // 截断到 2MB 以内再读
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => return ToolResult::err(format!("读取响应失败: {e}")),
+        };
+        let raw = String::from_utf8_lossy(&bytes[..bytes.len().min(2 * 1024 * 1024)]);
+        let text = strip_html(&raw);
+        let text = text.trim().chars().take(max_chars).collect::<String>();
+        if text.is_empty() {
+            ToolResult::err("页面无可提取文本（可能是纯二进制或脚本渲染页）")
+        } else {
+            ToolResult::ok(text)
+        }
     }
 
     fn tool_web_search(&self, args: &serde_json::Value) -> ToolResult {

@@ -236,10 +236,10 @@ export const api = {
   getSession: (id: string) => req<Session>(`/sessions/${id}`),
   deleteSession: (id: string) => req<{ ok: boolean }>(`/sessions/${id}`, { method: "DELETE" }),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
-  chat: (id: string, text: string) =>
+  chat: (id: string, text: string, images?: string[]) =>
     req<{ accepted: boolean }>(`/sessions/${id}/chat`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(images?.length ? { text, images } : { text }),
     }),
   agents: () => req<AgentDefinition[]>("/agents"),
   groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),

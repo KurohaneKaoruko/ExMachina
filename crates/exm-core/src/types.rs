@@ -108,6 +108,9 @@ pub enum ToolName {
     Terminal,
     #[serde(rename = "web_search")]
     WebSearch,
+    /// 抓取网页并提取正文文本
+    #[serde(rename = "web_fetch")]
+    WebFetch,
     /// 智能体管理（仅组内主智能体可用：创建/修改/删除子个体、设置主智能体）
     #[serde(rename = "agent_manage")]
     AgentManage,
@@ -120,6 +123,7 @@ impl ToolName {
             ToolName::Filesystem => "filesystem",
             ToolName::Terminal => "terminal",
             ToolName::WebSearch => "web_search",
+            ToolName::WebFetch => "web_fetch",
             ToolName::AgentManage => "agent_manage",
         }
     }
@@ -130,6 +134,7 @@ impl ToolName {
             "filesystem" => Some(ToolName::Filesystem),
             "terminal" => Some(ToolName::Terminal),
             "web_search" => Some(ToolName::WebSearch),
+            "web_fetch" => Some(ToolName::WebFetch),
             "agent_manage" => Some(ToolName::AgentManage),
             _ => None,
         }

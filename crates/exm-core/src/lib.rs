@@ -10,6 +10,7 @@ pub mod bus;
 pub mod config;
 pub mod cron;
 pub mod fsdb;
+pub mod image_stash;
 pub mod mcp;
 pub mod memory;
 pub mod orchestrator;
@@ -232,6 +233,11 @@ impl Core {
 
     pub fn mcp(&self) -> Arc<crate::mcp::McpRegistry> {
         self.mcp.clone()
+    }
+
+    /// 暂存图片附件（随该会话下一轮对话注入规划；每轮取走即清）
+    pub fn stage_images(&self, session_id: &str, images: Vec<String>) {
+        crate::image_stash::stage(session_id, images);
     }
 
     pub fn orchestrator(&self) -> Arc<Orchestrator> {

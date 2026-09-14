@@ -343,6 +343,9 @@ async fn list_messages(State(st): State<AppState>, Path(id): Path<String>) -> im
 #[derive(Deserialize)]
 struct ChatBody {
     text: String,
+    /// 图片附件（data URL，多模态输入；随本轮进入规划）
+    #[serde(default)]
+    images: Vec<String>,
 }
 
 async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Json<ChatBody>) -> impl IntoResponse {
@@ -355,6 +358,10 @@ async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Js
     // 202 受理，运行过程经 WS 推流（core.chat：会话串行 + followup/collect）
     let core = st.core.clone();
     let text = body.text.clone();
+    let images = body.images.clone();
+    if !images.is_empty() {
+        core.stage_images(&id, images);
+    }
     tokio::spawn(async move {
         if let Err(e) = core.chat(&id, &text).await {
             let _ = core.events.send(CoreEvent {

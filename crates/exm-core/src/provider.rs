@@ -35,21 +35,32 @@ pub struct ChatMessage {
     /// tool 结果消息：工具名（gemini functionResponse 需要）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 图片附件（多模态输入）：data URL（data:image/png;base64,…）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        ChatMessage { role: "system".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None }
+        ChatMessage { role: "system".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None, images: Vec::new() }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        ChatMessage { role: "user".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None }
+        ChatMessage { role: "user".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None, images: Vec::new() }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        ChatMessage { role: "assistant".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None }
+        ChatMessage { role: "assistant".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None, images: Vec::new() }
     }
     /// 工具结果消息（openai 形态 role=tool；anthropic/gemini 在请求映射时转换）
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
-        ChatMessage { role: "tool".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()), name: None }
+        ChatMessage { role: "tool".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()), name: None, images: Vec::new() }
+    }
+
+    /// data URL 拆解：(mime, base64)；非 data URL 返回 None
+    fn split_data_url(url: &str) -> Option<(String, String)> {
+        let rest = url.strip_prefix("data:")?;
+        let (meta, data) = rest.split_once(',')?;
+        let mime = meta.split(';').next()?.to_string();
+        Some((mime, data.to_string()))
     }
 }
 
@@ -503,6 +514,17 @@ impl OpenAiCompatibleProvider {
                         "role": "user",
                         "content": [{ "type": "tool_result", "tool_use_id": m.tool_call_id.clone().unwrap_or_default(), "content": m.content }],
                     })
+                } else if !m.images.is_empty() {
+                    let mut blocks: Vec<serde_json::Value> = Vec::new();
+                    if !m.content.is_empty() {
+                        blocks.push(serde_json::json!({ "type": "text", "text": m.content }));
+                    }
+                    for img in &m.images {
+                        if let Some((mime, data)) = ChatMessage::split_data_url(img) {
+                            blocks.push(serde_json::json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": data } }));
+                        }
+                    }
+                    serde_json::json!({ "role": m.role, "content": blocks })
                 } else {
                     serde_json::json!({ "role": m.role, "content": m.content })
                 }
@@ -519,6 +541,18 @@ impl OpenAiCompatibleProvider {
                         "role": "user",
                         "parts": [{ "functionResponse": { "name": name, "response": { "result": m.content } } }],
                     })
+                } else if !m.images.is_empty() {
+                    let mut parts: Vec<serde_json::Value> = Vec::new();
+                    if !m.content.is_empty() {
+                        parts.push(serde_json::json!({ "text": m.content }));
+                    }
+                    for img in &m.images {
+                        if let Some((mime, data)) = ChatMessage::split_data_url(img) {
+                            parts.push(serde_json::json!({ "inline_data": { "mime_type": mime, "data": data } }));
+                        }
+                    }
+                    let role = if m.role == "assistant" { "model" } else { m.role.as_str() };
+                    serde_json::json!({ "role": role, "parts": parts })
                 } else {
                     let role = if m.role == "assistant" { "model" } else { m.role.as_str() };
                     serde_json::json!({ "role": role, "parts": [{ "text": m.content }] })
@@ -538,6 +572,15 @@ impl OpenAiCompatibleProvider {
                         "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
                         "content": m.content,
                     })
+                } else if !m.images.is_empty() {
+                    let mut parts: Vec<serde_json::Value> = Vec::new();
+                    if !m.content.is_empty() {
+                        parts.push(serde_json::json!({ "type": "text", "text": m.content }));
+                    }
+                    for img in &m.images {
+                        parts.push(serde_json::json!({ "type": "image_url", "image_url": { "url": img } }));
+                    }
+                    serde_json::json!({ "role": m.role, "content": parts })
                 } else {
                     serde_json::json!({ "role": m.role, "content": m.content })
                 }

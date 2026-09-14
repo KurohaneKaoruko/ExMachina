@@ -835,13 +835,16 @@ impl Orchestrator {
             _ => String::new(),
         };
 
+        let mut user_msg = ChatMessage::user(format!(
+            "{context_block}用户任务输入：{text}\n\n【要求】按 OrchestratorPlan 契约输出 JSON。nodes 中的 agentIdentifier 必须来自上方可调度清单。"
+        ));
+        // 多模态输入：本轮附带的图片（data URL）随用户消息进入规划
+        user_msg.images = crate::image_stash::take(session_id);
         let mut messages = vec![
             ChatMessage::system(format!(
                 "{system_prompt}\n\n## 当前可调度子个体\n{registry_brief}\n\n{skill_brief}{playbook_brief}{stats_block}{memory_block}"
             )),
-            ChatMessage::user(format!(
-                "{context_block}用户任务输入：{text}\n\n【要求】按 OrchestratorPlan 契约输出 JSON。nodes 中的 agentIdentifier 必须来自上方可调度清单。"
-            )),
+            user_msg,
         ];
 
         let mut last_err = String::new();

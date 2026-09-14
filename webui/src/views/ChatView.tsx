@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { CloseOutlined, MessageOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { CloseOutlined, MessageOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { useExm } from "../store";
 
@@ -54,7 +54,35 @@ export function ChatView(): React.ReactElement {
     await loadTarget();
   };
   const [text, setText] = useState("");
+  const [images, setImages] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 附件压缩：Canvas 缩到 ≤1280px、JPEG 82%（控制多模态请求体尺寸）
+  const addImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 1280 / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+        setImages((prev) => [...prev, dataUrl].slice(0, 4));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const doSend = () => {
+    if (text.trim()) {
+      void send(text, images);
+      setText("");
+      setImages([]);
+    }
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -211,6 +239,22 @@ export function ChatView(): React.ReactElement {
         </div>
 
         <div className="chat-input">
+          {images.length > 0 && (
+            <div className="attach-row">
+              {images.map((src, i) => (
+                <span key={i} className="attach-thumb">
+                  <img src={src} alt={`附件${i + 1}`} />
+                  <Button
+                    size="small"
+                    type="text"
+                    className="attach-del"
+                    icon={<CloseOutlined />}
+                    onClick={() => setImages(images.filter((_, j) => j !== i))}
+                  />
+                </span>
+              ))}
+            </div>
+          )}
           <Input.TextArea
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -220,22 +264,29 @@ export function ChatView(): React.ReactElement {
               if (!e.shiftKey) {
                 e.preventDefault();
                 if (text.trim() && !running) {
-                  void send(text);
-                  setText("");
+                  doSend();
                 }
               }
             }}
           />
+          <label className="attach-btn" title="附加图片（多模态输入，最多 4 张）">
+            <PaperClipOutlined />
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                Array.from(e.target.files ?? []).slice(0, 4).forEach(addImage);
+                e.target.value = "";
+              }}
+            />
+          </label>
           <Button
             type="primary"
             icon={<SendOutlined />}
             loading={running}
-            onClick={() => {
-              if (text.trim()) {
-                void send(text);
-                setText("");
-              }
-            }}
+            onClick={doSend}
           >
             发送
           </Button>
