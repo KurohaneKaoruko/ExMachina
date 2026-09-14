@@ -223,6 +223,12 @@ impl Core {
 
     /// 统一对话入口：会话级串行（运行中的后续输入排队为 followup，收束后依次处理；
     /// 排队窗内到达的多条输入由 handle_user_message 的 collect 合并为一轮）
+    /// 语音转写（全局生效档案，whisper 系模型；音频字节 → 文本）
+    pub async fn transcribe(&self, audio: &[u8], filename: &str) -> anyhow::Result<String> {
+        let orch = self.orchestrator();
+        orch.transcribe_audio(audio, filename).await
+    }
+
     /// 会话 token 估算（全部消息陈述字符 / 4）
     pub fn session_tokens_estimate(&self, session_id: &str) -> u64 {
         self.store

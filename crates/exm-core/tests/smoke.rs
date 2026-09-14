@@ -947,3 +947,12 @@ async fn 终端超时与会话预算() {
     assert!(second.is_err(), "超预算应拒绝");
     assert!(second.unwrap_err().to_string().contains("预算"), "错误应含预算提示");
 }
+
+/// 语音转写契约：Mock 通道明确不支持（真实路径走 openai/azure /audio/transcriptions）
+#[tokio::test]
+async fn 语音转写_通道契约() {
+    use exm_core::provider::{LlmProvider, MockLlmProvider};
+    let r = MockLlmProvider.transcribe("whisper-1", b"RIFF....", "a.webm").await;
+    assert!(r.is_err(), "Mock 不支持转写");
+    assert!(r.unwrap_err().to_string().contains("不支持"), "错误应明示不支持");
+}

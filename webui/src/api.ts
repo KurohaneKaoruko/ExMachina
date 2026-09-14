@@ -224,6 +224,19 @@ export interface MemoryStats {
 }
 
 export const api = {
+  transcribe: async (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "audio.webm");
+    const key = localStorage.getItem("exm.key") ?? "";
+    const resp = await fetch("/api/voice/transcribe", {
+      method: "POST",
+      headers: key ? { "X-Auth-Key": key } : {},
+      body: form,
+    });
+    const data = (await resp.json()) as { text?: string; error?: string };
+    if (!resp.ok || data.error) throw new Error(data.error ?? `转写失败 (${resp.status})`);
+    return data.text ?? "";
+  },
   verifyAuth: (key: string) =>
     req<{ ok: boolean; required?: boolean; error?: string }>("/auth/verify", {
       method: "POST",

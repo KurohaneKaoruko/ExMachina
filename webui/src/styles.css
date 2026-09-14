@@ -755,3 +755,6 @@ body {
 .attach-btn:hover {
   color: #4cc9f0;
 }
+.mic-btn {
+  flex: none;
+}

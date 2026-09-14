@@ -284,6 +284,10 @@ pub trait LlmProvider: Send + Sync {
     async fn embed(&self, _model: &str, _texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         anyhow::bail!("该通道不支持嵌入")
     }
+    /// 语音转写（音频字节 → 文本）；默认不支持，openai/azure 协议实现
+    async fn transcribe(&self, _model: &str, _audio: &[u8], _filename: &str) -> anyhow::Result<String> {
+        anyhow::bail!("该通道不支持语音转写")
+    }
     /// 流式：增量通过 tx 发出，最终返回完整响应
     async fn stream(
         &self,
@@ -741,6 +745,52 @@ impl LlmProvider for OpenAiCompatibleProvider {
             anyhow::bail!("嵌入返回数量不符（{} / {}）", vectors.len(), texts.len());
         }
         Ok(vectors)
+    }
+
+    /// 语音转写：openai 协议 /audio/transcriptions；azure deployments/{model}/audio/transcriptions
+    async fn transcribe(&self, model: &str, audio: &[u8], filename: &str) -> anyhow::Result<String> {
+        if self.keys.is_empty() {
+            anyhow::bail!("未配置 API Key（转写不可用）");
+        }
+        let fmt = self.api_format.as_str();
+        if fmt != "openai" && fmt != "azure" {
+            anyhow::bail!("协议 {fmt} 暂不支持语音转写");
+        }
+        let base = self.base_url.trim_end_matches('/');
+        let url = if fmt == "azure" {
+            format!("{base}/openai/deployments/{model}/audio/transcriptions?api-version=2024-10-21")
+        } else {
+            format!("{base}/audio/transcriptions")
+        };
+        let key = self.key_hint_texts();
+        let (name, value) = self.auth_header(&key);
+        let part = reqwest::multipart::Part::bytes(audio.to_vec())
+            .file_name(filename.to_string())
+            .mime_str(if filename.ends_with(".mp3") {
+                "audio/mpeg"
+            } else if filename.ends_with(".wav") {
+                "audio/wav"
+            } else {
+                "audio/webm"
+            })?;
+        let form = reqwest::multipart::Form::new()
+            .text("model", model.to_string())
+            .part("file", part);
+        let resp = self
+            .client
+            .post(&url)
+            .header(name, value)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("转写请求失败: {e}"))?;
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        if !(200..300).contains(&status) {
+            anyhow::bail!("转写失败 {status}: {}", body.to_string().chars().take(200).collect::<String>());
+        }
+        Ok(body.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string())
     }
 
     fn name(&self) -> &'static str {

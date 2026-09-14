@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { CloseOutlined, MessageOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { AudioOutlined, CloseOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { useExm } from "../store";
 
@@ -55,7 +55,46 @@ export function ChatView(): React.ReactElement {
   };
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const chunksRef = useRef<Blob[]>([]);
+
+  // 语音输入：MediaRecorder → 网关转写 → 文本入输入框
+  const toggleRecord = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      rec.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        chunksRef.current = [];
+        if (blob.size === 0) return;
+        try {
+          const t = await api.transcribe(blob);
+          if (t) setText((prev) => (prev ? `${prev} ${t}` : t));
+          message.success("语音已转写");
+        } catch (e) {
+          message.error(`转写失败：${String(e)}`);
+        }
+      };
+      chunksRef.current = [];
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+    } catch {
+      message.error("无法访问麦克风");
+    }
+  };
 
   // 附件压缩：Canvas 缩到 ≤1280px、JPEG 82%（控制多模态请求体尺寸）
   const addImage = (file: File) => {
@@ -268,6 +307,15 @@ export function ChatView(): React.ReactElement {
                 }
               }
             }}
+          />
+          <Button
+            size="small"
+            type={recording ? "primary" : "text"}
+            className="mic-btn"
+            danger={recording}
+            title={recording ? "停止录音并转写" : "语音输入（转写为文字）"}
+            icon={recording ? <PauseCircleOutlined /> : <AudioOutlined />}
+            onClick={() => void toggleRecord()}
           />
           <label className="attach-btn" title="附加图片（多模态输入，最多 4 张）">
             <PaperClipOutlined />

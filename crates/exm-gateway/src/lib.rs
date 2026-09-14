@@ -93,6 +93,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/config/schema", get(get_config_schema))
         .route("/api/mcp", get(mcp_servers))
         .route("/api/mcp/refresh", post(mcp_refresh))
+        .route("/api/voice/transcribe", post(voice_transcribe))
         // 记忆系统（docs/08 §6）
         .route("/api/memory", get(list_memory).post(add_memory))
         .route("/api/memory/search", post(search_memory))
@@ -613,6 +614,32 @@ async fn get_config_schema() -> impl IntoResponse {
 
 async fn mcp_servers(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({ "servers": st.core.mcp().servers_brief() }))
+}
+
+/// 语音转写：multipart 字段 audio（webm/mp3/wav）→ 文本（全局档案 whisper）
+async fn voice_transcribe(
+    State(st): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    let mut audio: Option<(Vec<u8>, String)> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() == Some("audio") {
+            let name = field.file_name().unwrap_or("audio.webm").to_string();
+            match field.bytes().await {
+                Ok(b) => audio = Some((b.to_vec(), name)),
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("读取音频失败: {e}") }))).into_response()
+                }
+            }
+        }
+    }
+    let Some((bytes, name)) = audio else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "缺少 audio 字段" }))).into_response();
+    };
+    match st.core.transcribe(&bytes, &name).await {
+        Ok(text) => Json(json!({ "text": text })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 async fn mcp_refresh(State(st): State<AppState>) -> impl IntoResponse {

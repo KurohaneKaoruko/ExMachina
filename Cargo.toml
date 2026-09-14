@@ -15,12 +15,12 @@ anyhow = "1"
 thiserror = "2"
 async-trait = "0.1"
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "native-tls"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 owo-colors = "4"
-axum = { version = "0.7", features = ["ws", "json"] }
+axum = { version = "0.7", features = ["ws", "json", "multipart"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 # 工作者节点 WS 客户端（纯 WS，无 TLS——面向局域网旧设备）
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }

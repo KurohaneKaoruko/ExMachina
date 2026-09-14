@@ -121,8 +121,24 @@ pub async fn execute_shell_command_timed(workspace_root: &Path, cmd: &str, timeo
         Ok(c) => c,
         Err(e) => return ToolResult::err(format!("命令执行失败: {e}")),
     };
+    let pid = child.id();
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs.max(1)), child.wait_with_output()).await {
-        Err(_) => ToolResult::err(format!("命令超时（{timeout_secs}s）已终止")),
+        Err(_) => {
+            // 进程树强杀：Windows taskkill /T /F（cmd 的子进程一并终止）
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(pid) = pid {
+                    let _ = tokio::process::Command::new("taskkill")
+                        .args(["/PID", &pid.to_string(), "/T", "/F"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .await;
+                }
+            }
+            ToolResult::err(format!("命令超时（{timeout_secs}s）已终止"))
+        }
         Ok(Err(e)) => ToolResult::err(format!("命令执行失败: {e}")),
         Ok(Ok(out)) => {
             let text = String::from_utf8_lossy(&out.stdout).to_string();

@@ -93,6 +93,11 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 exmachina-orchestrator）。
+    /// 语音转写：全局生效档案的 Provider（whisper 系模型名）
+    pub async fn transcribe_audio(&self, audio: &[u8], filename: &str) -> anyhow::Result<String> {
+        self.orch_provider.transcribe("whisper-1", audio, filename).await
+    }
+
     /// 工作者端执行入口：远程派发在本地执行（供 WorkerSession 调用）
     pub async fn execute_unit<F>(
         &self,
