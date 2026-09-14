@@ -94,6 +94,8 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/mcp", get(mcp_servers))
         .route("/api/mcp/refresh", post(mcp_refresh))
         .route("/api/voice/transcribe", post(voice_transcribe))
+        .route("/api/voice/speak", post(voice_speak))
+        .route("/api/sessions/:id/tokens", get(session_tokens))
         // 记忆系统（docs/08 §6）
         .route("/api/memory", get(list_memory).post(add_memory))
         .route("/api/memory/search", post(search_memory))
@@ -640,6 +642,29 @@ async fn voice_transcribe(
         Ok(text) => Json(json!({ "text": text })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
     }
+}
+
+/// 语音合成：{text} → mp3 字节（audio/mpeg）
+async fn voice_speak(State(st): State<AppState>, Json(b): Json<serde_json::Value>) -> impl IntoResponse {
+    let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    if text.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "text 不能为空" }))).into_response();
+    }
+    match st.core.speak(&text).await {
+        Ok(mp3) => (
+            [(axum::http::header::CONTENT_TYPE, "audio/mpeg")],
+            mp3,
+        )
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 会话 token 用量（估算口径）与预算
+async fn session_tokens(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let used = st.core.session_tokens_estimate(&id);
+    let budget = st.core.config().max_session_tokens;
+    Json(json!({ "estimate": used, "budget": budget, "unlimited": budget == 0 }))
 }
 
 async fn mcp_refresh(State(st): State<AppState>) -> impl IntoResponse {

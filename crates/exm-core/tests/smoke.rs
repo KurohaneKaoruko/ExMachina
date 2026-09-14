@@ -955,4 +955,7 @@ async fn 语音转写_通道契约() {
     let r = MockLlmProvider.transcribe("whisper-1", b"RIFF....", "a.webm").await;
     assert!(r.is_err(), "Mock 不支持转写");
     assert!(r.unwrap_err().to_string().contains("不支持"), "错误应明示不支持");
+    // 合成契约同构：Mock 明确不支持
+    let s = MockLlmProvider.speak("tts-1", "你好").await;
+    assert!(s.is_err() && s.unwrap_err().to_string().contains("不支持"));
 }

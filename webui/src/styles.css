@@ -758,3 +758,10 @@ body {
 .mic-btn {
   flex: none;
 }
+.speak-btn {
+  margin-left: auto;
+  color: #8b949e;
+}
+.speak-btn:hover {
+  color: #4cc9f0;
+}

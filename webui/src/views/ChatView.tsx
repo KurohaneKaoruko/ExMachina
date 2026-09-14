@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { AudioOutlined, CloseOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { AudioOutlined, CloseOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, SoundOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { useExm } from "../store";
 
@@ -12,10 +12,37 @@ import type { ChatMessage } from "../types";
 function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
   const isUser = m.role === "user";
   const title = isUser ? "用户" : m.role === "orchestrator" ? "指挥体" : (m.agentId ?? "系统");
+  const [speaking, setSpeaking] = useState(false);
+  const readAloud = async () => {
+    const text = m.statements.map((s) => s.text).join("\n");
+    if (!text.trim()) return;
+    setSpeaking(true);
+    try {
+      const blob = await api.speak(text);
+      const audio = new Audio(URL.createObjectURL(blob));
+      audio.onended = () => setSpeaking(false);
+      audio.onerror = () => setSpeaking(false);
+      await audio.play();
+    } catch (e) {
+      message.error(`朗读失败：${String(e)}`);
+      setSpeaking(false);
+    }
+  };
   return (
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
         {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
+        {!isUser && (
+          <Button
+            size="small"
+            type="text"
+            className="speak-btn"
+            title="朗读本条"
+            loading={speaking}
+            icon={<SoundOutlined />}
+            onClick={() => void readAloud()}
+          />
+        )}
       </div>
       <StatementList statements={m.statements} />
     </Card>
@@ -56,6 +83,7 @@ export function ChatView(): React.ReactElement {
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [recording, setRecording] = useState(false);
+  const [usage, setUsage] = useState<{ estimate: number; budget: number; unlimited: boolean } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -127,6 +155,17 @@ export function ChatView(): React.ReactElement {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, liveOrch, liveUnits, timeline]);
 
+  useEffect(() => {
+    if (!sessionId) return;
+    void (async () => {
+      try {
+        setUsage(await api.sessionTokens(sessionId));
+      } catch {
+        // 用量接口不可用时静默
+      }
+    })();
+  }, [sessionId, messages.length, running]);
+
   const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
   const activeMeta = groups.find((g) => g.id === activeGroup);
 
@@ -190,6 +229,11 @@ export function ChatView(): React.ReactElement {
             )
           )}
         </div>
+        {usage && (
+          <div className="rail-hint">
+            用量 ~{usage.estimate} tok{usage.unlimited ? "" : ` / 预算 ${usage.budget}`}
+          </div>
+        )}
         <div className="rail-section grow">
           <Button
             block

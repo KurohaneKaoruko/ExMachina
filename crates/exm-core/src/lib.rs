@@ -229,6 +229,12 @@ impl Core {
         orch.transcribe_audio(audio, filename).await
     }
 
+    /// 语音合成（全局生效档案，tts 系模型；文本 → mp3 字节）
+    pub async fn speak(&self, text: &str) -> anyhow::Result<Vec<u8>> {
+        let orch = self.orchestrator();
+        orch.speak_audio(text).await
+    }
+
     /// 会话 token 估算（全部消息陈述字符 / 4）
     pub fn session_tokens_estimate(&self, session_id: &str) -> u64 {
         self.store

@@ -288,6 +288,10 @@ pub trait LlmProvider: Send + Sync {
     async fn transcribe(&self, _model: &str, _audio: &[u8], _filename: &str) -> anyhow::Result<String> {
         anyhow::bail!("该通道不支持语音转写")
     }
+    /// 语音合成（文本 → mp3 字节）；默认不支持，openai/azure 协议实现
+    async fn speak(&self, _model: &str, _text: &str) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("该通道不支持语音合成")
+    }
     /// 流式：增量通过 tx 发出，最终返回完整响应
     async fn stream(
         &self,
@@ -791,6 +795,43 @@ impl LlmProvider for OpenAiCompatibleProvider {
             anyhow::bail!("转写失败 {status}: {}", body.to_string().chars().take(200).collect::<String>());
         }
         Ok(body.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string())
+    }
+
+    /// 语音合成：openai /audio/speech；azure deployments/{model}/audio/speech（mp3）
+    async fn speak(&self, model: &str, text: &str) -> anyhow::Result<Vec<u8>> {
+        if self.keys.is_empty() {
+            anyhow::bail!("未配置 API Key（合成不可用）");
+        }
+        let fmt = self.api_format.as_str();
+        if fmt != "openai" && fmt != "azure" {
+            anyhow::bail!("协议 {fmt} 暂不支持语音合成");
+        }
+        let base = self.base_url.trim_end_matches('/');
+        let url = if fmt == "azure" {
+            format!("{base}/openai/deployments/{model}/audio/speech?api-version=2024-10-21")
+        } else {
+            format!("{base}/audio/speech")
+        };
+        let key = self.key_hint_texts();
+        let (name, value) = self.auth_header(&key);
+        let resp = self
+            .client
+            .post(&url)
+            .header(name, value)
+            .json(&serde_json::json!({
+                "model": model, "input": text, "voice": "alloy", "response_format": "mp3",
+            }))
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("合成请求失败: {e}"))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("合成失败 {status}: {}", body.chars().take(200).collect::<String>());
+        }
+        let bytes = resp.bytes().await.map_err(|e| anyhow::anyhow!("读取音频失败: {e}"))?;
+        Ok(bytes.to_vec())
     }
 
     fn name(&self) -> &'static str {

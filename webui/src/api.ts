@@ -237,6 +237,21 @@ export const api = {
     if (!resp.ok || data.error) throw new Error(data.error ?? `转写失败 (${resp.status})`);
     return data.text ?? "";
   },
+  speak: async (text: string) => {
+    const key = localStorage.getItem("exm.key") ?? "";
+    const resp = await fetch("/api/voice/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(key ? { "X-Auth-Key": key } : {}) },
+      body: JSON.stringify({ text }),
+    });
+    if (!resp.ok) {
+      const err = (await resp.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error ?? `合成失败 (${resp.status})`);
+    }
+    return resp.blob();
+  },
+  sessionTokens: (id: string) =>
+    req<{ estimate: number; budget: number; unlimited: boolean }>(`/sessions/${id}/tokens`),
   verifyAuth: (key: string) =>
     req<{ ok: boolean; required?: boolean; error?: string }>("/auth/verify", {
       method: "POST",

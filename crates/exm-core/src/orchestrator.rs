@@ -98,6 +98,11 @@ impl Orchestrator {
         self.orch_provider.transcribe("whisper-1", audio, filename).await
     }
 
+    /// 语音合成：全局生效档案的 Provider（tts 系模型，mp3 字节）
+    pub async fn speak_audio(&self, text: &str) -> anyhow::Result<Vec<u8>> {
+        self.orch_provider.speak("tts-1", text).await
+    }
+
     /// 工作者端执行入口：远程派发在本地执行（供 WorkerSession 调用）
     pub async fn execute_unit<F>(
         &self,
