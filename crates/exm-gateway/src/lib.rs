@@ -147,6 +147,7 @@ async fn get_config(State(st): State<AppState>) -> impl IntoResponse {
             "unitModel": cfg.llm.unit_model,
         },
         "maxConcurrency": cfg.max_concurrency,
+        "maxSessionTokens": cfg.max_session_tokens,
         "mock": st.core.is_mock(),
     }))
 }
@@ -158,6 +159,8 @@ struct ConfigBody {
     llm: Option<PartialLlm>,
     #[serde(default)]
     max_concurrency: Option<usize>,
+    #[serde(default)]
+    max_session_tokens: Option<u64>,
     #[serde(default)]
     memory: Option<PartialMemory>,
     #[serde(default)]
@@ -251,6 +254,7 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
             unit_model: partial.unit_model.unwrap_or_else(|| current.llm.unit_model.clone()),
         },
         max_concurrency: body.max_concurrency.unwrap_or(current.max_concurrency),
+        max_session_tokens: body.max_session_tokens.unwrap_or(current.max_session_tokens),
         memory_enabled: mem.enabled.unwrap_or(current.memory_enabled),
         memory_recall_limit: mem.recall_limit.unwrap_or(current.memory_recall_limit),
         memory_half_life_days: mem.half_life_days.unwrap_or(current.memory_half_life_days),

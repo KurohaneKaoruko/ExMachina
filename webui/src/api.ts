@@ -29,6 +29,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export interface GatewayConfig {
   llm: { baseUrl: string; apiKey: string; orchModel: string; unitModel: string };
   maxConcurrency: number;
+  /** 会话 token 预算（估算；0 = 不限） */
+  maxSessionTokens: number;
   mock: boolean;
 }
 

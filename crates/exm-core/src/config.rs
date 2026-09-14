@@ -294,8 +294,8 @@ impl ExmConfig {
             api_key: env_or("EXM_LLM_API_KEY", &file_llm.api_key, ""),
             api_keys: Vec::new(),
             api_format: String::new(),
-            orch_model: env_or("EXM_LLM_MODEL_ORCH", &file_llm.orch_model, "gpt-4o"),
-            unit_model: env_or("EXM_LLM_MODEL_UNIT", &file_llm.unit_model, "gpt-4o-mini"),
+            orch_model: env_or("EXM_LLM_MODEL_ORCH", &file_llm.orch_model, ""),
+            unit_model: env_or("EXM_LLM_MODEL_UNIT", &file_llm.unit_model, ""),
         };
 
         // 模型档案：旧配置自动迁移为单一 default 档案；激活档案的值解析进 llm（env 仍最高优先）
@@ -322,8 +322,8 @@ impl ExmConfig {
                     api_key: env_or("EXM_LLM_API_KEY", &first.api_key, ""),
                     api_keys: Vec::new(),
                     api_format: String::new(),
-                    orch_model: env_or("EXM_LLM_MODEL_ORCH", &first.orch_model, "gpt-4o"),
-                    unit_model: env_or("EXM_LLM_MODEL_UNIT", &first.unit_model, "gpt-4o-mini"),
+                    orch_model: env_or("EXM_LLM_MODEL_ORCH", &first.orch_model, ""),
+                    unit_model: env_or("EXM_LLM_MODEL_UNIT", &first.unit_model, ""),
                 };
             }
         } else if let Some(p) = llm_profiles.iter().find(|p| p.id == active_profile) {
@@ -336,8 +336,8 @@ impl ExmConfig {
                 api_key: env_or("EXM_LLM_API_KEY", &p.api_key, ""),
                 api_keys: keys,
                 api_format: p.api_format.clone(),
-                orch_model: env_or("EXM_LLM_MODEL_ORCH", &p.orch_model, "gpt-4o"),
-                unit_model: env_or("EXM_LLM_MODEL_UNIT", &p.unit_model, "gpt-4o-mini"),
+                orch_model: env_or("EXM_LLM_MODEL_ORCH", &p.orch_model, ""),
+                unit_model: env_or("EXM_LLM_MODEL_UNIT", &p.unit_model, ""),
             };
         }
 
@@ -489,9 +489,9 @@ pub fn config_schema() -> serde_json::Value {
                     { "key": "llm.apiKey", "label": "API Key", "kind": "password", "default": "",
                       "required": false, "help": "留空则以 Mock 模拟通道运行；填入后热切换为真实推理" },
                     { "key": "llm.orchModel", "label": "指挥体模型", "kind": "string",
-                      "default": "gpt-4o", "required": true, "help": "主智能体（规划/裁决/收束）" },
+                      "default": "", "required": true, "help": "主智能体（规划/裁决/收束）" },
                     { "key": "llm.unitModel", "label": "子个体模型", "kind": "string",
-                      "default": "gpt-4o-mini", "required": true, "help": "子个体执行用模型" }
+                      "default": "", "required": true, "help": "子个体执行用模型" }
                 ]
             },
             {

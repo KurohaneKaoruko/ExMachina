@@ -1,95 +1,70 @@
 /**
- * 设置页（Schema 驱动，运行时/记忆/安全/自动化）
- * 字段来自后端 `config_schema()` ⇒ 新增配置项时本文件无需改动（docs/07 §4.2）。
- * LLM 接入（端点/密钥/模型）不在本页：请到「模型提供商」页维护。
+ * 设置页：按「运行时 / 记忆 / 安全 / 自动化」分类的分区卡片布局。
+ * 字段定义仍来自后端 config_schema()；LLM 接入在「模型提供商」页维护。
  */
-import React, { useEffect, useState } from "react";
-import {
-  Alert,
-  Button,
-  Card,
-  Form,
-  Input,
-  InputNumber,
-  message,
-  Space,
-  Spin,
-  Switch,
-  Tag,
-} from "antd";
+import React, { useEffect, useMemo, useState } from "react";
+import { Button, Card, Input, InputNumber, message, Switch, Tag, Tooltip } from "antd";
+import { AimOutlined, DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
 
-/** 从运行配置中按 schema key 取值（未覆盖的键由 schema default 兜底） */
+/** 分组元数据：图标 + 一句话说明 */
+const SECTIONS: Record<string, { icon: React.ReactNode; title: string; desc: string }> = {
+  runtime: { icon: <SettingOutlined />, title: "运行时", desc: "并发与资源上限" },
+  memory: { icon: <DatabaseOutlined />, title: "记忆系统", desc: "召回范围与生命周期" },
+  security: { icon: <SafetyCertificateOutlined />, title: "安全与审批", desc: "命令闸门与白名单" },
+  automation: { icon: <FieldTimeOutlined />, title: "自动化与心跳", desc: "定时巡检与自优化" },
+};
+
+/** 布尔/长文本控件的字段偏好（按 key 匹配） */
+const LONG_TEXT_KEYS = new Set(["automation.heartbeatPrompt", "security.execAllowlist"]);
+
 function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
   if (!cfg) return undefined;
   switch (key) {
     case "maxConcurrency":
       return cfg.maxConcurrency;
+    case "maxSessionTokens":
+      return cfg.maxSessionTokens;
     default:
       return undefined;
   }
 }
 
-function FieldControl({
-  field,
-  value,
-  onChange,
+function FieldRow({
+  field, value, onChange,
 }: {
-  field: ConfigSchemaField;
-  value: unknown;
-  onChange: (v: unknown) => void;
-}): React.ReactElement {
-  switch (field.kind) {
-    case "password":
-      return (
-        <Input.Password
-          value={String(value ?? "")}
-          placeholder="留空保持不变（当前密钥不回显）"
-          autoComplete="off"
-          onChange={(e) => onChange(e.target.value)}
-        />
-      );
-    case "number":
-      return (
-        <InputNumber
-          value={value === undefined || value === "" ? Number(field.default) : Number(value)}
-          min={field.min}
-          max={field.max}
-          style={{ width: 220 }}
-          onChange={(v) => onChange(v)}
-        />
-      );
-    case "boolean":
-      return (
-        <Switch
-          checked={value === undefined ? field.default === "true" : Boolean(value)}
-          onChange={(v) => onChange(v)}
-        />
-      );
-    default:
-      return (
-        <Input
-          value={String(value ?? field.default)}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      );
-  }
-}
-
-/** 扁平 key（llm.baseUrl / memory.recallLimit）→ PUT body 分组结构 */
-function buildBody(values: Record<string, unknown>): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  for (const [key, v] of Object.entries(values)) {
-    if (v === undefined || v === "") continue;
-    const [group, field] = key.split(".");
-    if (group === "memory") {
-      body.memory = { ...((body.memory as Record<string, unknown>) ?? {}), [field]: v };
-    } else {
-      body[key] = v;
-    }
-  }
-  return body;
+  field: ConfigSchemaField; value: unknown; onChange: (v: unknown) => void;
+}) {
+  const isBool = field.kind === "boolean";
+  const isLong = LONG_TEXT_KEYS.has(field.key);
+  return (
+    <div className="cfg-row">
+      <div className="cfg-main">
+        <div className="cfg-label">
+          {field.label}
+          {field.required && <Tag color="orange" className="cfg-tag">必填</Tag>}
+        </div>
+        <div className="cfg-help">{field.help}</div>
+      </div>
+      <div className="cfg-ctrl">
+        {isBool ? (
+          <Switch checked={value === undefined ? field.default === "true" : Boolean(value)} onChange={onChange} />
+        ) : isLong ? (
+          <Input.TextArea rows={2} value={String(value ?? field.default)} onChange={(e) => onChange(e.target.value)} />
+        ) : field.kind === "number" ? (
+          <InputNumber
+            value={value === undefined || value === "" ? Number(field.default) : Number(value)}
+            min={field.min} max={field.max}
+            style={{ width: 180 }}
+            onChange={(v) => onChange(v)}
+          />
+        ) : (
+          <Input style={{ width: 260 }} value={String(value ?? field.default)} onChange={(e) => onChange(e.target.value)} />
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function SettingsView(): React.ReactElement {
@@ -101,7 +76,7 @@ export function SettingsView(): React.ReactElement {
   useEffect(() => {
     void (async () => {
       const s = await api.configSchema();
-      // LLM 接入组由「模型提供商」页承担，设置页不重复渲染
+      // LLM 接入组由「模型提供商」页承担
       setSchema({ ...s, groups: s.groups.filter((g) => g.key !== "llm") });
       const init: Record<string, unknown> = {};
       for (const g of s.groups) {
@@ -111,79 +86,72 @@ export function SettingsView(): React.ReactElement {
     })();
   }, [config]);
 
-  if (!schema) return <Spin />;
+  const grouped = useMemo(() => {
+    if (!schema) return [];
+    return schema.groups.map((g) => ({
+      ...g,
+      meta: SECTIONS[g.key] ?? { icon: <SettingOutlined />, title: g.label, desc: "" },
+      fields: g.fields.map((f) => ({ ...f, value: values[f.key] })),
+    }));
+  }, [schema, values]);
+
+  const setField = (key: string, v: unknown) => setValues((prev) => ({ ...prev, [key]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(values)) {
+        if (v === undefined || v === "") continue;
+        const [group, field] = k.split(".");
+        if (group === "memory") {
+          body.memory = { ...((body.memory as Record<string, unknown>) ?? {}), [field]: v };
+        } else if (group === "security") {
+          body.security = { ...((body.security as Record<string, unknown>) ?? {}), [field]: v };
+        } else if (group === "automation") {
+          body.automation = { ...((body.automation as Record<string, unknown>) ?? {}), [field]: v };
+        } else {
+          body[k] = v;
+        }
+      }
+      await saveConfig(body);
+      message.success("配置已保存并热生效");
+    } catch (e) {
+      message.error(`保存失败：${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!schema) return <div className="pane-loading"><i /></div>;
 
   return (
-    <Card
-      title={`网关设置（配置结构 v${schema.configVersion}；字段由后端 Schema 驱动，新增配置项无需改本页）`}
-      className="settings-card"
-    >
-      <Space direction="vertical" className="full-width" size="middle">
-        {config?.mock ? (
-          <Alert
-            type="info"
-            showIcon
-            message="当前为 Mock 模拟通道"
-            description="尚未配置任何模型提供商密钥，系统以确定性模拟运行（可完整演示流程）。请到「模型提供商」页添加端点与 API Key；智能体/智能体组可在各自设置中选择默认模型。"
-          />
-        ) : (
-          <Alert
-            type="success"
-            showIcon
-            message="已接入真实 LLM 端点"
-            description="端点与密钥在「模型提供商」页维护；各智能体/智能体组可在其设置中选择默认模型，未选择的跟随全局默认。"
-          />
-        )}
+    <div className="settings-wrap">
+      <div className="settings-head">
+        <span className="settings-title">设置</span>
+        <span className="settings-sub">模型接入在「模型提供商」页维护</span>
+        <Button type="primary" loading={saving} onClick={save} style={{ marginLeft: "auto" }}>
+          保存全部
+        </Button>
+      </div>
 
-        <Form layout="vertical">
-          {schema.groups.map((g) => (
-            <Card key={g.key} size="small" title={g.label} className="settings-group">
-              {g.fields.map((f) => (
-                <Form.Item
-                  key={f.key}
-                  label={
-                    <Space>
-                      <span>{f.label}</span>
-                      {f.required && <Tag color="red">必填</Tag>}
-                      <span className="settings-key">{f.key}</span>
-                    </Space>
-                  }
-                  help={f.help}
-                >
-                  <FieldControl
-                    field={f}
-                    value={values[f.key]}
-                    onChange={(v) => setValues({ ...values, [f.key]: v })}
-                  />
-                </Form.Item>
-              ))}
-            </Card>
-          ))}
-
-          <Space>
-            <Button
-              type="primary"
-              loading={saving}
-              onClick={async () => {
-                setSaving(true);
-                try {
-                  await saveConfig(buildBody(values));
-                  message.success("配置已保存并热生效");
-                } catch (e) {
-                  message.error(`保存失败：${String(e)}`);
-                } finally {
-                  setSaving(false);
-                }
-              }}
-            >
-              保存并热生效
-            </Button>
-            <span className="settings-hint">
-              {"与 CLI 共用同一份 .exmachina/config.json；亦可 exm config set <key> <value>"}
+      {grouped.map((g) => (
+        <Card
+          key={g.key}
+          size="small"
+          className="settings-card"
+          title={
+            <span>
+              {g.meta.icon} <b>{g.meta.title}</b>
+              {g.meta.desc && <span className="cfg-help" style={{ marginLeft: 10 }}>{g.meta.desc}</span>}
             </span>
-          </Space>
-        </Form>
-      </Space>
-    </Card>
+          }
+        >
+          {g.fields.map((f) => (
+            <FieldRow key={f.key} field={f} value={f.value} onChange={(v) => setField(f.key, v)} />
+          ))}
+        </Card>
+      ))}
+    </div>
   );
 }

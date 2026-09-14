@@ -765,3 +765,55 @@ body {
 .speak-btn:hover {
   color: #4cc9f0;
 }
+/* 设置页（分类分区布局） */
+.settings-wrap {
+  max-width: 860px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.settings-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e6edf3;
+}
+.settings-sub {
+  font-size: 12px;
+  color: #7d8590;
+}
+.cfg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px dashed #1b2230;
+}
+.cfg-row:last-child {
+  border-bottom: none;
+}
+.cfg-main {
+  flex: 1 1 auto;
+}
+.cfg-label {
+  color: #c9d1d9;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.cfg-tag {
+  margin-left: 8px;
+  font-size: 10px;
+}
+.cfg-help {
+  color: #7d8590;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cfg-ctrl {
+  flex: none;
+  padding-top: 2px;
+}
