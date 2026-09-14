@@ -122,7 +122,7 @@ export default function App(): React.ReactElement {
             { key: "chat", icon: <MessageOutlined />, label: <><span>对话</span> <span className="label-en">[CHAT]</span></> },
             { key: "agent", icon: <UserOutlined />, label: <><span>智能体</span> <span className="label-en">[AGENT]</span></> },
             { key: "groups", icon: <TeamOutlined />, label: <><span>智能体组</span> <span className="label-en">[GROUPS]</span></> },
-            { key: "agents", icon: <RobotOutlined />, label: <><span>个体</span> <span className="label-en">[UNITS]</span></> },
+            { key: "agents", icon: <RobotOutlined />, label: <><span>子个体</span> <span className="label-en">[UNITS]</span></> },
             { key: "skills", icon: <DeploymentUnitOutlined />, label: <><span>技能</span> <span className="label-en">[SKILLS]</span></> },
             { key: "models", icon: <ApiOutlined />, label: <><span>模型提供商</span> <span className="label-en">[PROVIDERS]</span></> },
             { key: "graph", icon: <ApartmentOutlined />, label: <><span>任务图</span> <span className="label-en">[DAG]</span></> },

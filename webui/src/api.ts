@@ -306,6 +306,8 @@ export const api = {
   }) => req<AgentDefinition>("/agents", { method: "POST", body: JSON.stringify(body) }),
   removeAgent: (identifier: string) =>
     req<{ ok: boolean }>(`/agents/${identifier}`, { method: "DELETE" }),
+  removeGroupAgent: (gid: string, identifier: string) =>
+    req<{ ok: boolean }>(`/groups/${gid}/agents/${identifier}`, { method: "DELETE" }),
   getPersona: (identifier: string) => req<PersonaInfo>(`/agents/${identifier}/persona`),
   putPersona: (identifier: string, persona: string) =>
     req<{ ok: boolean }>(`/agents/${identifier}/persona`, {

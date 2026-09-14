@@ -46,7 +46,6 @@ export function SinglesView(): React.ReactElement {
         name: v.name,
         identifier: v.identifier,
         description: v.description,
-        domain: v.domain || undefined,
         prompt: v.prompt || undefined,
       });
       message.success(`智能体已创建：${v.identifier}`);
@@ -187,9 +186,6 @@ export function SinglesView(): React.ReactElement {
           </Form.Item>
           <Form.Item name="description" label="职责" rules={[{ required: true }]}>
             <Input.TextArea rows={2} placeholder="该智能体的职责一句话描述" />
-          </Form.Item>
-          <Form.Item name="domain" label="域（可选）">
-            <Input placeholder="如：内容域" />
           </Form.Item>
           <Form.Item name="prompt" label="提示词（可选，留空生成模板）">
             <Input.TextArea rows={4} placeholder="定义它的身份、说话方式与工作方式" />

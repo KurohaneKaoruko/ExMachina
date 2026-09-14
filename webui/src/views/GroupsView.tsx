@@ -79,7 +79,6 @@ export function GroupsView(): React.ReactElement {
         name: v.name,
         identifier: v.identifier,
         description: v.description,
-        domain: v.domain || undefined,
         tier: v.tier || undefined,
         group: meta?.id,
       });
@@ -296,7 +295,13 @@ export function GroupsView(): React.ReactElement {
                     </tr>
                   </thead>
                   <tbody>
-                    {members.map((a) => (
+                    {[...members]
+                      .sort((a, b) => {
+                        const pa = meta.primary === a.identifier ? 0 : 1;
+                        const pb = meta.primary === b.identifier ? 0 : 1;
+                        return pa - pb || a.identifier.localeCompare(b.identifier);
+                      })
+                      .map((a) => (
                       <tr key={a.identifier}>
                         <td>
                           <b>{a.name}</b> <span className="mono dim">{a.identifier}</span>
@@ -389,9 +394,6 @@ export function GroupsView(): React.ReactElement {
           </Form.Item>
           <Form.Item name="description" label="职责" rules={[{ required: true }]}>
             <Input.TextArea rows={2} placeholder="该个体的职责一句话描述" />
-          </Form.Item>
-          <Form.Item name="domain" label="域（可选）">
-            <Input placeholder="如：内容域" />
           </Form.Item>
           <Form.Item name="tier" label="层级" initialValue="unit">
             <Select

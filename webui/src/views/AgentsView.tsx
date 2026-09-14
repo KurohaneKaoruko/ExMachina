@@ -1,5 +1,5 @@
-/** 个体面板：激活组的个体清单，支持人设编辑与（自定义组内）创建/删除子个体 */
-import React, { useState } from "react";
+/** 子个体页：任选智能体组查看/管理其子个体（人设、经验优化、新建/删除）；交互切换在对话页 */
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Card,
@@ -12,20 +12,34 @@ import {
   Space,
   Table,
   Tag,
-  Tooltip,
 } from "antd";
 import { DeleteOutlined, EditOutlined, PlusOutlined, UndoOutlined } from "@ant-design/icons";
-import { useExm } from "../store";
 import { api, type PersonaInfo } from "../api";
+import { useExm } from "../store";
 import type { AgentDefinition } from "../types";
 
-// 域标签由核心装载体规范化为中文后下发，前端直接展示，不做静态映射
+interface GroupLite {
+  id: string;
+  name: string;
+  builtin: boolean;
+  primary?: string;
+}
+
+/** 主智能体置顶，其余按 identifier 排序 */
+function sortMembers(list: AgentDefinition[], primary?: string): AgentDefinition[] {
+  return [...list].sort((a, b) => {
+    const pa = a.identifier === primary ? 0 : 1;
+    const pb = b.identifier === primary ? 0 : 1;
+    return pa - pb || a.identifier.localeCompare(b.identifier);
+  });
+}
 
 export function AgentsView(): React.ReactElement {
-  const { agents, graph } = useExm();
   const groups = useExm((s) => s.groups);
   const activeGroup = useExm((s) => s.activeGroup);
-  const refreshAgents = useExm((s) => s.refreshAgents);
+  const [gid, setGid] = useState<string>("");
+  const [members, setMembers] = useState<AgentDefinition[]>([]);
+  const [loading, setLoading] = useState(false);
   const [personaOf, setPersonaOf] = useState<AgentDefinition | null>(null);
   const [personaInfo, setPersonaInfo] = useState<PersonaInfo | null>(null);
   const [personaDraft, setPersonaDraft] = useState("");
@@ -33,8 +47,29 @@ export function AgentsView(): React.ReactElement {
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
 
-  const activeMeta = groups.find((g) => g.id === activeGroup);
-  const isBuiltin = activeMeta?.builtin ?? true;
+  const meta = groups.find((g) => g.id === gid);
+  const isBuiltin = meta?.builtin ?? true;
+  const primary = meta?.primary;
+
+  const loadMembers = useCallback(async (id: string) => {
+    if (!id) return;
+    setMembers(sortMembers(await api.groupAgents(id)));
+  }, []);
+
+  // 初次进入：默认选中当前交互组（会话上下文）
+  useEffect(() => {
+    if (!gid && groups.length > 0) {
+      setGid(groups.some((g) => g.id === activeGroup) ? activeGroup : groups[0].id);
+    }
+  }, [groups, activeGroup, gid]);
+
+  useEffect(() => {
+    void loadMembers(gid);
+  }, [gid, loadMembers]);
+
+  const reload = useCallback(async () => {
+    await loadMembers(gid);
+  }, [gid, loadMembers]);
 
   const submitCreate = async () => {
     const v = await form.validateFields();
@@ -43,14 +78,14 @@ export function AgentsView(): React.ReactElement {
         name: v.name,
         identifier: v.identifier,
         description: v.description,
-        domain: v.domain || "自定义",
         tier: v.tier || "unit",
         prompt: v.prompt || undefined,
+        group: gid || undefined,
       });
       message.success(`子个体已创建：${v.name}`);
       setCreateOpen(false);
       form.resetFields();
-      await refreshAgents();
+      await reload();
     } catch (e) {
       message.error(`创建失败：${String(e)}`);
     }
@@ -58,16 +93,16 @@ export function AgentsView(): React.ReactElement {
 
   const removeOne = async (identifier: string) => {
     try {
-      await api.removeAgent(identifier);
+      await api.removeGroupAgent(gid, identifier);
       message.success(`已删除：${identifier}`);
-      await refreshAgents();
+      await reload();
     } catch (e) {
       message.error(`删除失败：${String(e)}`);
     }
   };
 
   const busyAgents = new Set(
-    (graph?.nodes ?? [])
+    (useExm((s) => s.graph)?.nodes ?? [])
       .filter((n) => ["running", "dispatched", "syncing"].includes(n.status))
       .map((n) => n.agentIdentifier),
   );
@@ -77,8 +112,8 @@ export function AgentsView(): React.ReactElement {
     setPersonaInfo(null);
     setPersonaDraft("");
     try {
+      setPersonaInfo(await api.getPersona(a.identifier));
       const info = await api.getPersona(a.identifier);
-      setPersonaInfo(info);
       setPersonaDraft(info.persona);
     } catch (e) {
       message.error(`读取人设失败：${String(e)}`);
@@ -92,8 +127,7 @@ export function AgentsView(): React.ReactElement {
     try {
       await api.putPersona(personaOf.identifier, personaDraft);
       message.success("人设已保存，下一次派发热生效");
-      const info = await api.getPersona(personaOf.identifier);
-      setPersonaInfo(info);
+      setPersonaInfo(await api.getPersona(personaOf.identifier));
     } catch (e) {
       message.error(`保存失败：${String(e)}`);
     } finally {
@@ -105,27 +139,25 @@ export function AgentsView(): React.ReactElement {
     if (!personaOf) return;
     try {
       await api.resetPersona(personaOf.identifier);
-      const info = await api.getPersona(personaOf.identifier);
-      setPersonaInfo(info);
-      setPersonaDraft(info.persona);
+      setPersonaInfo(await api.getPersona(personaOf.identifier));
+      setPersonaDraft(``);
       message.success("已恢复默认智械体风格");
     } catch (e) {
       message.error(`重置失败：${String(e)}`);
     }
   };
 
-  const grouped = agents.reduce<Record<string, AgentDefinition[]>>((acc, a) => {
-    (acc[a.domain] ??= []).push(a);
-    return acc;
-  }, {});
-
   return (
     <div className="agents-wrap">
       <Space className="agents-toolbar" align="center">
         <span>
-          激活组：
-          <b>{activeMeta?.name ?? activeGroup}</b>
-          {activeMeta?.builtin ? <Tag>内置</Tag> : <Tag color="purple">自定义</Tag>}
+          智能体组：
+          <Select
+            style={{ minWidth: 200 }}
+            value={gid || undefined}
+            onChange={(v) => setGid(v)}
+            options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
+          />
         </span>
         {!isBuiltin && (
           <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
@@ -133,65 +165,62 @@ export function AgentsView(): React.ReactElement {
           </Button>
         )}
         {isBuiltin && (
-          <Tooltip title="内置默认组的编成受保护；如需自定义集群请新建组">
-            <span className="persona-hint">内置组编成受保护</span>
-          </Tooltip>
+          <span className="persona-hint">内置组编成受保护；自定义集群请新建组</span>
         )}
       </Space>
-      {Object.entries(grouped).map(([domain, list]) => (
-        <Card key={domain} size="small" title={domain} className="agents-group">
-          <Table
-            size="small"
-            rowKey="identifier"
-            pagination={false}
-            dataSource={list}
-            columns={[
-              {
-                title: "个体",
-                key: "name",
-                render: (_, a) => (
-                  <span>
-                    {a.tier === "orchestrator" ? <Tag color="blue">指挥体</Tag> : null}
-                    <b>{a.name}</b> <code>{a.identifier}</code>
-                  </span>
-                ),
-              },
-              { title: "职责", dataIndex: "description", key: "desc", ellipsis: true },
-              {
-                title: "工具",
-                dataIndex: "tools",
-                key: "tools",
-                width: 200,
-                render: (tools: string[]) => tools.map((t) => <Tag key={t}>{t}</Tag>),
-              },
-              {
-                title: "状态",
-                key: "state",
-                width: 90,
-                render: (_, a) =>
-                  busyAgents.has(a.identifier) ? <Tag color="processing">执行中</Tag> : <Tag>空闲</Tag>,
-              },
-              {
-                title: "操作",
-                key: "ops",
-                width: 150,
-                render: (_, a) => (
-                  <Space>
-                    <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
-                      人设
-                    </Button>
-                    {!isBuiltin && a.identifier !== activeMeta?.primary && (
-                      <Popconfirm title={`确认删除 ${a.identifier}？`} onConfirm={() => void removeOne(a.identifier)}>
-                        <Button size="small" danger icon={<DeleteOutlined />} />
-                      </Popconfirm>
-                    )}
-                  </Space>
-                ),
-              },
-            ]}
-          />
-        </Card>
-      ))}
+
+      <Card size="small" className="agents-group">
+        <Table
+          size="small"
+          rowKey="identifier"
+          pagination={false}
+          dataSource={sortMembers(members, primary)}
+          columns={[
+            {
+              title: "子个体",
+              key: "name",
+              render: (_, a) => (
+                <span>
+                  {a.tier === "orchestrator" || a.identifier === primary ? <Tag color="blue">主智能体</Tag> : null}
+                  <b>{a.name}</b> <code>{a.identifier}</code>
+                </span>
+              ),
+            },
+            { title: "职责", dataIndex: "description", key: "desc", ellipsis: true },
+            {
+              title: "工具",
+              dataIndex: "tools",
+              key: "tools",
+              width: 200,
+              render: (tools: string[]) => tools.map((t) => <Tag key={t}>{t}</Tag>),
+            },
+            {
+              title: "状态",
+              key: "state",
+              width: 90,
+              render: (_, a) =>
+                busyAgents.has(a.identifier) ? <Tag color="processing">执行中</Tag> : <Tag>空闲</Tag>,
+            },
+            {
+              title: "操作",
+              key: "ops",
+              width: 150,
+              render: (_, a) => (
+                <Space>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
+                    人设
+                  </Button>
+                  {!isBuiltin && a.identifier !== primary && (
+                    <Popconfirm title={`确认删除 ${a.identifier}？`} onConfirm={() => void removeOne(a.identifier)}>
+                      <Button size="small" danger icon={<DeleteOutlined />} />
+                    </Popconfirm>
+                  )}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
 
       <Modal
         open={createOpen}
@@ -215,10 +244,7 @@ export function AgentsView(): React.ReactElement {
             <Input placeholder="如 market-analyst" />
           </Form.Item>
           <Form.Item name="description" label="职责描述" rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder="该个体负责什么（会写入其提示词模板）" />
-          </Form.Item>
-          <Form.Item name="domain" label="领域标签" initialValue="自定义">
-            <Input placeholder="如：市场域 / 产品域" />
+            <Input.TextArea rows={2} placeholder="该子个体负责什么（会写入其提示词模板）" />
           </Form.Item>
           <Form.Item name="prompt" label="职责提示词（可选；缺省按职责生成模板）">
             <Input.TextArea rows={4} placeholder={"# 名称\n\n你是 …（职责、规则、输出格式）"} />

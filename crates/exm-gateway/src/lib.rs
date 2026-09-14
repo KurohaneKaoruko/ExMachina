@@ -111,6 +111,10 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(llm_admin::routes())
         .merge(singles::routes())
         .merge(worker_hub::routes())
+        .route(
+            "/api/groups/:gid/agents/:identifier",
+            axum::routing::delete(remove_agent_from_group),
+        )
         .route("/api/auth/verify", post(verify_auth))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
@@ -486,6 +490,17 @@ async fn create_agent(State(st): State<AppState>, Json(b): Json<CreateAgentBody>
     };
     match result {
         Ok(saved) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 按组删除个体（子个体页可跨组管理，不依赖激活组）
+async fn remove_agent_from_group(
+    State(st): State<AppState>,
+    Path((gid, identifier)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match st.core.registry().remove_agent(&gid, &identifier) {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
