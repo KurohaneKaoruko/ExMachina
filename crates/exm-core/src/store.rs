@@ -165,6 +165,12 @@ impl Store {
         Ok(id)
     }
 
+    /// 节点最新回流（断点续跑回填用）
+    pub fn sync_report_of_node(&self, node_id: &str) -> Result<Option<SyncReport>> {
+        let v = self.report_for_node(node_id)?;
+        Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+    }
+
     pub fn report_for_node(&self, node_id: &str) -> Result<Option<serde_json::Value>> {
         let id: Option<serde_json::Value> = self.db.get("sync_reports_by_node", node_id)?;
         match id.and_then(|v| v.as_str().map(|s| s.to_string())) {

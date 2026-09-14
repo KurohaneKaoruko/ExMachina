@@ -854,6 +854,13 @@ pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
         let st = AppState { core: core.clone() };
         core.set_remote(worker_hub::hub(&st))?;
     }
+    // 断点续跑：上次进程中断的会话（图非终态）自动重新调度收束
+    {
+        let n = core.resume_interrupted().await;
+        if n > 0 {
+            println!("[gateway] 断点续跑：已恢复 {n} 个中断会话");
+        }
+    }
     // MCP 工具清单后台刷新（懒连接，失败仅记录；首次调用会重试）
     {
         let mcp = core.mcp();

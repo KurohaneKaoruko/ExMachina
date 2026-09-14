@@ -124,6 +124,13 @@ impl TaskGraphModel {
         self.order.iter().filter_map(|id| self.nodes.get(id).cloned()).collect()
     }
 
+    /// 回填节点回流档案 id（断点续跑重放用）
+    pub fn set_report_id(&mut self, id: &str, rid: Option<String>) {
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.sync_report_id = rid;
+        }
+    }
+
     pub fn set_status(&mut self, id: &str, status: TaskStatus) {
         if let Some(n) = self.nodes.get_mut(id) {
             n.status = status;

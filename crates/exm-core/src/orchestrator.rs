@@ -896,7 +896,7 @@ impl Orchestrator {
 
     // ---------------------------------------------------------- 收束
 
-    async fn converge(
+    pub async fn converge(
         &self,
         session_id: &str,
         plan: &OrchestratorPlan,
@@ -1012,15 +1012,15 @@ impl Orchestrator {
 
 // ---------------------------------------------------------------- 节点执行上下文
 
-struct ExecCtx {
-    orchestrator: Arc<Orchestrator>,
-    session_id: String,
-    plan: OrchestratorPlan,
-    reports: Arc<Mutex<Reports>>,
+pub struct ExecCtx {
+    pub orchestrator: Arc<Orchestrator>,
+    pub session_id: String,
+    pub plan: OrchestratorPlan,
+    pub reports: Arc<Mutex<Reports>>,
 }
 
 impl ExecCtx {
-    async fn run_node(&self, node: TaskNode) -> NodeOutcome {
+    pub async fn run_node(&self, node: TaskNode) -> NodeOutcome {
         let o = self.orchestrator.clone();
         // 上游回流快照（短暂持锁，随即释放，不跨 await）
         let snapshot: Arc<Reports> = Arc::new(self.reports.lock().await.clone());

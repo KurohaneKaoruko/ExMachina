@@ -862,3 +862,41 @@ async fn 分布式执行_工作者节点全链() {
 
     ws_task.abort();
 }
+
+/// 断点续跑：人工构造中断态图（节点全部 dispatched）→ resume_interrupted → 全终态收束
+#[tokio::test]
+async fn 断点续跑_中断会话自动收束() {
+    let _serial = serial_guard();
+    let cfg = test_config();
+    let core = Core::with_config(cfg).expect("创建 Core 失败");
+    let s = core.create_session("中断演练").unwrap();
+
+    // 先跑一轮完整任务（Mock），拿到合法图
+    core.chat(&s.id, "评估当前项目的架构风险").await.expect("首轮失败");
+    let g = core.store.latest_graph(&s.id).unwrap().expect("图缺失");
+    let done = g.nodes.iter().filter(|n| n.status == exm_core::types::TaskStatus::Done).count();
+    assert!(done >= 3);
+
+    // 构造中断态：图改回 Executing、全部节点置为 dispatched（模拟进程被杀）
+    {
+        use exm_core::types::{GraphStatus, TaskStatus};
+        let mut g2 = g.clone();
+        g2.status = GraphStatus::Executing;
+        for n in g2.nodes.iter_mut() {
+            if n.status == TaskStatus::Done {
+                n.status = TaskStatus::Dispatched;
+            }
+        }
+        core.store.save_graph(&g2).unwrap();
+    }
+
+    let resumed = core.resume_interrupted().await;
+    assert_eq!(resumed, 1, "应恢复 1 个会话");
+    let g3 = core.store.latest_graph(&s.id).unwrap().expect("续跑后图缺失");
+    assert!(
+        g3.nodes.iter().all(|n| n.status.is_terminal()),
+        "续跑后应全部终态"
+    );
+    let done3 = g3.nodes.iter().filter(|n| n.status == exm_core::types::TaskStatus::Done).count();
+    assert!(done3 >= 3, "续跑完成节点应 >= 3，实际 {done3}");
+}

@@ -250,6 +250,148 @@ impl Core {
         self.remote.read().clone()
     }
 
+    /// 断点续跑：网关重启后，把中断会话（图非终态）的剩余节点重新调度收束。
+    /// 已完成节点的回流从持久层回填；dispatched/running 重置为 ready 重跑（幂等重执行）。
+    pub async fn resume_interrupted(&self) -> usize {
+        let sessions = match self.list_sessions() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+        let mut resumed = 0usize;
+        for s in sessions {
+            let Some(mut graph) = self.store.latest_graph(&s.id).unwrap_or(None) else { continue };
+            if graph.status != crate::types::GraphStatus::Executing {
+                continue;
+            }
+            let has_pending = graph.nodes.iter().any(|n| !n.status.is_terminal());
+            if !has_pending {
+                continue;
+            }
+            match self.resume_session_graph(&s.id, &mut graph).await {
+                Ok(()) => resumed += 1,
+                Err(e) => eprintln!("[resume] 会话 {} 续跑失败：{e}", s.id),
+            }
+        }
+        resumed
+    }
+
+    async fn resume_session_graph(&self, session_id: &str, graph: &mut crate::types::TaskGraph) -> anyhow::Result<()> {
+        use crate::task::{NodeOutcome, Scheduler, TaskGraphModel};
+        use futures_util::future::BoxFuture;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        // 1) 非终态节点重置为可执行；已完成节点回流回填
+        let mut reports: crate::task::Reports = Default::default();
+        for n in graph.nodes.iter_mut() {
+            if n.status.is_terminal() {
+                if n.status == crate::types::TaskStatus::Done {
+                    if let Ok(Some(r)) = self.store.sync_report_of_node(&n.id) {
+                        reports.insert(n.id.clone(), r);
+                    }
+                }
+            } else {
+                n.status = crate::types::TaskStatus::Ready;
+                n.retry_count = n.retry_count.saturating_sub(1);
+            }
+        }
+        self.store.save_graph(graph)?;
+
+        // 2) 重建 plan 骨架（收束与账本需要）
+        let ledger = self.store.ledger_of(session_id)?;
+        let plan = crate::types::OrchestratorPlan {
+            route_level: crate::types::RouteLevel::L2,
+            playbook: None,
+            goal: ledger.task.goal.clone(),
+            boundary: crate::types::DispatchBoundary {
+                in_scope: ledger.task.constraints.clone(),
+                forbidden: ledger.task.forbidden.clone(),
+            },
+            acceptance: ledger.task.acceptance.clone(),
+            nodes: graph
+                .nodes
+                .iter()
+                .map(|n| crate::types::PlanNode {
+                    id: n.id.clone(),
+                    title: n.title.clone(),
+                    agent_identifier: n.agent_identifier.clone(),
+                    objective: n.objective.clone(),
+                    acceptance: n.acceptance.clone(),
+                    depends_on: n.depends_on.clone(),
+                    priority: n.priority.clone(),
+                })
+                .collect(),
+            final_answer: None,
+        };
+
+        // 3) 重跑调度器（执行器 = Orchestrator 的节点执行路径）；已完成节点状态回放
+        let orch = self.orchestrator();
+        let mut model = TaskGraphModel::from_plan(&plan, session_id);
+        for n in graph.nodes.iter() {
+            if n.status == crate::types::TaskStatus::Done {
+                model.set_status(&n.id, crate::types::TaskStatus::Done);
+                model.set_report_id(&n.id, n.sync_report_id.clone());
+            }
+        }
+        let reports_shared: Arc<Mutex<crate::task::Reports>> = Arc::new(Mutex::new(reports));
+        let exec = crate::orchestrator::ExecCtx {
+            orchestrator: orch.clone(),
+            session_id: session_id.to_string(),
+            plan: plan.clone(),
+            reports: reports_shared.clone(),
+        };
+        let exec = Arc::new(exec);
+        let scheduler = Scheduler::new(self.config().max_concurrency);
+        let store = self.store.clone();
+        let events = self.events.clone();
+        let sid = session_id.to_string();
+        {
+            let exec = exec.clone();
+            scheduler
+                .run(
+                    &mut model,
+                    move |node| -> BoxFuture<'static, NodeOutcome> {
+                        let exec = exec.clone();
+                        Box::pin(async move { exec.run_node(node).await })
+                    },
+                    move |g| {
+                        let _ = store.save_graph(&g.to_graph());
+                        let evt = crate::types::CoreEvent {
+                            kind: "graph.updated".into(),
+                            session_id: sid.clone(),
+                            payload: serde_json::to_value(g.to_graph()).unwrap_or(serde_json::Value::Null),
+                        };
+                        let _ = events.send(evt);
+                    },
+                )
+                .await;
+        }
+
+        // 4) 收束（复用指挥体收束路径）
+        let final_reports = reports_shared.lock().await.clone();
+        let final_text = orch.converge(session_id, &plan, &final_reports, &model).await?;
+        let statements = crate::orchestrator::text_to_statements(&final_text);
+        self.store
+            .add_message(
+                session_id,
+                crate::types::MessageRole::Orchestrator,
+                Some(orch.orch_id().as_str()),
+                statements.clone(),
+            )?;
+        let _ = self.events.send(crate::types::CoreEvent {
+            kind: "run.finished".into(),
+            session_id: session_id.to_string(),
+            payload: serde_json::json!({
+                "routeLevel": "L2",
+                "agentId": orch.orch_id(),
+                "graph": model.to_graph(),
+                "statements": statements,
+                "resumed": true,
+            }),
+        });
+        Ok(())
+    }
+
     fn rebuild_orchestrator(&self) -> anyhow::Result<()> {
         let cfg = self.config();
         let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote())?;
