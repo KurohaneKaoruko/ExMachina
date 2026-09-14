@@ -144,7 +144,7 @@ export function ChannelsView(): React.ReactElement {
             {
               title: "绑定组",
               render: (_, c) =>
-                c.group ? <Tag color="purple">{c.group}</Tag> : <Tag>激活组（跟随切换）</Tag>,
+                c.group ? <Tag color="purple">{c.group}</Tag> : <Tag>当前组（跟随对话页切换）</Tag>,
             },
             {
               title: "凭据",
@@ -230,7 +230,7 @@ Content-Type: application/json
           <Form.Item name="group" label="绑定智能体组（该账号的消息在此组执行）">
             <Select
               allowClear
-              placeholder="缺省 = 激活组（跟随切换）"
+              placeholder="缺省 = 当前组（跟随对话页切换）"
               options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
             />
           </Form.Item>

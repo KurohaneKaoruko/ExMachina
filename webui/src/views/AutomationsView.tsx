@@ -105,7 +105,7 @@ export function AutomationsView(): React.ReactElement {
               render: (_, j) =>
                 j.cron ? <Tag color="cyan">cron[{j.cron}]</Tag> : <Tag color="purple">一次性 {j.at}</Tag>,
             },
-            { title: "组", render: (_, j) => <span className="mono">{j.group ?? "(激活组)"}</span> },
+            { title: "组", render: (_, j) => <span className="mono">{j.group ?? "(当前组)"}</span> },
             {
               title: "启用",
               render: (_, j) => <Switch size="small" checked={j.enabled} onChange={(v) => void toggle(j, v)} />,
@@ -176,7 +176,7 @@ export function AutomationsView(): React.ReactElement {
               <Input placeholder="2026-09-13T09:00:00Z" />
             </Form.Item>
           </Space>
-          <Form.Item name="group" label="执行组（缺省 = 运行时激活组）" initialValue={activeGroup}>
+          <Form.Item name="group" label="执行组（缺省 = 对话页当前选中的组）" initialValue={activeGroup}>
             <Select
               allowClear
               options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}

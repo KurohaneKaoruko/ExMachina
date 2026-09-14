@@ -161,7 +161,6 @@ export function GroupsView(): React.ReactElement {
               <div className="list-row-head">
                 <b>{g.name}</b>
                 {g.builtin ? <Tag>内置</Tag> : <Tag color="purple">自定义</Tag>}
-                {g.id === activeGroup && <Tag color="cyan">激活</Tag>}
               </div>
               <div className="list-row-sub mono">{g.id}</div>
               {g.description && <div className="list-row-sub">{g.description}</div>}
