@@ -119,7 +119,7 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 export function MemoryView(): React.ReactElement {
-  const deepEnabled = useExm((s) => s.config?.memory.enabled !== false);
+  const deepEnabled = useExm((s) => s.config?.memory?.enabled !== false);
   const memoryVersion = useExm((s) => s.memoryVersion);
   const agents = useExm((s) => s.agents);
   const groups = useExm((s) => s.groups);
@@ -131,7 +131,7 @@ export function MemoryView(): React.ReactElement {
   const [kindFilter, setKindFilter] = useState<string | undefined>(undefined);
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined);
   // 语义检索目标（档案ID，或 档案ID/模型名）；空 = 仅词项召回
-  const semanticCfg = useExm((s) => s.config?.memory.semanticModel ?? "");
+  const semanticCfg = useExm((s) => s.config?.memory?.semanticModel ?? "");
   const [profiles, setProfiles] = useState<LlmProfile[]>([]);
   const [semanticDraft, setSemanticDraft] = useState(semanticCfg);
   useEffect(() => setSemanticDraft(semanticCfg), [semanticCfg]);
@@ -187,22 +187,22 @@ export function MemoryView(): React.ReactElement {
       <Row gutter={16}>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="记忆条目" value={stats?.memory.total ?? 0} />
+            <Statistic title="记忆条目" value={stats?.memory?.total ?? 0} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="群体记忆（共享）" value={stats?.memory.shared ?? 0} />
+            <Statistic title="群体记忆（共享）" value={stats?.memory?.shared ?? 0} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="个体记忆（私有）" value={stats?.memory.individual ?? 0} />
+            <Statistic title="个体记忆（私有）" value={stats?.memory?.individual ?? 0} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="固定记忆（进入 memory.md）" value={stats?.memory.pinned ?? 0} />
+            <Statistic title="固定记忆（进入 memory.md）" value={stats?.memory?.pinned ?? 0} />
           </Card>
         </Col>
       </Row>
@@ -431,7 +431,7 @@ export function MemoryView(): React.ReactElement {
 
       <Card size="small" className="memory-card" title="个体可靠性统计（自我进化反馈：选路依据）">
         <Descriptions size="small" column={1} className="memory-dbpath">
-          <Descriptions.Item label="记忆库">{stats?.memory.dbPath ?? "-"}</Descriptions.Item>
+          <Descriptions.Item label="记忆库">{stats?.memory?.dbPath ?? "-"}</Descriptions.Item>
         </Descriptions>
         <Table
           size="small"

@@ -297,7 +297,7 @@ body {
   background: var(--line);
 }
 .ant-table-thead > tr > th:last-child::after { display: none; }
-.ant-table-tbody > tr > td { border-bottom: 1px solid rgba(29, 42, 54, 0.65); }
+.ant-table-tbody > tr > td { border-bottom: 1px solid var(--line); }
 .ant-tag {
   border-radius: 2px;
   font-family: var(--mono);
@@ -569,7 +569,7 @@ body {
   align-items: center;
   gap: 6px;
   padding-bottom: 6px;
-  border-bottom: 1px dashed rgba(29, 42, 54, 0.9);
+  border-bottom: 1px dashed var(--line);
 }
 .stmt-line { margin: 4px 0; line-height: 1.75; }
 .stmt-tag { margin-right: 6px; font-family: var(--mono); }
@@ -596,7 +596,7 @@ body {
 .live-pre {
   white-space: pre-wrap; word-break: break-all;
   max-height: 260px; overflow: auto;
-  font-size: 12px; color: #9fb6c6; margin: 0;
+  font-size: 12px; color: var(--text); margin: 0;
   font-family: var(--mono);
 }
 .chat-input { display: flex; gap: 8px; padding-top: 8px; align-items: flex-end; }
@@ -640,11 +640,11 @@ body {
 .memory-card { margin-top: 16px; }
 .memory-hits { margin-top: 12px; max-height: 320px; overflow: auto; }
 .memory-reason { color: var(--muted); font-size: 12px; font-family: var(--mono); }
-.memory-body { color: #8fa6b8; font-size: 12px; }
+.memory-body { color: var(--text); font-size: 12px; }
 .memory-filters { margin-bottom: 8px; }
 .memory-dbpath { margin-bottom: 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .memory-scope-hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
-.memory-scope-label { color: #8fa6b8; font-size: 12px; margin-left: 8px; }
+.memory-scope-label { color: var(--text); font-size: 12px; margin-left: 8px; }
 
 /* ============ 人设 ============ */
 .persona-status { margin-bottom: 4px; }
@@ -823,6 +823,9 @@ body {
   align-items: start;
 }
 .skill-grid > .ant-card { height: auto; }
+/* 卡片头统一高度：避免「有无次要按钮」导致的事实行跨卡错位 */
+.model-card > .ant-card-head { min-height: 42px; }
+.model-card > .ant-card-head .ant-card-head-title { padding-block: 0; }
 .model-head {
   display: flex;
   align-items: center;
@@ -839,8 +842,8 @@ body {
 }
 .model-head .mono { flex: none; }
 .model-head .ant-tag { flex: none; }
-.model-kv { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8fa6b8; flex-wrap: wrap; }
-.model-kv + .model-kv { margin-top: 7px; padding-top: 7px; border-top: 1px dashed rgba(29, 42, 54, 0.8); }
+.model-kv { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); flex-wrap: wrap; }
+.model-kv + .model-kv { margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--line); }
 .model-kv .k {
   color: var(--muted-dim);
   min-width: 48px;
@@ -851,17 +854,23 @@ body {
   text-transform: uppercase;
 }
 .model-kv .mono { word-break: break-all; }
-.skill-line { margin-top: 8px; font-size: 12px; color: #8fa6b8; }
+/* 正常态标签：不吃 antd 的 warning/error 语义色，用中性描边表示「已就绪」 */
+.tag-ok {
+  color: var(--green) !important;
+  border-color: color-mix(in srgb, var(--green) 45%, transparent) !important;
+  background: color-mix(in srgb, var(--green) 10%, transparent) !important;
+}
+.skill-line { margin-top: 8px; font-size: 12px; color: var(--text); }
 .skill-instructions {
   margin-top: 10px;
   padding: 8px 10px;
   background: var(--accent-04);
   border-left: 2px solid var(--accent);
   font-size: 12px;
-  color: #9fb6c6;
+  color: var(--text);
   white-space: pre-wrap;
 }
-.model-line { font-family: var(--mono); font-size: 12px; color: #9fb6c6; }
+.model-line { font-family: var(--mono); font-size: 12px; color: var(--text); }
 .preset-row {
   display: flex;
   align-items: center;
@@ -879,7 +888,7 @@ body {
   align-items: baseline;
   gap: 10px;
   padding: 6px 8px 6px 12px;
-  border-bottom: 1px solid rgba(29, 42, 54, 0.6);
+  border-bottom: 1px solid var(--line);
   position: relative;
 }
 .event-row::before {
@@ -967,7 +976,7 @@ body {
   gap: 12px;
   font-size: 12px;
   padding: 5px 0;
-  border-bottom: 1px dashed rgba(29, 42, 54, 0.7);
+  border-bottom: 1px dashed var(--line);
 }
 .session-row .session-del { margin-left: auto; opacity: 0; color: var(--muted); }
 .session-row:hover .session-del { opacity: 1; }
@@ -996,7 +1005,9 @@ body {
 .list-row.active { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
 .list-row-head { display: flex; align-items: center; gap: 6px; }
 .list-row-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.group-meta-line { margin-bottom: 12px; color: var(--text); }
+.group-meta-line { margin-bottom: 12px; color: var(--text); display: flex; align-items: center; flex-wrap: wrap; gap: 4px 18px; }
+/* 元信息字段：用真实间隔替代「全角空格」这类隐形分隔 */
+.group-meta-line .meta-field { display: inline-flex; align-items: center; }
 
 /* 简易表格（组详情成员） */
 .plain-table {
@@ -1018,7 +1029,7 @@ body {
 }
 .plain-table tbody td {
   padding: 9px 10px;
-  border-bottom: 1px solid rgba(29, 42, 54, 0.65);
+  border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
 .plain-table tbody tr:hover { background: var(--accent-04); }
@@ -1118,7 +1129,7 @@ body {
   justify-content: space-between;
   gap: 24px;
   padding: 14px 0;
-  border-bottom: 1px dashed rgba(29, 42, 54, 0.8);
+  border-bottom: 1px dashed var(--line);
 }
 .cfg2-row:last-child { border-bottom: none; }
 .cfg2-name { color: var(--text); font-weight: 600; margin-bottom: 3px; font-size: 13px; }

@@ -90,6 +90,8 @@ export default function App(): React.ReactElement {
   const setLang = useLang((s) => s.setLang);
   // 登录门：null = 鉴权中；false = 未解锁；true = 已进入
   const [authed, setAuthed] = useState<boolean | null>(null);
+  /** 通道就绪 = 全局端点已配置密钥（apiKey 由服务端掩码回显，非空即已配置） */
+  const llmReady = !!config?.llm?.apiKey;
 
   useEffect(() => {
     void (async () => {
@@ -211,8 +213,9 @@ export default function App(): React.ReactElement {
         <div className="nav-footer">
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} />
           <span className="status-text">{wsConnected ? t("status.connected") : t("status.reconnecting")}</span>
-          <Tag color={config?.mock ? "warning" : "success"} className="brand-tag">
-            {config?.mock ? "MOCK" : "LINK"}
+          {/* 通道状态：是否已配置模型端点。未配置即无法推理，提示去「提供商」页补齐。 */}
+          <Tag color={llmReady ? "success" : "warning"} className="brand-tag">
+            {llmReady ? t("status.link") : t("status.unlinked")}
           </Tag>
         </div>
       </aside>

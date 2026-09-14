@@ -8,7 +8,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Badge, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin,
+  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin,
   Tag, Tooltip, message,
 } from "antd";
 import {
@@ -234,7 +234,7 @@ export function ModelsView(): React.ReactElement {
       <PageHeader
         en="PROVIDERS"
         title="提供商"
-        desc="API 端点与密钥的唯一下发处：先在这里接入模型，智能体与智能体组才能工作。智能体 / 组的默认模型在各自页面选择，未选择的跟随这里的「全局默认」。"
+        desc="接入模型端点与密钥。未单独指定模型的智能体 / 组跟随「全局默认」。"
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -263,17 +263,15 @@ export function ModelsView(): React.ReactElement {
                 className="hud model-card"
                 title={
                   <div className="model-head">
-                    {active ? <Badge status="processing" /> : null}
                     <span>{p.name}</span>
                     <span className="mono dim">{p.id}</span>
-                    {active ? <Tag color="success">全局默认</Tag> : null}
                   </div>
                 }
                 extra={
                   <Space size={4}>
                     {!active && (
                       <Tooltip title="未单独指定模型的智能体 / 组都跟随它">
-                        <Button size="small" type="primary" icon={<CheckCircleOutlined />} onClick={() => void activate(p.id)}>
+                        <Button size="small" icon={<CheckCircleOutlined />} onClick={() => void activate(p.id)}>
                           设为默认
                         </Button>
                       </Tooltip>
@@ -302,11 +300,20 @@ export function ModelsView(): React.ReactElement {
                 <div className="model-kv">
                   <span className="k">密钥</span>
                   {hasKey ? (
-                    <Tag color="warning">已配置{keyCount > 1 ? `（${keyCount} 把）` : ""}</Tag>
+                    // 已配置是正常态，用中性标签；只有缺密钥才需要警示
+                    <Tag className="tag-ok">已配置{keyCount > 1 ? `（${keyCount} 把）` : ""}</Tag>
                   ) : (
-                    <Tag color="error">未配置（对话前请补填）</Tag>
+                    <Tag color="warning">未配置（对话前请补填）</Tag>
                   )}
                   {p.fallback ? <Tag>失败回退 → {p.fallback}</Tag> : null}
+                </div>
+                <div className="model-kv">
+                  <span className="k">状态</span>
+                  {active ? (
+                    <Tag color="success">全局默认</Tag>
+                  ) : (
+                    <span className="dim">跟随全局默认</span>
+                  )}
                 </div>
               </Card>
             );

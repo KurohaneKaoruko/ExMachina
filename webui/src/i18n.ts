@@ -23,6 +23,8 @@ const DICT: Record<string, Entry> = {
   "brand.sub": ["智械体集群 // 控制台", "Agent Cluster // Console"],
   "status.connected": ["网关已连结", "Gateway connected"],
   "status.reconnecting": ["通道重连中", "Reconnecting…"],
+  "status.link": ["通道就绪", "READY"],
+  "status.unlinked": ["未接入", "NOT SET"],
   "theme.label": ["主题 [THEME]", "Theme"],
   "lang.label": ["语言 [LANGUAGE]", "Language"],
   "session.new": ["新会话", "New Session"],

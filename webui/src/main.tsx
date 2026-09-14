@@ -25,8 +25,9 @@ function Root(): React.ReactElement {
           colorBorder: "#22323f",
           colorBorderSecondary: "#182430",
           colorText: "#c9d7e2",
-          colorTextSecondary: "#8fa6b8",
-          colorTextTertiary: "#647c8f",
+          // 与 styles.css 的 --muted 保持一致（antd token 无法直接读 CSS 变量）
+          colorTextSecondary: "#6d8296",
+          colorTextTertiary: "#4a5c6c",
           colorLink: color,
           colorSuccess: "#3fd68f",
           colorWarning: "#ffb454",

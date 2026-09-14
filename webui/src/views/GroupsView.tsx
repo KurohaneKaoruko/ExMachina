@@ -197,8 +197,10 @@ export function GroupsView(): React.ReactElement {
               }
             >
               <div className="group-meta-line">
-                主智能体：<span className="mono">{meta.primary ?? "未设置"}</span>
-                　描述：{meta.description || "—"}
+                <span className="meta-field">
+                  主智能体：<span className="mono">{meta.primary ?? "未设置"}</span>
+                </span>
+                <span className="meta-field">描述：{meta.description || "—"}</span>
               </div>
               <div className="group-meta-line workspace-line">
                 工作区：
