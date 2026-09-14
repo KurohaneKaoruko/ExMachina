@@ -4,37 +4,72 @@ import { Button, Input, type InputRef } from "antd";
 import { KeyOutlined } from "@ant-design/icons";
 import { api } from "../api";
 
-/** 等高线智械体：多层轮廓缩放 + 上移偏移 = 伪 3D 浮雕 */
+/** 等高线智械体：多层轮廓缩放 + 上移偏移 = 伪 3D 浮雕；外加坐标轴与刻度环 */
 function ContourMachina(): React.ReactElement {
   const bust =
     "M120,18 C86,18 64,42 62,76 C61,96 66,112 74,124 C80,133 82,140 80,150 L76,166 C60,174 40,182 30,196 C20,210 16,228 16,244 L224,244 C224,228 220,210 210,196 C200,182 180,174 164,166 L160,150 C158,140 160,133 166,124 C174,112 179,96 178,76 C176,42 154,18 120,18 Z";
   const levels = [1.0, 0.86, 0.72, 0.58, 0.45];
+  // 刻度环：每 10° 一条刻线
+  const ticks = Array.from({ length: 72 }, (_, i) => i * 5);
   return (
-    <svg className="contour-machina" viewBox="0 0 240 260" width={230} height={250}>
+    <svg className="contour-machina" viewBox="0 0 260 280" width={248} height={268}>
       <defs>
         <clipPath id="bust-clip">
-          <path d={bust} />
+          <path d={bust} transform="translate(10,0)" />
         </clipPath>
       </defs>
-      {levels.map((s, i) => (
-        <path
-          key={i}
-          d={bust}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth={i === 0 ? 1.6 : 1}
-          opacity={0.14 + i * 0.09}
-          transform={`translate(${120 * (1 - s)}, ${140 * (1 - s) - i * 5}) scale(${s})`}
-        />
-      ))}
+
+      {/* 坐标轴：十字准星 + 端部刻度 */}
+      <g opacity="0.35" stroke="var(--accent)" strokeWidth="0.8">
+        <line x1={130} y1={4} x2={130} y2={272} strokeDasharray="2 6" />
+        <line x1={4} y1={140} x2={256} y2={140} strokeDasharray="2 6" />
+      </g>
+
+      {/* 刻度环：围绕智械体的量度刻线 */}
+      <g transform="translate(130,140)" opacity="0.5">
+        {ticks.map((deg, i) => {
+          const major = deg % 30 === 0;
+          const rad = (deg * Math.PI) / 180;
+          const r1 = 118;
+          const r2 = major ? 128 : 123;
+          return (
+            <line
+              key={i}
+              x1={Math.cos(rad) * r1}
+              y1={Math.sin(rad) * r1}
+              x2={Math.cos(rad) * r2}
+              y2={Math.sin(rad) * r2}
+              stroke="var(--accent)"
+              strokeWidth={major ? 1 : 0.6}
+              opacity={major ? 0.65 : 0.3}
+            />
+          );
+        })}
+        <circle r={118} fill="none" stroke="var(--accent)" strokeWidth="0.6" opacity="0.25" />
+        <circle r={128} fill="none" stroke="var(--accent)" strokeWidth="0.6" opacity="0.15" />
+      </g>
+
+      <g transform="translate(10,0)">
+        {levels.map((s, i) => (
+          <path
+            key={i}
+            d={bust}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth={i === 0 ? 1.6 : 1}
+            opacity={0.14 + i * 0.09}
+            transform={`translate(${120 * (1 - s)}, ${140 * (1 - s) - i * 5}) scale(${s})`}
+          />
+        ))}
+      </g>
       {/* 护目镜与传感线 */}
       <g clipPath="url(#bust-clip)">
-        <rect x={76} y={76} width={88} height={13} rx={2} fill="none" stroke="var(--accent)" strokeWidth={1.4} opacity={0.85} />
-        <line x1={120} y1={96} x2={120} y2={148} stroke="var(--accent)" strokeWidth={0.8} opacity={0.4} />
-        <line x1={92} y1={104} x2={92} y2={140} stroke="var(--accent)" strokeWidth={0.8} opacity={0.3} />
-        <line x1={148} y1={104} x2={148} y2={140} stroke="var(--accent)" strokeWidth={0.8} opacity={0.3} />
+        <rect x={86} y={76} width={88} height={13} rx={0} fill="none" stroke="var(--accent)" strokeWidth={1.4} opacity={0.85} />
+        <line x1={130} y1={96} x2={130} y2={148} stroke="var(--accent)" strokeWidth={0.8} opacity={0.4} />
+        <line x1={102} y1={104} x2={102} y2={140} stroke="var(--accent)" strokeWidth={0.8} opacity={0.3} />
+        <line x1={158} y1={104} x2={158} y2={140} stroke="var(--accent)" strokeWidth={0.8} opacity={0.3} />
         {/* 扫描线 */}
-        <line className="contour-scan" x1={10} y1={0} x2={230} y2={0} stroke="var(--accent)" strokeWidth={1.2} opacity={0.9} />
+        <line className="contour-scan" x1={0} y1={0} x2={260} y2={0} stroke="var(--accent)" strokeWidth={1.2} opacity={0.9} />
       </g>
     </svg>
   );
@@ -115,8 +150,9 @@ export function LoginView({ onUnlock }: { onUnlock: () => void }): React.ReactEl
           <span className="title-dash">-</span>
           <span className="title-main">MACHINA</span>
         </h1>
+        <div className="title-rule" />
         <div className="login-sub">
-          智械体集群 // 智械集群 <span className="mono">[SECURE ACCESS]</span>
+          智械体集群 <span className="mono">[SECURE ACCESS]</span>
         </div>
         <div className="login-box hud">
           <div className="login-label">
@@ -135,8 +171,7 @@ export function LoginView({ onUnlock }: { onUnlock: () => void }): React.ReactEl
           </Button>
           {error && <div className="login-error">{error}</div>}
         </div>
-        <div className="login-foot mono">DEUS EX MACHINA · 全连结指挥就绪</div>
-      </div>
+        <div className="login-foot mono">DEUS EX MACHINA · 全连结指挥就绪</div>      </div>
     </div>
   );
 }

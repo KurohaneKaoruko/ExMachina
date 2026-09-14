@@ -134,6 +134,8 @@ export function GroupsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="02"
+        en="GROUPS"
         title="智能体组"
         desc="组是编成与隔离的基本单位：默认组内置受保护，自定义组可按公司 / 团队架构自由组建，主智能体可在任务中扩编组内个体。"
         actions={

@@ -58,6 +58,8 @@ export function ActivityView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="13"
+        en="EVENTS"
         title="活动"
         desc="实时调度流与历史事件回放：对话执行时，这里按时间顺序滚动显示派发、回流、裁决与错误。"
         actions={

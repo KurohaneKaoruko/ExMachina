@@ -190,11 +190,11 @@ export function ChatView(): React.ReactElement {
 
   return (
     <div className="chat-shell">
-      {/* 左栏：组切换 + 会话列表 */}
+      {/* 左栏：目标切换 + 会话列表 */}
       <aside className="chat-rail">
         <div className="rail-section">
           <div className="rail-label">
-            <TeamOutlined /> 交互目标 [TARGET]
+            <span className="rail-no">01</span> 交互目标 [TARGET]
           </div>
           <Select
             value={target.mode === "single" ? `single:${target.id}` : `group:${target.id}`}
@@ -235,6 +235,9 @@ export function ChatView(): React.ReactElement {
           </div>
         )}
         <div className="rail-section grow">
+          <div className="rail-label">
+            <span className="rail-no">02</span> 会话 [SESSIONS]
+          </div>
           <Button
             block
             icon={<PlusOutlined />}
@@ -277,6 +280,25 @@ export function ChatView(): React.ReactElement {
 
       {/* 右侧：消息流 + 输入 */}
       <div className="chat-wrap">
+        <div className="console-bar">
+          <span className="page-no">01</span>
+          <span className="console-title">对话</span>
+          <span className="page-en">CHAT</span>
+          <span className="console-sep" />
+          <span className="readout">
+            <span className="k">TARGET</span>
+            <span className="v">{target.mode === "single" ? target.id : target.id}</span>
+          </span>
+          <span className="readout">
+            <span className="k">MODE</span>
+            <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span>
+          </span>
+          <span className="readout">
+            <span className="k">STATE</span>
+            <span className="v">{running ? "RUNNING" : "IDLE"}</span>
+          </span>
+          <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
+        </div>
         {!wsConnected && <Alert type="warning" message="与网关的实时通道断开，重连中…" showIcon className="ws-alert" />}
         <div className="chat-scroll">
           {messages.map((m) => (

@@ -71,6 +71,8 @@ export function AutomationsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="10"
+        en="CRON"
         title="自动化"
         desc="定时任务：网关（exm serve）常驻时每 20 秒扫描到期任务并唤醒对应智能体组执行；一次性任务触发后自动停用。"
         actions={

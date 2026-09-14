@@ -7,6 +7,7 @@ import { Button, Input, InputNumber, message, Select, Switch } from "antd";
 import { DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useT } from "../i18n";
+import { PageHeader } from "../components/PageHeader";
 import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
 
 /** 分组元数据 */
@@ -104,23 +105,29 @@ export function SettingsView(): React.ReactElement {
   };
 
   return (
-    <div className="settings2">
-      {/* 左侧分类导航 */}
-      <nav className="cfg-nav">
-        {groups.map((g) => (
-          <button
-            key={g.key}
-            className={`cfg-nav-item ${g.key === current?.key ? "on" : ""}`}
-            onClick={() => setSelected(g.key)}
-          >
-            <span className="cfg-nav-icon">{SECTIONS[g.key]?.icon ?? <SettingOutlined />}</span>
-            <span>{SECTIONS[g.key] ? t(SECTIONS[g.key]!.titleKey) : g.label}</span>
-          </button>
-        ))}
-      </nav>
-
-      {/* 右侧面板：仅当前分类 */}
-      <section className="cfg-panel">
+    <div className="pane-wrap">
+      <PageHeader
+        no="14"
+        en="CONFIG"
+        title="设置"
+        desc="运行时容量、记忆召回、命令闸门与心跳自动化的集中配置。模型接入在「提供商」页维护；此处改动保存后热生效，无需重启。"
+      />
+      <div className="settings2">
+        {/* 左侧分类导航 */}
+        <nav className="cfg-nav">
+          {groups.map((g) => (
+            <button
+              key={g.key}
+              className={`cfg-nav-item ${g.key === current?.key ? "on" : ""}`}
+              onClick={() => setSelected(g.key)}
+            >
+              <span className="cfg-nav-icon">{SECTIONS[g.key]?.icon ?? <SettingOutlined />}</span>
+              <span>{SECTIONS[g.key] ? t(SECTIONS[g.key]!.titleKey) : g.label}</span>
+            </button>
+          ))}
+        </nav>
+        {/* 右侧面板：仅当前分类 */}
+        <section className="cfg-panel">
         {current && meta ? (
           <>
             <header className="cfg-panel-head">
@@ -181,7 +188,8 @@ export function SettingsView(): React.ReactElement {
         ) : (
           <div className="pane-loading"><i /></div>
         )}
-      </section>
+        </section>
+      </div>
     </div>
   );
 }

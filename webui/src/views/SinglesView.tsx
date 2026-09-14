@@ -83,6 +83,8 @@ export function SinglesView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="04"
+        en="SOLO"
         title="独立智能体"
         desc="独立于任何组、直接对接你的单体智能体（预置 Machina 以「本机」自称）。与谁对话在「对话」页左栏切换，这里只管档案与默认模型。"
         actions={

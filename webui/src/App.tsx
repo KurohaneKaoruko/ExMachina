@@ -53,6 +53,30 @@ type ViewKey =
   | "activity"
   | "settings";
 
+/** 侧栏清单：编号仅作序号，与页头编号对应 */
+export const NAV_ITEMS: {
+  key: ViewKey;
+  no: string;
+  en: string;
+  labelKey: string;
+  icon: React.ReactNode;
+}[] = [
+  { key: "chat", no: "01", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
+  { key: "groups", no: "02", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
+  { key: "agents", no: "03", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
+  { key: "agent", no: "04", en: "SOLO", labelKey: "nav.solo", icon: <UserOutlined /> },
+  { key: "models", no: "05", en: "PROVIDERS", labelKey: "nav.providers", icon: <ApiOutlined /> },
+  { key: "skills", no: "06", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
+  { key: "graph", no: "07", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
+  { key: "ledger", no: "08", en: "LEDGER", labelKey: "nav.ledger", icon: <FundOutlined /> },
+  { key: "memory", no: "09", en: "MEMORY", labelKey: "nav.memory", icon: <DatabaseOutlined /> },
+  { key: "automations", no: "10", en: "CRON", labelKey: "nav.cron", icon: <ClockCircleOutlined /> },
+  { key: "approvals", no: "11", en: "APPROVALS", labelKey: "nav.approvals", icon: <BellOutlined /> },
+  { key: "channels", no: "12", en: "CHANNELS", labelKey: "nav.channels", icon: <CloudUploadOutlined /> },
+  { key: "activity", no: "13", en: "EVENTS", labelKey: "nav.events", icon: <FileTextOutlined /> },
+  { key: "settings", no: "14", en: "CONFIG", labelKey: "nav.settings", icon: <SettingOutlined /> },
+];
+
 export default function App(): React.ReactElement {
   const config = useExm((s) => s.config);
   const wsConnected = useExm((s) => s.wsConnected);
@@ -89,6 +113,7 @@ export default function App(): React.ReactElement {
             <span className="brand-led" />
             <span className="brand-name">EX·MACHINA</span>
           </div>
+          <div className="title-rule" style={{ marginTop: 12 }} />
           <div className="login-sub" style={{ textAlign: "center" }}>
             连结中 <span className="mono">[CONNECTING]</span>
           </div>
@@ -123,22 +148,16 @@ export default function App(): React.ReactElement {
           mode="inline"
           selectedKeys={[view]}
           className="nav-menu"
-          items={[
-            { key: "chat", icon: <MessageOutlined />, label: <><span>{t("nav.chat")}</span> <span className="label-en">[CHAT]</span></> },
-            { key: "agent", icon: <UserOutlined />, label: <><span>{t("nav.units")}</span> <span className="label-en">[UNITS]</span></> },
-            { key: "groups", icon: <TeamOutlined />, label: <><span>{t("nav.groups")}</span> <span className="label-en">[GROUPS]</span></> },
-            { key: "agents", icon: <RobotOutlined />, label: <><span>{t("nav.units")}</span> <span className="label-en">[UNITS]</span></> },
-            { key: "skills", icon: <DeploymentUnitOutlined />, label: <><span>{t("nav.skills")}</span> <span className="label-en">[SKILLS]</span></> },
-            { key: "models", icon: <ApiOutlined />, label: <><span>{t("nav.providers")}</span> <span className="label-en">[PROVIDERS]</span></> },
-            { key: "graph", icon: <ApartmentOutlined />, label: <><span>{t("nav.dag")}</span> <span className="label-en">[DAG]</span></> },
-            { key: "automations", icon: <ClockCircleOutlined />, label: <><span>{t("nav.cron")}</span> <span className="label-en">[CRON]</span></> },
-            { key: "approvals", icon: <BellOutlined />, label: <><span>{t("nav.approvals")}</span> <span className="label-en">[APPROVALS]</span></> },
-            { key: "channels", icon: <CloudUploadOutlined />, label: <><span>{t("nav.channels")}</span> <span className="label-en">[CHANNELS]</span></> },
-            { key: "ledger", icon: <FundOutlined />, label: <><span>{t("nav.ledger")}</span> <span className="label-en">[LEDGER]</span></> },
-            { key: "memory", icon: <DatabaseOutlined />, label: <><span>{t("nav.memory")}</span> <span className="label-en">[MEMORY]</span></> },
-            { key: "activity", icon: <FileTextOutlined />, label: <><span>{t("nav.events")}</span> <span className="label-en">[EVENTS]</span></> },
-            { key: "settings", icon: <SettingOutlined />, label: <><span>{t("nav.settings")}</span> <span className="label-en">[CONFIG]</span></> },
-          ]}
+          items={NAV_ITEMS.map((it) => ({
+            key: it.key,
+            icon: it.icon,
+            label: (
+              <>
+                <span className="nav-index">{it.no}</span>
+                <span>{t(it.labelKey)}</span> <span className="label-en">[{it.en}]</span>
+              </>
+            ),
+          }))}
           onClick={({ key }) => setView(key as ViewKey)}
         />
         <div className="sider-stream" />

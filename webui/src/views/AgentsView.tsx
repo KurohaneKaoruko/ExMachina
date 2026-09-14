@@ -151,6 +151,8 @@ export function AgentsView(): React.ReactElement {
   return (
     <div className="agents-wrap">
       <PageHeader
+        no="03"
+        en="UNITS"
         title="子个体"
         desc={
           isBuiltin

@@ -109,6 +109,8 @@ export function ChannelsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="12"
+        en="CHANNELS"
         title="通道"
         desc="把外部的消息平台接到某个智能体组：多平台可并存、同平台可多账号，每个账号绑定一个组，来消息即以该组上下文执行。"
         actions={

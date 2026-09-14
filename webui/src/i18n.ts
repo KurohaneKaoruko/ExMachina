@@ -8,6 +8,7 @@ type Entry = [zh: string, en: string];
 const DICT: Record<string, Entry> = {
   "nav.chat": ["对话", "Chat"],
   "nav.units": ["子个体", "Units"],
+  "nav.solo": ["独立智能体", "Solo Agents"],
   "nav.groups": ["智能体组", "Groups"],
   "nav.skills": ["技能", "Skills"],
   "nav.providers": ["提供商", "Providers"],

@@ -42,6 +42,8 @@ export function ApprovalsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="11"
+        en="APPROVALS"
         title="审批"
         desc="终端命令的拦截与放行记录：闸门档位在「设置」页 security.execApproval 控制（off / risky / always），批准后由系统代执行并留存输出。"
         actions={

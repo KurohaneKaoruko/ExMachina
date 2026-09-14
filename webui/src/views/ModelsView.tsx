@@ -217,6 +217,8 @@ export function ModelsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="05"
+        en="PROVIDERS"
         title="提供商"
         desc="API 端点与密钥的唯一下发处：先在这里接入模型，智能体与智能体组才能工作。智能体 / 组的默认模型在各自页面选择，未选择的跟随这里的「全局默认」。"
         actions={

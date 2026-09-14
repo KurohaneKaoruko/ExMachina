@@ -57,6 +57,8 @@ export function SkillsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
+        no="06"
+        en="SKILLS"
         title="技能"
         desc="技能由全体智能体共用，新增即生效：任务目标命中触发词时，对应指令自动注入被派发个体的上下文。"
         actions={
