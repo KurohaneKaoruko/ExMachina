@@ -113,6 +113,9 @@ pub struct MemoryEntry {
     pub last_accessed_at: Option<String>,
     #[serde(default)]
     pub access_count: u32,
+    /// 语义向量（混合记忆检索；None = 未嵌入，仅参与词项召回）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +287,7 @@ impl MemoryStore {
             updated_at: now,
             last_accessed_at: None,
             access_count: 0,
+            embedding: None,
         };
         self.save_entry(&entry)?;
         self.db.put(HASH_INDEX, &hash, &serde_json::json!(entry.id))?;
@@ -296,6 +300,11 @@ impl MemoryStore {
     }
 
     fn get_entry(&self, id: &str) -> Result<Option<MemoryEntry>> {
+        self.get_entry_public(id)
+    }
+
+    /// 读取条目（嵌入回填等跨模块路径用）
+    pub fn get_entry_public(&self, id: &str) -> Result<Option<MemoryEntry>> {
         self.db.get(ENTRIES, id)
     }
 
@@ -399,6 +408,36 @@ impl MemoryStore {
 
     // ---------------- 检索 ----------------
 
+    /// 回填条目语义向量（写入路径异步补嵌）
+    pub fn set_embedding(&self, id: &str, embedding: Vec<f32>) -> Result<()> {
+        let Some(mut e) = self.db.get::<MemoryEntry>(ENTRIES, id)? else {
+            return Ok(());
+        };
+        if e.embedding.is_none() {
+            e.embedding = Some(embedding);
+            let _ = self.save_entry(&e);
+        }
+        Ok(())
+    }
+
+    /// 余弦相似度（任一为空返回 None）
+    fn cosine(a: &[f32], b: &[f32]) -> Option<f64> {
+        if a.is_empty() || b.is_empty() {
+            return None;
+        }
+        let n = a.len().min(b.len());
+        let (mut dot, mut na, mut nb) = (0f64, 0f64, 0f64);
+        for i in 0..n {
+            dot += a[i] as f64 * b[i] as f64;
+            na += (a[i] as f64).powi(2);
+            nb += (b[i] as f64).powi(2);
+        }
+        if na == 0.0 || nb == 0.0 {
+            return None;
+        }
+        Some(dot / (na.sqrt() * nb.sqrt()))
+    }
+
     /// 群体记忆检索：仅共享条目（指挥体规划用，看不到任何个体私有记忆）。
     /// `group` 为 Some(gid) 时只返回「全局条目 + 该组条目」，其他组条目不可见。
     pub fn recall(
@@ -407,13 +446,14 @@ impl MemoryStore {
         limit: usize,
         scope: Option<&str>,
         group: Option<&str>,
+        qe: Option<&[f32]>,
     ) -> anyhow::Result<Vec<RecallHit>> {
-        self.recall_filtered(query, limit, scope, AgentLayer::SharedOnly, group)
+        self.recall_filtered(query, limit, scope, AgentLayer::SharedOnly, group, qe)
     }
 
     /// 全量检索（管理视角：群体 + 所有个体私有；组维度按 `group` 过滤）
-    pub fn recall_all(&self, query: &str, limit: usize, group: Option<&str>) -> anyhow::Result<Vec<RecallHit>> {
-        self.recall_filtered(query, limit, None, AgentLayer::All, group)
+    pub fn recall_all(&self, query: &str, limit: usize, group: Option<&str>, qe: Option<&[f32]>) -> anyhow::Result<Vec<RecallHit>> {
+        self.recall_filtered(query, limit, None, AgentLayer::All, group, qe)
     }
 
     /// 个体检索：该智能体的私有记忆（agent_id 匹配）+ 群体记忆，个体条目加成
@@ -423,10 +463,12 @@ impl MemoryStore {
         query: &str,
         limit: usize,
         group: Option<&str>,
+        qe: Option<&[f32]>,
     ) -> anyhow::Result<Vec<RecallHit>> {
-        self.recall_filtered(query, limit, None, AgentLayer::Agent(agent_id), group)
+        self.recall_filtered(query, limit, None, AgentLayer::Agent(agent_id), group, qe)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn recall_filtered(
         &self,
         query: &str,
@@ -434,6 +476,7 @@ impl MemoryStore {
         scope: Option<&str>,
         layer: AgentLayer<'_>,
         group: Option<&str>,
+        qe: Option<&[f32]>,
     ) -> Result<Vec<RecallHit>> {
         let q_tokens = tokens(query);
         if q_tokens.is_empty() {
@@ -453,6 +496,42 @@ impl MemoryStore {
             }
         }
         if overlap.is_empty() {
+            // 语义兜底：词项无命中但查询向量可用时，扫描已嵌入条目取相似 Top
+            if qe.is_some() {
+                let mut sem: Vec<RecallHit> = Vec::new();
+                for e in self.db.list::<MemoryEntry>(ENTRIES)?.into_iter() {
+                    if let Some(g) = group {
+                        if let Some(eg) = &e.group_id {
+                            if eg != g {
+                                continue;
+                            }
+                        }
+                    }
+                    if !matches!(layer, AgentLayer::All) {
+                        if let AgentLayer::Agent(a) = layer {
+                            if e.agent_id.as_deref().is_some_and(|x| x != a) {
+                                continue;
+                            }
+                        } else if e.agent_id.is_some() {
+                            continue; // SharedOnly
+                        }
+                    }
+                    let Some(sim) = e.embedding.as_deref().and_then(|v| Self::cosine(v, qe.unwrap())) else { continue };
+                    if sim < 0.15 {
+                        continue;
+                    }
+                    sem.push(RecallHit {
+                        entry: e,
+                        score: sim * 3.0,
+                        reasons: vec![format!("语义相似 {:.0}%", (sim * 100.0) as u32)],
+                    });
+                }
+                sem.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                sem.truncate(limit);
+                if !sem.is_empty() {
+                    return Ok(sem);
+                }
+            }
             return self.recent(limit, group);
         }
         let max_overlap = overlap.values().map(|v| v.0).fold(1.0f64, f64::max);
@@ -490,6 +569,8 @@ impl MemoryStore {
             let pinned_bonus = if entry.pinned { 0.5 } else { 0.0 };
             let layer_bonus = if individual { 0.3 } else { 0.0 };
 
+            // 混合打分：词项信号 + 语义信号（向量与查询均可用时，70/30 融合）
+            let sem = entry.embedding.as_deref().and_then(|v| qe.and_then(|q| Self::cosine(v, q)));
             let score = 3.0 * overlap_ratio
                 + 1.2 * coverage
                 + 1.5 * entry.importance
@@ -497,7 +578,8 @@ impl MemoryStore {
                 + 0.4 * usage
                 + entry.kind.boost()
                 + pinned_bonus
-                + layer_bonus;
+                + layer_bonus
+                + sem.map(|s| 2.0 * s).unwrap_or(0.0);
 
             let mut reasons = vec![
                 format!("词项覆盖 {:.0}%", coverage * 100.0),
@@ -505,6 +587,9 @@ impl MemoryStore {
                 format!("时间衰减 {:.2}", recency),
                 if individual { "个体记忆".to_string() } else { "群体记忆".to_string() },
             ];
+            if let Some(s) = sem {
+                reasons.push(format!("语义相似 {:.0}%", (s * 100.0) as u32));
+            }
             if let Some(g) = &entry.group_id {
                 reasons.push(format!("组范围 {g}"));
             }
@@ -810,7 +895,7 @@ mod tests {
         let list = store.list(None, 10).unwrap();
         assert_eq!(list.len(), 2, "去重后应只有 2 条");
 
-        let hits = store.recall("汇报风格偏好", 5, None, None).unwrap();
+        let hits = store.recall("汇报风格偏好", 5, None, None, None).unwrap();
         assert!(!hits.is_empty());
         assert!(
             hits[0].entry.title.contains("偏好"),
@@ -862,7 +947,7 @@ mod tests {
             .unwrap();
 
         // 归属者：个体 + 群体都可见，且个体条目带"个体记忆"标记
-        let hits = store.recall_for_agent("context-agent", "测试 构建", 10, None).unwrap();
+        let hits = store.recall_for_agent("context-agent", "测试 构建", 10, None, None).unwrap();
         let owners: Vec<bool> = hits.iter().map(|h| h.entry.agent_id.is_some()).collect();
         assert!(owners.contains(&true), "归属者应看到个体记忆");
         assert!(owners.contains(&false), "归属者也应看到群体记忆");
@@ -870,7 +955,7 @@ mod tests {
         assert!(ind.reasons.iter().any(|r| r == "个体记忆"));
 
         // 其他个体：只能看到群体记忆，看不到他人私有
-        let hits2 = store.recall_for_agent("scout-agent", "测试 构建", 10, None).unwrap();
+        let hits2 = store.recall_for_agent("scout-agent", "测试 构建", 10, None, None).unwrap();
         assert!(
             hits2.iter().all(|h| h.entry.agent_id.is_none()),
             "其他个体不应看到私有记忆，实际: {:?}",
@@ -878,7 +963,7 @@ mod tests {
         );
 
         // 群体检索（指挥体视角）：仅群体记忆
-        let shared = store.recall("测试 构建", 10, None, None).unwrap();
+        let shared = store.recall("测试 构建", 10, None, None, None).unwrap();
         assert!(shared.iter().all(|h| h.entry.agent_id.is_none()));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -901,14 +986,14 @@ mod tests {
             .unwrap();
 
         // A 组视角：自己的 + 全局；看不到 B 组
-        let a_hits = store.recall("教训 构建", 10, None, Some("gA")).unwrap();
+        let a_hits = store.recall("教训 构建", 10, None, Some("gA"), None).unwrap();
         let titles: Vec<&str> = a_hits.iter().map(|h| h.entry.title.as_str()).collect();
         assert!(titles.contains(&"翻译组教训"), "A 组应看到本组条目");
         assert!(titles.contains(&"全局事实"), "A 组应看到全局条目");
         assert!(!titles.contains(&"游戏组教训"), "A 组不应看到 B 组条目");
 
         // B 组视角对称
-        let b_hits = store.recall("教训 数值", 10, None, Some("gB")).unwrap();
+        let b_hits = store.recall("教训 数值", 10, None, Some("gB"), None).unwrap();
         assert!(b_hits.iter().all(|h| h.entry.group_id.as_deref() != Some("gA")));
 
         // 个体检索同样受组约束：同一 identifier 的私有记忆不跨组泄漏
@@ -916,9 +1001,9 @@ mod tests {
         draft.agent_id = Some("shared-agent".into());
         draft.group_id = Some("gA".into());
         store.remember(&draft).unwrap();
-        let in_ga = store.recall_for_agent("shared-agent", "私有教训", 10, Some("gA")).unwrap();
+        let in_ga = store.recall_for_agent("shared-agent", "私有教训", 10, Some("gA"), None).unwrap();
         assert!(in_ga.iter().any(|h| h.entry.title == "A组私有教训"));
-        let in_gb = store.recall_for_agent("shared-agent", "私有教训", 10, Some("gB")).unwrap();
+        let in_gb = store.recall_for_agent("shared-agent", "私有教训", 10, Some("gB"), None).unwrap();
         assert!(
             in_gb.iter().all(|h| h.entry.title != "A组私有教训"),
             "组外不应检索到他人组内私有记忆，实际: {:?}",

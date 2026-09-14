@@ -53,6 +53,7 @@ export function ModelsView(): React.ReactElement {
       apiKeys: (p.apiKeys ?? []).join("\\n"),
       orchModel: p.orchModel, unitModel: p.unitModel,
       fallback: p.fallback ?? "",
+      embedModel: p.embedModel ?? "",
     });
     setModal(true);
   };
@@ -84,6 +85,7 @@ export function ModelsView(): React.ReactElement {
         orchModel: v.orchModel,
         unitModel: v.unitModel,
         fallback: v.fallback || "",
+        embedModel: v.embedModel || "",
       });
       message.success(`提供商已保存：${v.name}`);
       setModal(false);
@@ -278,6 +280,13 @@ export function ModelsView(): React.ReactElement {
               <Input placeholder="deepseek-chat" />
             </Form.Item>
           </Space>
+          <Form.Item
+            name="embedModel"
+            label="嵌入模型（可选）"
+            extra="混合记忆检索用（如 text-embedding-3-small）；留空 = 仅词项召回"
+          >
+            <Input placeholder="text-embedding-3-small" />
+          </Form.Item>
           <Form.Item
             name="fallback"
             label="失败回退"

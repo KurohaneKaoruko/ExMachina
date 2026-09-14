@@ -162,6 +162,7 @@ pub fn run_model_add(
     let mut cfg = (*core.config()).clone();
     let profile = LlmProfile {
         fallback: None,
+        embed_model: None,
         id: id.trim().to_string(),
         name: name.trim().to_string(),
         base_url: base_url.trim().to_string(),

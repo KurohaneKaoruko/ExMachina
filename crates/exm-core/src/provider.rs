@@ -97,6 +97,8 @@ pub struct ModelPool {
     fallbacks: std::collections::HashMap<String, String>,
     /// 全局生效档案 id（回退链的最终兜底）
     active_id: String,
+    /// 档案嵌入模型（混合记忆检索）
+    embed_models: std::collections::HashMap<String, String>,
 }
 
 impl Default for ModelPool {
@@ -111,7 +113,22 @@ impl ModelPool {
             entries: std::collections::HashMap::new(),
             fallbacks: std::collections::HashMap::new(),
             active_id: String::new(),
+            embed_models: std::collections::HashMap::new(),
         }
+    }
+
+    /// 声明档案嵌入模型
+    pub fn set_embed_model(&mut self, id: &str, model: &str) {
+        if model.trim().is_empty() {
+            self.embed_models.remove(id);
+        } else {
+            self.embed_models.insert(id.to_string(), model.trim().to_string());
+        }
+    }
+
+    /// 档案嵌入模型（未声明返回 None）
+    pub fn profile_embed_model(&self, id: &str) -> Option<String> {
+        self.embed_models.get(id).cloned()
     }
 
     /// 全局生效档案 id（build_orchestrator 注入）
@@ -252,6 +269,10 @@ pub struct ModelChain {
 pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &'static str;
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse>;
+    /// 文本嵌入（混合记忆检索）；默认不支持，openai/azure 协议实现
+    async fn embed(&self, _model: &str, _texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        anyhow::bail!("该通道不支持嵌入")
+    }
     /// 流式：增量通过 tx 发出，最终返回完整响应
     async fn stream(
         &self,
@@ -332,6 +353,11 @@ impl OpenAiCompatibleProvider {
             "anthropic" => rb.header("anthropic-version", "2023-06-01").json(&body),
             _ => rb.json(&body),
         }
+    }
+
+    /// 嵌入用键：直接取第一把（无发起方粘性语义）
+    fn key_hint_texts(&self) -> String {
+        self.keys.first().cloned().unwrap_or_default()
     }
 
     /// 粘性选键：同 hint 稳定命中同一把；首次按 hint 散列分布（不同个体自然错开不同 Key）
@@ -622,6 +648,58 @@ struct Usage {
 
 #[async_trait]
 impl LlmProvider for OpenAiCompatibleProvider {
+    /// 文本嵌入：openai 协议走 /embeddings；azure 走 deployments/{model}/embeddings；其余不支持
+    async fn embed(&self, model: &str, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        if self.keys.is_empty() {
+            anyhow::bail!("未配置 API Key（嵌入不可用）");
+        }
+        let fmt = self.api_format.as_str();
+        if fmt != "openai" && fmt != "azure" {
+            anyhow::bail!("协议 {fmt} 暂不支持 /embeddings 端点");
+        }
+        let base = self.base_url.trim_end_matches('/');
+        let url = if fmt == "azure" {
+            format!("{base}/openai/deployments/{model}/embeddings?api-version=2024-10-21")
+        } else {
+            format!("{base}/embeddings")
+        };
+        let key = self.key_hint_texts();
+        let (name, value) = self.auth_header(&key);
+        let resp = self
+            .client
+            .post(&url)
+            .header(name, value)
+            .json(&serde_json::json!({ "model": model, "input": texts }))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("嵌入请求失败: {e}"))?;
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        if !(200..300).contains(&status) {
+            anyhow::bail!("嵌入失败 {status}: {}", body.to_string().chars().take(200).collect::<String>());
+        }
+        let mut out: Vec<(usize, Vec<f32>)> = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|d| {
+                        let idx = d.get("index").and_then(|i| i.as_u64())? as usize;
+                        let vec = d.get("embedding")?.as_array()?;
+                        let v: Vec<f32> = vec.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
+                        Some((idx, v))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort_by_key(|(i, _)| *i);
+        let vectors: Vec<Vec<f32>> = out.into_iter().map(|(_, v)| v).collect();
+        if vectors.len() != texts.len() {
+            anyhow::bail!("嵌入返回数量不符（{} / {}）", vectors.len(), texts.len());
+        }
+        Ok(vectors)
+    }
+
     fn name(&self) -> &'static str {
         match self.api_format.as_str() {
             "anthropic" => "anthropic",
@@ -813,6 +891,19 @@ impl LlmProvider for OpenAiCompatibleProvider {
 /// 确定性模拟：计划/子个体/收束三类请求各自产出合法契约产物
 pub struct MockLlmProvider;
 
+/// 确定性伪嵌入（Mock 通道）：64 维，token 哈希累加后归一——同义文本向量稳定相近
+fn mock_embedding(text: &str) -> Vec<f32> {
+    let mut v = vec![0f32; 64];
+    let chars: Vec<char> = text.chars().collect();
+    for i in 0..chars.len() {
+        let gram: String = if i + 1 < chars.len() { chars[i..i + 2].iter().collect() } else { chars[i].to_string() };
+        let h: u32 = gram.bytes().fold(2166136261u32, |a, b| a.wrapping_mul(16777619).wrapping_add(b as u32));
+        v[(h as usize) % 64] += 1.0;
+    }
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+    v.iter().map(|x| x / norm).collect()
+}
+
 #[async_trait]
 impl LlmProvider for MockLlmProvider {
     fn name(&self) -> &'static str {
@@ -821,6 +912,10 @@ impl LlmProvider for MockLlmProvider {
 
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
         Ok(ChatResponse { content: respond(&req), prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
+    }
+
+    async fn embed(&self, _model: &str, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|t| mock_embedding(t)).collect())
     }
 
     async fn stream(

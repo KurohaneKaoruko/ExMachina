@@ -35,6 +35,9 @@ pub struct LlmProfile {
     /// 失败回退：下一个档案 id（请求失败且未发出内容时切换；成环自动截断）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
+    /// 嵌入模型（混合记忆检索用；空 = 该档案不提供嵌入）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -305,6 +308,7 @@ impl ExmConfig {
                 orch_model: llm.orch_model.clone(),
                 unit_model: llm.unit_model.clone(),
                 fallback: None,
+                embed_model: None,
             });
         }
         if !llm_profiles.iter().any(|p| p.id == active_profile) {

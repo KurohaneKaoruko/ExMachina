@@ -9,6 +9,13 @@ use exm_core::Core;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
+/// 测试串行锁：Core 型测试共享仓库工作区（agents/active_group 等运行时文件），并行互踩
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn test_config() -> ExmConfig {
     let root = std::env::current_dir().unwrap().join("..").join("..");
     let mut cfg = ExmConfig::load(&root);
@@ -21,6 +28,7 @@ fn test_config() -> ExmConfig {
 
 #[test]
 fn 装载编成_数据契约完整() {
+    let _serial = serial_guard();
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     let agents = core.agents();
@@ -71,6 +79,7 @@ fn 装载编成_数据契约完整() {
 
 #[test]
 fn 自由建组_自定义集群热切换() {
+    let _serial = serial_guard();
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
 
@@ -135,6 +144,7 @@ fn 自由建组_自定义集群热切换() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn 执行审批_高危命令拦截与批准放行() {
+    let _serial = serial_guard();
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     let (events, mut rx) = tokio::sync::broadcast::channel(64);
@@ -311,6 +321,7 @@ async fn 单体智能体_目标切换与L0直答() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn 经验优化_合成_版本与重置() {
+    let _serial = serial_guard();
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     // 模拟通道确定性合成：手动触发不要求历史教训
@@ -338,6 +349,7 @@ async fn 经验优化_合成_版本与重置() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn 端到端_对话到收束全链路() {
+    let _serial = serial_guard();
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     let session = core.create_session("冒烟").expect("建会话失败");
@@ -537,6 +549,7 @@ fn 模型回退链_展开与冷却() {
 
 #[tokio::test]
 async fn 上下文压缩与collect_多轮会话语义() {
+    let _serial = serial_guard();
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
 
@@ -640,4 +653,41 @@ async fn mcp_客户端_http全链() {
     assert!(matches!(denied, Some(r) if !r.ok), "白名单外的个体应被拒绝");
     assert!(reg.tool_snapshot_for("other-agent").is_empty());
     assert_eq!(reg.tool_snapshot_for("scout-agent").len(), 1);
+}
+
+/// 混合记忆检索：词项无命中时语义兜底；词项命中时语义加成
+#[tokio::test]
+async fn 混合记忆_语义兜底与加成() {
+    use exm_core::memory::{MemoryDraft, MemoryKind, MemoryStore};
+
+    let dir = std::env::temp_dir().join(format!("exm-mem-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mem = MemoryStore::open(&dir).unwrap();
+
+    // 两条群体记忆：词项完全不含查询词（检验语义兜底）
+    let a = mem
+        .remember(&MemoryDraft::new(MemoryKind::Fact, "部署要点".to_string(), "生产环境部署前必须跑通全量验收与回滚演练".to_string()))
+        .unwrap();
+    let b = mem
+        .remember(&MemoryDraft::new(MemoryKind::Fact, "发布纪律".to_string(), "每次发版都要留好回滚路径与灰度开关".to_string()))
+        .unwrap();
+
+    // 定性向量：a 与查询同向，b 近正交
+    let qv = vec![1.0f32, 0.0, 0.0];
+    mem.set_embedding(&a.id, vec![1.0, 0.0, 0.0]).unwrap();
+    mem.set_embedding(&b.id, vec![0.0, 1.0, 0.0]).unwrap();
+
+    // 查询词与两条记忆零词项重叠：纯词项会退化为 recent；带查询向量应语义命中 a
+    let hits = mem.recall("上线之前需要注意什么仪式感的东西", 5, None, None, Some(&qv)).unwrap();
+    assert!(!hits.is_empty(), "语义兜底应命中");
+    assert_eq!(hits[0].entry.id, a.id, "最相似应为 a（同向向量）: {:?}",
+        hits.iter().map(|h| (&h.entry.title, h.score)).collect::<Vec<_>>());
+    assert!(hits[0].reasons.iter().any(|r| r.contains("语义相似")), "理由应含语义相似");
+
+    // 词项路径不受影响：查询含「部署」且带向量 → 语义加成仍排第一
+    let hits2 = mem.recall("部署 要点", 5, None, None, Some(&qv)).unwrap();
+    assert_eq!(hits2[0].entry.id, a.id);
+    // 无向量（None）：纯词项也能命中（回归）
+    let hits3 = mem.recall("部署 要点", 5, None, None, None).unwrap();
+    assert!(!hits3.is_empty() && hits3[0].entry.id == a.id);
 }

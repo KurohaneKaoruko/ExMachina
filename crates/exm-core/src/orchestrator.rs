@@ -134,6 +134,44 @@ impl Orchestrator {
         out
     }
 
+    /// 写入路径向量回填：本轮新条目批量嵌入（标题+正文），失败静默（词项召回仍可用）
+    async fn backfill_embeddings(&self, ids: &[String]) {
+        let active = self.model_pool.active_id();
+        let Some(model) = self.model_pool.profile_embed_model(&active) else { return };
+        let Some((provider, _)) = self.model_pool.entry(&active, false).map(|(p, m)| (p, m)) else { return };
+        let mut pending: Vec<(String, String)> = Vec::new();
+        for id in ids {
+            if let Ok(Some(e)) = self.memory.get_entry_public(id) {
+                if e.embedding.is_none() {
+                    pending.push((id.clone(), format!("{}\n{}", e.title, e.body)));
+                }
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+        let texts: Vec<String> = pending.iter().map(|(_, t)| t.clone()).collect();
+        match provider.embed(&model, &texts).await {
+            Ok(vectors) if vectors.len() == pending.len() => {
+                for ((id, _), v) in pending.iter().zip(vectors) {
+                    let _ = self.memory.set_embedding(id, v);
+                }
+            }
+            Ok(_) => eprintln!("[memory] 嵌入返回数量不符，跳过本轮回填"),
+            Err(e) => eprintln!("[memory] 嵌入回填失败（词项召回不受影响）: {e}"),
+        }
+    }
+
+    /// 查询嵌入（混合记忆检索）：全局生效档案声明 embedModel 时计算，否则 None（纯词项）
+    async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
+        let active = self.model_pool.active_id();
+        let provider = self.model_pool.entry(&active, false).map(|(p, _)| p)?;
+        let model = self
+            .model_pool
+            .profile_embed_model(&active)?;
+        provider.embed(&model, &[text.to_string()]).await.ok()?.into_iter().next()
+    }
+
     /// 指挥体候选链（目标提示 → 全局 → 回退链）
     fn orch_candidates(&self) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
         let start = self
@@ -391,7 +429,12 @@ impl Orchestrator {
 
         // ---- 自我进化：写入记忆（摘要/决策/证据/教训/个体统计） ----
         if self.memory_enabled {
-            self.write_memories(session_id, text, &plan, &graph, &final_reports, &statements);
+            let ids = self.write_memories(session_id, text, &plan, &graph, &final_reports, &statements);
+            // 语义向量后台回填（混合记忆检索；无嵌入模型时静默跳过）
+            if !ids.is_empty() {
+                let o = self.clone();
+                tokio::spawn(async move { o.backfill_embeddings(&ids).await; });
+            }
             // 经验优化自动触发：新教训达阈值时后台合成（docs/10 §5，只调优既有个体）
             if self.auto_adapt {
                 let mut agent_ids: Vec<String> =
@@ -425,8 +468,9 @@ impl Orchestrator {
         graph: &TaskGraphModel,
         reports: &Reports,
         statements: &[Statement],
-    ) {
+    ) -> Vec<String> {
         let mut written: Vec<serde_json::Value> = Vec::new();
+        let mut entry_ids: Vec<String> = Vec::new();
         // 组级记忆隔离：任务产物归属激活组（docs/09 §6）
         let gid = self.registry.active_group();
 
@@ -557,6 +601,7 @@ impl Orchestrator {
             "memory.written",
             serde_json::json!({ "entries": written, "pinned": pinned, "path": self.memory_md_path.display().to_string() }),
         );
+        entry_ids
     }
 
     // ------------------------------------------------- 经验优化（docs/10 §5）
@@ -746,7 +791,7 @@ impl Orchestrator {
         // ---- 记忆召回（docs/08 §5）：注入历史记忆与个体可靠性统计 ----
         let mut memory_block = String::new();
         if self.memory_enabled {
-            if let Ok(hits) = self.memory.recall(text, self.memory_recall_limit, None, Some(&self.registry.active_group())) {
+            if let Ok(hits) = self.memory.recall(text, self.memory_recall_limit, None, Some(&self.registry.active_group()), self.embed_query(text).await.as_deref()) {
                 memory_block = MemoryStore::render_prompt_block(&hits);
                 self.emit(
                     session_id,
@@ -989,7 +1034,7 @@ impl ExecCtx {
                 // 个体记忆 + 群体记忆：该个体的私有教训与共享决策/偏好（docs/08）
                 if o.memory_enabled {
                     let query = format!("{} {} {}", def.name, def.identifier, node.title);
-                    if let Ok(hits) = o.memory.recall_for_agent(&def.identifier, &query, 3, Some(&o.registry.active_group())) {
+                    if let Ok(hits) = o.memory.recall_for_agent(&def.identifier, &query, 3, Some(&o.registry.active_group()), o.embed_query(&query).await.as_deref()) {
                         if !hits.is_empty() {
                             let summary = hits
                                 .iter()

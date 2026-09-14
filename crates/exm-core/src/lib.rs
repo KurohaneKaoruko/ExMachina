@@ -106,14 +106,14 @@ impl Core {
         let cfg = self.config();
         let gid = self.registry.active_group();
         self.memory
-            .recall(query, limit.unwrap_or(cfg.memory_recall_limit), None, Some(&gid))
+            .recall(query, limit.unwrap_or(cfg.memory_recall_limit), None, Some(&gid), None)
     }
 
     /// 全量检索（管理视角：群体 + 所有个体私有；范围 = 激活组 + 全局条目）
     pub fn memory_recall_all(&self, query: &str, limit: Option<usize>) -> anyhow::Result<Vec<RecallHit>> {
         let gid = self.registry.active_group();
         self.memory
-            .recall_all(query, limit.unwrap_or(self.config().memory_recall_limit), Some(&gid))
+            .recall_all(query, limit.unwrap_or(self.config().memory_recall_limit), Some(&gid), None)
     }
 
     /// 个体检索：该智能体私有 + 群体共享（范围 = 激活组 + 全局条目）
@@ -126,7 +126,7 @@ impl Core {
         let cfg = self.config();
         let gid = self.registry.active_group();
         self.memory
-            .recall_for_agent(agent_id, query, limit.unwrap_or(cfg.memory_recall_limit), Some(&gid))
+            .recall_for_agent(agent_id, query, limit.unwrap_or(cfg.memory_recall_limit), Some(&gid), None)
     }
 
     /// 写入记忆：自动归属激活组（组内可见，其他组不可见）
@@ -527,6 +527,9 @@ pub fn build_orchestrator(
         pool.insert(p.id.clone(), profile_provider, p.orch_model.clone(), p.unit_model.clone());
         if let Some(fb) = &p.fallback {
             pool.set_fallback(&p.id, fb);
+        }
+        if let Some(em) = &p.embed_model {
+            pool.set_embed_model(&p.id, em);
         }
     }
     pool.set_active(cfg.active_profile.clone());

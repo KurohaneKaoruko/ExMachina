@@ -179,6 +179,8 @@ export interface LlmProfile {
   unitModel: string;
   /** 失败回退：下一个档案 id（请求失败且未发出内容时切换） */
   fallback?: string | null;
+  /** 嵌入模型（混合记忆检索；空 = 不提供嵌入） */
+  embedModel?: string | null;
 }
 
 export interface LlmProfilesInfo {
@@ -384,7 +386,7 @@ export const api = {
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 
   llmProfiles: () => req<LlmProfilesInfo>("/llm/profiles"),
-  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; orchModel?: string; unitModel?: string; fallback?: string }) =>
+  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; orchModel?: string; unitModel?: string; fallback?: string; embedModel?: string }) =>
     req<{ ok: boolean; id: string; mock?: boolean }>("/llm/profiles", { method: "POST", body: JSON.stringify(body) }),
   deleteLlmProfile: (id: string) => req<{ ok: boolean }>(`/llm/profiles/${id}`, { method: "DELETE" }),
   activateLlmProfile: (id: string) =>

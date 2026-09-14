@@ -27,6 +27,7 @@ fn profile_json(p: &LlmProfile) -> Value {
         "apiFormat": if p.api_format.is_empty() { "openai" } else { &p.api_format },
         "orchModel": p.orch_model, "unitModel": p.unit_model,
         "fallback": p.fallback,
+        "embedModel": p.embed_model,
     })
 }
 
@@ -61,6 +62,9 @@ pub struct LlmProfileBody {
     /// 失败回退：下一个档案 id（空串清除；缺省 = 沿用）
     #[serde(default)]
     pub fallback: Option<String>,
+    /// 嵌入模型（混合记忆检索；空 = 不提供嵌入）
+    #[serde(default)]
+    pub embed_model: Option<String>,
 }
 
 fn resolve_profile_input(
@@ -111,6 +115,11 @@ fn resolve_profile_input(
             None => existing.and_then(|e| e.fallback.clone()),
             Some(f) if f.trim().is_empty() => None,
             Some(f) => Some(f.trim().to_string()),
+        },
+        embed_model: match v.embed_model.as_deref() {
+            None => existing.and_then(|e| e.embed_model.clone()),
+            Some(m) if m.trim().is_empty() => None,
+            Some(m) => Some(m.trim().to_string()),
         },
     }
 }
@@ -232,6 +241,7 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
             orch_model: cfg.llm.orch_model.clone(),
             unit_model: cfg.llm.unit_model.clone(),
             fallback: None,
+            embed_model: None,
         }),
     };
     let Some(p) = profile else {
