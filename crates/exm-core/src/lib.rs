@@ -223,7 +223,25 @@ impl Core {
 
     /// 统一对话入口：会话级串行（运行中的后续输入排队为 followup，收束后依次处理；
     /// 排队窗内到达的多条输入由 handle_user_message 的 collect 合并为一轮）
+    /// 会话 token 估算（全部消息陈述字符 / 4）
+    pub fn session_tokens_estimate(&self, session_id: &str) -> u64 {
+        self.store
+            .list_messages(session_id, 500)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| m.statements.iter().map(|s| s.text.chars().count() as u64).sum::<u64>() / 4)
+            .sum()
+    }
+
     pub async fn chat(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        // 预算闸门：估算口径超限即拒绝新轮次（0 = 不限）
+        let budget = self.config().max_session_tokens;
+        if budget > 0 {
+            let used = self.session_tokens_estimate(session_id);
+            if used >= budget {
+                anyhow::bail!("会话 token 预算已耗尽（估算 {used} / {budget}）；请新建会话或上调 maxSessionTokens");
+            }
+        }
         let lock = {
             let mut locks = self.run_locks.lock();
             locks
@@ -538,7 +556,7 @@ impl Core {
     }
 
     /// 审批决定：批准即由系统代执行并记录输出；拒绝即关闭审批单
-    pub fn approval_decide(&self, id: &str, approve: bool) -> anyhow::Result<ApprovalRequest> {
+    pub async fn approval_decide(&self, id: &str, approve: bool) -> anyhow::Result<ApprovalRequest> {
         let mut req = self
             .store
             .get_approval(id)?
@@ -554,7 +572,7 @@ impl Core {
             return Ok(req);
         }
         let workspace = self.config().workspace_root.clone();
-        let out = crate::tools::execute_shell_command(&workspace, &req.command);
+        let out = crate::tools::execute_shell_command_timed(&workspace, &req.command, 300).await;
         req.status = if out.ok { "executed".into() } else { "failed".into() };
         let text = if out.ok { out.output } else { out.error.unwrap_or_default() };
         req.result = Some(text.chars().take(4000).collect());

@@ -96,32 +96,44 @@ fn strip_html(html: &str) -> String {
     compact
 }
 
-pub fn execute_shell_command(workspace_root: &Path, cmd: &str) -> ToolResult {
+/// 异步执行终端命令：超时强杀（kill_on_drop），不阻塞运行时线程
+pub async fn execute_shell_command_timed(workspace_root: &Path, cmd: &str, timeout_secs: u64) -> ToolResult {
     #[cfg(target_os = "windows")]
     let mut process = {
-        let mut c = std::process::Command::new("cmd");
+        let mut c = tokio::process::Command::new("cmd");
         c.args(["/C", cmd]);
         c
     };
     #[cfg(not(target_os = "windows"))]
     let mut process = {
-        let mut c = std::process::Command::new("sh");
+        let mut c = tokio::process::Command::new("sh");
         c.args(["-c", cmd]);
         c
     };
-    match process.current_dir(workspace_root).output() {
-        Ok(out) => {
+    let spawned = process
+        .current_dir(workspace_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => return ToolResult::err(format!("命令执行失败: {e}")),
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs.max(1)), child.wait_with_output()).await {
+        Err(_) => ToolResult::err(format!("命令超时（{timeout_secs}s）已终止")),
+        Ok(Err(e)) => ToolResult::err(format!("命令执行失败: {e}")),
+        Ok(Ok(out)) => {
             let text = String::from_utf8_lossy(&out.stdout).to_string();
             let err = String::from_utf8_lossy(&out.stderr).to_string();
             let mut text = text.chars().take(8000).collect::<String>();
             if !err.trim().is_empty() {
-                text.push_str("
-[stderr] ");
+                text.push_str("\n[stderr] ");
                 text.push_str(&err.chars().take(2000).collect::<String>());
             }
             ToolResult { ok: out.status.success(), output: text, error: None }
         }
-        Err(e) => ToolResult::err(format!("命令执行失败: {e}")),
     }
 }
 
@@ -312,7 +324,7 @@ impl ToolGateway {
         match tool {
             ToolName::Read => self.tool_read(args),
             ToolName::Filesystem => self.tool_fs(args),
-            ToolName::Terminal => self.tool_terminal(agent_id, args),
+            ToolName::Terminal => self.tool_terminal(agent_id, args).await,
             ToolName::WebSearch => self.tool_web_search(args),
             ToolName::WebFetch => self.tool_web_fetch(args).await,
             ToolName::AgentManage => self.tool_agent_manage(args),
@@ -507,7 +519,7 @@ impl ToolGateway {
         }
     }
 
-    fn tool_terminal(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
+    async fn tool_terminal(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
         let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
         let lowered = cmd.trim().to_lowercase();
         if !TERMINAL_ALLOW.iter().any(|p| lowered.starts_with(p)) {
@@ -526,7 +538,7 @@ impl ToolGateway {
                 return self.request_approval(agent_id, cmd);
             }
         }
-        execute_shell_command(&self.effective_root(), cmd)
+        execute_shell_command_timed(&self.effective_root(), cmd, 120).await
     }
 
     /// 命令拦截：落审批单 + 发事件，个体回流受阻等待用户决定

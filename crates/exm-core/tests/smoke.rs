@@ -19,11 +19,31 @@ fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
 fn test_config() -> ExmConfig {
     let root = std::env::current_dir().unwrap().join("..").join("..");
     let mut cfg = ExmConfig::load(&root);
-    cfg.agents_dir = root.join("agents");
+    // 编成隔离副本：复制 agents/（跳过运行时残留 groups/active_*），测试互不污染仓库工作区
+    let agents_copy = std::env::temp_dir().join(format!("exm-agents-{}", uuid::Uuid::new_v4()));
+    copy_agents_tree(&root.join("agents"), &agents_copy);
+    cfg.agents_dir = agents_copy;
     cfg.data_dir = std::env::temp_dir().join(format!("exm-test-{}", uuid::Uuid::new_v4()));
     cfg.use_mock = true;
     cfg.max_concurrency = 4;
     cfg
+}
+
+/// 复制编成树到临时目录（跳过 groups/、active_group、active_single 等运行时文件）
+fn copy_agents_tree(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap().filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "groups" || name == "active_group" || name == "active_single" || name == "singles" && false {
+            continue;
+        }
+        let target = dst.join(&name);
+        if entry.path().is_dir() {
+            copy_agents_tree(&entry.path(), &target);
+        } else {
+            let _ = std::fs::copy(entry.path(), &target);
+        }
+    }
 }
 
 #[test]
@@ -182,7 +202,7 @@ async fn 执行审批_高危命令拦截与批准放行() {
     assert_eq!(pending[0].command, "echo blocked-test");
 
     // 批准 → 系统代执行并记录结果
-    let decided = core.approval_decide(&pending[0].id, true).unwrap();
+    let decided = core.approval_decide(&pending[0].id, true).await.unwrap();
     assert!(
         matches!(decided.status.as_str(), "executed" | "failed"),
         "批准后应代执行（平台无该命令时记 failed），实际 {}",
@@ -255,7 +275,7 @@ async fn 执行审批_高危命令拦截与批准放行() {
     assert!(safe.ok, "risky 模式下非高危命令应放行");
 
     // 已处理审批单不可重复决定
-    assert!(core.approval_decide(&pending[0].id, false).is_err());
+    assert!(core.approval_decide(&pending[0].id, false).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -899,4 +919,31 @@ async fn 断点续跑_中断会话自动收束() {
     );
     let done3 = g3.nodes.iter().filter(|n| n.status == exm_core::types::TaskStatus::Done).count();
     assert!(done3 >= 3, "续跑完成节点应 >= 3，实际 {done3}");
+}
+
+/// 终端超时强杀 + 会话 token 预算闸门
+#[tokio::test]
+async fn 终端超时与会话预算() {
+    use exm_core::tools::execute_shell_command_timed;
+
+    // 挂死命令（长跑）1 秒超时强杀
+    let cmd = if cfg!(windows) { "ping -n 30 127.0.0.1" } else { "sleep 30" };
+    let root = std::env::temp_dir();
+    let started = std::time::Instant::now();
+    let r = execute_shell_command_timed(&root, cmd, 1).await;
+    assert!(!r.ok, "挂死命令应失败");
+    assert!(r.error.unwrap_or_default().contains("超时"), "应为超时错误");
+    assert!(started.elapsed().as_secs() < 10, "应快速返回而非等满 30s");
+
+    // 预算闸门：预算 1 → 首轮过后即拒绝
+    let _serial = serial_guard();
+    let mut cfg = test_config();
+    cfg.max_session_tokens = 1;
+    let core = Core::with_config(cfg).expect("创建 Core 失败");
+    let s = core.create_session("预算演练").unwrap();
+    core.chat(&s.id, "用一句话介绍你自己").await.expect("首轮应放行（预算从 0 起）");
+    assert!(core.session_tokens_estimate(&s.id) > 0, "估算应非零");
+    let second = core.chat(&s.id, "再来一轮").await;
+    assert!(second.is_err(), "超预算应拒绝");
+    assert!(second.unwrap_err().to_string().contains("预算"), "错误应含预算提示");
 }

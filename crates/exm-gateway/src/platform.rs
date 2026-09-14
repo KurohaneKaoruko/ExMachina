@@ -453,14 +453,14 @@ pub async fn list_approvals(State(st): State<AppState>, Query(q): Query<Approval
 }
 
 pub async fn approve_request(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match st.core.approval_decide(&id, true) {
+    match st.core.approval_decide(&id, true).await {
         Ok(r) => Json(serde_json::to_value(r).unwrap_or(Value::Null)).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
 
 pub async fn deny_request(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match st.core.approval_decide(&id, false) {
+    match st.core.approval_decide(&id, false).await {
         Ok(r) => Json(serde_json::to_value(r).unwrap_or(Value::Null)).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
     }

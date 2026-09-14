@@ -434,8 +434,8 @@ fn print_approval(r: &ApprovalRequest) {
     }
 }
 
-pub fn run_approval_decide(core: &Core, id: &str, approve: bool) -> anyhow::Result<()> {
-    let r = core.approval_decide(id, approve)?;
+pub async fn run_approval_decide(core: &Core, id: &str, approve: bool) -> anyhow::Result<()> {
+    let r = core.approval_decide(id, approve).await?;
     match r.status.as_str() {
         "denied" => println!("{} 审批单 {id} 已拒绝", ok("完成")),
         "executed" => {

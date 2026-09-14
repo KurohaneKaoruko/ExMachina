@@ -108,6 +108,8 @@ pub struct ExmConfig {
     pub webui_dist: PathBuf,
     pub llm: LlmConfig,
     pub max_concurrency: usize,
+    /// 会话 token 预算（估算：字符/4；0 = 不限；超出后拒绝新轮次）
+    pub max_session_tokens: u64,
     /// 记忆系统开关与参数
     pub memory_enabled: bool,
     pub memory_recall_limit: usize,
@@ -136,6 +138,8 @@ struct ConfigFile {
     llm: Option<LlmConfig>,
     #[serde(default)]
     max_concurrency: Option<usize>,
+    #[serde(default)]
+    max_session_tokens: Option<u64>,
     #[serde(default)]
     memory: Option<MemoryConfigFile>,
     #[serde(default)]
@@ -359,6 +363,7 @@ impl ExmConfig {
             webui_dist,
             llm,
             max_concurrency: file.max_concurrency.unwrap_or(4),
+            max_session_tokens: file.max_session_tokens.unwrap_or(0),
             memory_enabled: file_mem.enabled.unwrap_or(true),
             memory_recall_limit: file_mem.recall_limit.unwrap_or(5),
             memory_half_life_days: file_mem.half_life_days.unwrap_or(30.0),
@@ -377,6 +382,7 @@ impl ExmConfig {
             config_version: Some(CONFIG_VERSION),
             llm: Some(self.llm.clone()),
             max_concurrency: Some(self.max_concurrency),
+            max_session_tokens: Some(self.max_session_tokens),
             memory: Some(MemoryConfigFile {
                 enabled: Some(self.memory_enabled),
                 recall_limit: Some(self.memory_recall_limit),
@@ -494,7 +500,10 @@ pub fn config_schema() -> serde_json::Value {
                 "fields": [
                     { "key": "maxConcurrency", "label": "子个体并发数", "kind": "number",
                       "default": "4", "required": true, "min": 1, "max": 32,
-                      "help": "调度器同时执行的最大子个体数量" }
+                      "help": "调度器同时执行的最大子个体数量" },
+                    { "key": "maxSessionTokens", "label": "会话 token 预算", "kind": "number",
+                      "default": "0", "required": false, "min": 0, "max": 100000000,
+                      "help": "估算口径（字符/4）；超出后该会话拒绝新轮次；0 = 不限" }
                 ]
             },
             {

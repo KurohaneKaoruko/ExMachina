@@ -539,8 +539,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
                 ApprovalAction::List { status, limit } => {
                     platform_cmd::run_approval_list(&core, status.as_deref(), limit)
                 }
-                ApprovalAction::Approve { id } => platform_cmd::run_approval_decide(&core, &id, true),
-                ApprovalAction::Deny { id } => platform_cmd::run_approval_decide(&core, &id, false),
+                ApprovalAction::Approve { id } => platform_cmd::run_approval_decide(&core, &id, true).await,
+                ApprovalAction::Deny { id } => platform_cmd::run_approval_decide(&core, &id, false).await,
             }
         }
         Commands::Model { action } => {
