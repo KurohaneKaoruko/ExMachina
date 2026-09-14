@@ -1,6 +1,6 @@
 /**
  * 设置页：左侧分类导航 + 右侧单分类面板（一屏只看一类，杜绝堆叠杂乱）。
- * 字段定义来自后端 config_schema()；LLM 接入在「模型提供商」页维护。
+ * 字段定义来自后端 config_schema()；LLM 接入在「提供商」页维护。
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, InputNumber, message, Select, Switch } from "antd";

@@ -1,6 +1,6 @@
 # EXMACHINA 部署编排
 #   部署语言：EXM_LANG=zh（默认）| en —— en 时默认智能体提示词装载英文变体
-#   模型接入：首次启动后访问 http://localhost:4173 模型提供商 [PROVIDERS] 页配置（或挂载已有 .exmachina/config.json）
+#   模型接入：首次启动后访问 http://localhost:4173 提供商 [PROVIDERS] 页配置（或挂载已有 .exmachina/config.json）
 services:
   exmachina:
     build:

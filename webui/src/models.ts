@@ -1,4 +1,4 @@
-/** 默认模型选择工具：智能体/智能体组设置共用（选项来自「模型提供商」档案） */
+/** 默认模型选择工具：智能体/智能体组设置共用（选项来自「提供商」档案） */
 import type { LlmProfile } from "./api";
 
 export interface ModelOption {

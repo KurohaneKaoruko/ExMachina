@@ -23,6 +23,7 @@ import {
 } from "antd";
 import { DeleteOutlined, PushpinOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { api, type MemoryEntry, type MemoryStats, type RecallHit } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 
 function MdEditor(): React.ReactElement {
@@ -74,6 +75,10 @@ function MdEditor(): React.ReactElement {
 
   return (
     <div className="memory-wrap">
+      <PageHeader
+        title="记忆"
+        desc="文件记忆模式：memory.md 是唯一记忆载体，随每轮对话全文注入——适合手工维护、完全可控的长期记忆。"
+      />
       <Card
         size="small"
         title="文件记忆（memory.md）"
@@ -144,6 +149,10 @@ export function MemoryView(): React.ReactElement {
 
   return (
     <div className="memory-wrap">
+      <PageHeader
+        title="记忆"
+        desc="深层记忆模式：条目写入数据库，按词项 + 语义混合检索召回；群体记忆共享，个体记忆按智能体隔离。"
+      />
       <Row gutter={16}>
         <Col span={6}>
           <Card size="small">

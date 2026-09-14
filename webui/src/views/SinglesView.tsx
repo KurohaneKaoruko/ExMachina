@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
 import { PlusOutlined, ReloadOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
 import { api, type LlmProfile } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import { buildModelOptions, modelLabel } from "../models";
 
 interface SingleInfo {
@@ -81,21 +82,20 @@ export function SinglesView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
-            新建智能体
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
-          </Button>
-        </Space>
-      </div>
-
-      <div className="pane-hint" style={{ marginBottom: 12 }}>
-        智能体独立于任何组、直接对接你完成工作；适合单一职责的个人助理场景。默认智能体 Machina 以「本机」自称。
-        与谁对话（智能体 / 智能体组）请到「对话」页左栏切换；此处只做档案与默认模型管理。
-      </div>
+      <PageHeader
+        title="独立智能体"
+        desc="独立于任何组、直接对接你的单体智能体（预置 Machina 以「本机」自称）。与谁对话在「对话」页左栏切换，这里只管档案与默认模型。"
+        actions={
+          <>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
+              新建智能体
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
 
       <Spin spinning={loading}>
         <div className="skill-grid">
@@ -155,8 +155,8 @@ export function SinglesView(): React.ReactElement {
         width={480}
       >
         <div className="pane-hint" style={{ marginBottom: 12 }}>
-          该智能体的对话与任务将使用所选模型；选「跟随全局默认」时使用「模型提供商」页中设为全局默认的提供商。
-          提供商本身请到「模型提供商」页维护。
+          该智能体的对话与任务将使用所选模型；选「跟随全局默认」时使用「提供商」页中设为全局默认的提供商。
+          提供商本身请到「提供商」页维护。
         </div>
         <Select
           value={modelDraft}

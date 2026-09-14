@@ -1,10 +1,11 @@
 /** 通道网关：多平台多账号接入（webhook / telegram），每个账号可绑定不同智能体组 */
 import React, { useCallback, useEffect, useState } from "react";
-import {
+import { Collapse,
   Button, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message,
 } from "antd";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type Channel } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 
 export function ChannelsView(): React.ReactElement {
@@ -107,19 +108,20 @@ export function ChannelsView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            接入账号
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
-          </Button>
-          <span className="pane-hint">
-            多平台可并存、同平台可多账号；每个账号绑定一个智能体组（绑定组的消息在该组上下文执行）。
-          </span>
-        </Space>
-      </div>
+      <PageHeader
+        title="通道"
+        desc="把外部的消息平台接到某个智能体组：多平台可并存、同平台可多账号，每个账号绑定一个组，来消息即以该组上下文执行。"
+        actions={
+          <>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              接入账号
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
 
       <Spin spinning={loading}>
         <Table<Channel>
@@ -207,11 +209,6 @@ Content-Type: application/json
         okText="保存"
       >
         <Form form={form} layout="vertical">
-          {!editing && (
-            <Form.Item name="id" label="通道 ID" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}>
-              <Input placeholder="如 tg-main" />
-            </Form.Item>
-          )}
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
             <Select
               disabled={editing !== null}
@@ -224,16 +221,11 @@ Content-Type: application/json
               onChange={(v) => form.setFieldsValue({ token: undefined, secret: undefined })}
             />
           </Form.Item>
-          <Form.Item name="account" label="账号备注（同平台多账号时区分用途）">
-            <Input placeholder="如 主号 / 客服号" />
-          </Form.Item>
-          <Form.Item name="group" label="绑定智能体组（该账号的消息在此组执行）">
-            <Select
-              allowClear
-              placeholder="缺省 = 当前组（跟随对话页切换）"
-              options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
-            />
-          </Form.Item>
+          {!editing && (
+            <Form.Item name="id" label="通道 ID" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}>
+              <Input placeholder="如 tg-main" />
+            </Form.Item>
+          )}
           <Form.Item noStyle shouldUpdate={(a, b) => a.platform !== b.platform}>
             {({ getFieldValue }) =>
               getFieldValue("platform") === "telegram" ? (
@@ -252,16 +244,41 @@ Content-Type: application/json
               )
             }
           </Form.Item>
-          <Form.Item
-          name="allowedChats"
-          label="会话白名单（可选，Telegram）"
-          extra="允许交互的 chat id，逗号分隔；留空 = 不限。防陌生人滥用机器人"
-        >
-          <Input placeholder="如 123456789, 987654321" />
-        </Form.Item>
-        <Form.Item name="replyWebhook" label="出站回调 URL（可选，webhook 平台）">
-            <Input placeholder="运行结束后 POST 结果" />
+          <Form.Item name="group" label="绑定智能体组（该账号的消息在此组执行）">
+            <Select
+              allowClear
+              placeholder="缺省 = 当前组（跟随对话页切换）"
+              options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
+            />
           </Form.Item>
+
+          <Collapse
+            ghost
+            className="form-advanced"
+            items={[
+              {
+                key: "adv",
+                label: "高级设置（备注 / 会话白名单 / 出站回调）",
+                children: (
+                  <>
+                    <Form.Item name="account" label="账号备注（同平台多账号时区分用途）">
+                      <Input placeholder="如 主号 / 客服号" />
+                    </Form.Item>
+                    <Form.Item
+                      name="allowedChats"
+                      label="会话白名单（Telegram）"
+                      extra="允许交互的 chat id，逗号分隔；留空 = 不限，可防陌生人滥用机器人"
+                    >
+                      <Input placeholder="如 123456789, 987654321" />
+                    </Form.Item>
+                    <Form.Item name="replyWebhook" label="出站回调 URL（webhook 平台）">
+                      <Input placeholder="运行结束后 POST 结果" />
+                    </Form.Item>
+                  </>
+                ),
+              },
+            ]}
+          />
         </Form>
       </Modal>
     </div>

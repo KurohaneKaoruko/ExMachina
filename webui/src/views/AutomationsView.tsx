@@ -1,8 +1,9 @@
 /** 自动化管理：定时任务（cron / 一次性）的创建、启停、手动执行与运行记录 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message } from "antd";
+import { Segmented, Collapse, Button, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message } from "antd";
 import { CaretRightOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type CronJob, type CronRun } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 
 export function AutomationsView(): React.ReactElement {
@@ -29,16 +30,13 @@ export function AutomationsView(): React.ReactElement {
 
   const submit = async () => {
     const v = await form.validateFields();
-    if (!v.cron && !v.at) {
-      message.error("需要 cron 表达式或一次性时间");
-      return;
-    }
+    const oneOff = v.mode === "at";
     try {
       await api.createCron({
         name: v.name,
         prompt: v.prompt,
-        cron: v.cron || undefined,
-        at: v.at || undefined,
+        cron: oneOff ? undefined : (v.cron as string | undefined),
+        at: oneOff ? (v.at as string | undefined) : undefined,
         group: v.group || undefined,
         sessionTitle: v.sessionTitle || undefined,
       });
@@ -72,17 +70,20 @@ export function AutomationsView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
-            新建任务
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
-          </Button>
-          <span className="pane-hint">网关（exm serve）常驻时每 20 秒扫描到期任务；一次性任务触发后自动停用。</span>
-        </Space>
-      </div>
+      <PageHeader
+        title="自动化"
+        desc="定时任务：网关（exm serve）常驻时每 20 秒扫描到期任务并唤醒对应智能体组执行；一次性任务触发后自动停用。"
+        actions={
+          <>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
+              新建任务
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
       <Spin spinning={loading}>
         <Table<CronJob>
           size="small"
@@ -157,34 +158,65 @@ export function AutomationsView(): React.ReactElement {
       </Drawer>
 
       <Modal open={modal} title="新建定时任务" onCancel={() => setModal(false)} onOk={() => void submit()} okText="创建">
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" initialValues={{ mode: "cron" }}>
           <Form.Item name="name" label="任务名" rules={[{ required: true }]}>
             <Input placeholder="如：每日巡检" />
           </Form.Item>
           <Form.Item name="prompt" label="提示词（到期注入指挥体）" rules={[{ required: true }]}>
             <Input.TextArea rows={3} placeholder="巡检任务账与风险账并给出摘要" />
           </Form.Item>
-          <Space style={{ display: "flex" }} align="start">
-            <Form.Item
-              name="cron"
-              label="Cron（五段：分 时 日 月 周）"
-              rules={[{ pattern: /^(\S+\s+){4}\S+$/, message: "须为五段表达式" }]}
-            >
-              <Input placeholder="0 9 * * *" />
-            </Form.Item>
-            <Form.Item name="at" label="或一次性时间（ISO8601）">
-              <Input placeholder="2026-09-13T09:00:00Z" />
-            </Form.Item>
-          </Space>
-          <Form.Item name="group" label="执行组（缺省 = 对话页当前选中的组）" initialValue={activeGroup}>
+          <Form.Item name="mode" label="触发方式">
+            <Segmented
+              options={[
+                { value: "cron", label: "周期（Cron）" },
+                { value: "at", label: "一次性时间" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(a, b) => a.mode !== b.mode}>
+            {({ getFieldValue }) =>
+              getFieldValue("mode") === "at" ? (
+                <Form.Item name="at" label="执行时间（ISO8601）" rules={[{ required: true }]}>
+                  <Input placeholder="2026-09-13T09:00:00Z" />
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name="cron"
+                  label="Cron（五段：分 时 日 月 周）"
+                  rules={[{ required: true }, { pattern: /^(\S+\s+){4}\S+$/, message: "须为五段表达式" }]}
+                >
+                  <Input placeholder="0 9 * * *" />
+                </Form.Item>
+              )
+            }
+          </Form.Item>
+          <Form.Item name="group" label="执行组" initialValue={activeGroup}>
             <Select
               allowClear
+              placeholder="缺省 = 对话页当前选中的组"
               options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
             />
           </Form.Item>
-          <Form.Item name="sessionTitle" label="会话标题（复用同名会话，可选）">
-            <Input placeholder="留空 = job-<id>" />
-          </Form.Item>
+
+          <Collapse
+            ghost
+            className="form-advanced"
+            items={[
+              {
+                key: "adv",
+                label: "高级设置（会话标题）",
+                children: (
+                  <Form.Item
+                    name="sessionTitle"
+                    label="会话标题"
+                    extra="复用同名会话持续累积上下文；留空则每次新建 job-<id> 会话"
+                  >
+                    <Input placeholder="如 每日巡检" />
+                  </Form.Item>
+                ),
+              },
+            ]}
+          />
         </Form>
       </Modal>
     </div>

@@ -1010,7 +1010,7 @@ impl UnconfiguredProvider {
 
     fn hint(&self) -> String {
         format!(
-            "模型通道未配置（{}）：请在「模型提供商」页填写端点与 API Key，\
+            "模型通道未配置（{}）：请在「提供商」页填写端点与 API Key，\
              或执行 `exm model add <id> --base-url <url> --api-key <key> --orch-model <m> --unit-model <m>` 后 `exm model use <id>`。",
             self.label
         )

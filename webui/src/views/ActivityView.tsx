@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Button, Card, Empty, Select, Space, Spin, Tag } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { api, type StoredEvent } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 
 function describe(e: StoredEvent): { tag: string; color: string; text: string } {
@@ -56,21 +57,25 @@ export function ActivityView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Select
-            showSearch
-            value={sid || undefined}
-            placeholder="选择会话"
-            style={{ minWidth: 280 }}
-            onChange={(v) => setSid(v)}
-            options={sessions.map((s) => ({ value: s.id, label: `${s.title}（${s.id.slice(0, 8)}…）` }))}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => void load(sid)}>
-            刷新
-          </Button>
-        </Space>
-      </div>
+      <PageHeader
+        title="活动"
+        desc="实时调度流与历史事件回放：对话执行时，这里按时间顺序滚动显示派发、回流、裁决与错误。"
+        actions={
+          <>
+            <Select
+              showSearch
+              value={sid || undefined}
+              placeholder="选择会话"
+              style={{ minWidth: 280 }}
+              onChange={(v) => setSid(v)}
+              options={sessions.map((s) => ({ value: s.id, label: `${s.title}（${s.id.slice(0, 8)}…）` }))}
+            />
+            <Button icon={<ReloadOutlined />} onClick={() => void load(sid)}>
+              刷新
+            </Button>
+          </>
+        }
+      />
 
       <Card size="small" className="hud activity-live" title="实时调度 [LIVE · WS]">
         {timeline.length === 0 ? (

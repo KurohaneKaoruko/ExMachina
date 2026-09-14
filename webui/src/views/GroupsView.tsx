@@ -5,6 +5,7 @@ import {
 } from "antd";
 import { PlusOutlined, UsergroupDeleteOutlined } from "@ant-design/icons";
 import { api, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
 import { buildModelOptions } from "../models";
 import { useExm } from "../store";
@@ -132,22 +133,25 @@ export function GroupsView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
-            新建组
-          </Button>
-          
-          <Button
-            danger
-            icon={<UsergroupDeleteOutlined />}
-            disabled={!meta || meta.builtin || meta.id === activeGroup}
-            onClick={() => meta && void doDeleteGroup(meta.id)}
-          >
-            删除组
-          </Button>
-        </Space>
-      </div>
+      <PageHeader
+        title="智能体组"
+        desc="组是编成与隔离的基本单位：默认组内置受保护，自定义组可按公司 / 团队架构自由组建，主智能体可在任务中扩编组内个体。"
+        actions={
+          <>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
+              新建组
+            </Button>
+            <Button
+              danger
+              icon={<UsergroupDeleteOutlined />}
+              disabled={!meta || meta.builtin || meta.id === activeGroup}
+              onClick={() => meta && void doDeleteGroup(meta.id)}
+            >
+              删除组
+            </Button>
+          </>
+        }
+      />
 
       <div className="pane-body groups-layout">
         {/* 组列表 */}
@@ -244,7 +248,7 @@ export function GroupsView(): React.ReactElement {
                 >
                   保存
                 </Button>
-                <span className="dim">未单独选择的个体/组将跟随「模型提供商」页的全局默认</span>
+                <span className="dim">未单独选择的个体/组将跟随「提供商」页的全局默认</span>
               </div>
               {overview && (
                 <div className="overview-chips">

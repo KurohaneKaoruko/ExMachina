@@ -196,7 +196,7 @@ cargo run -p exm-cli --release --bin exm -- agents
 | `tasks <sessionId>` | 会话任务图 |
 | `serve [--port]` | 起网关（REST + WS + WebUI） |
 | `worker --url <ws://hub:4173/worker>` | 以本机算力接入中心网关（边缘执行节点） |
-| `model list/add/use/remove/test` | 模型提供商档案（`use` 设全局默认，热生效） |
+| `model list/add/use/remove/test` | 提供商档案（`use` 设全局默认，热生效） |
 | `group list/create/switch/info/delete/export/import` | 智能体组：组建、切换、导入导出组包 |
 | `agent create/remove/set-primary` | 组内个体管理（首个个体自动成为主智能体） |
 | `agent optimize/adaptation/reset-adaptation` | 经验优化：教训提炼为个体行为改进要点 |
@@ -224,7 +224,7 @@ exm model test deepseek     # 连通测试（真实发一条极短请求）
 
 - **逐级默认模型**：个体 `modelHint` → 所属组 `model` → 全局生效档案；提示格式 `档案ID` 或 `档案ID/模型名`。
 - **多 Key 池**：档案内多把 Key 粘性负载，仅限额类失败时切换；**失败回退链**由 `fallback` 声明。
-- **未配置模型时**：系统不会用任何"模拟输出"顶上——CLI 与 WebUI 会明确说明"模型通道未配置"并指向「模型提供商」页。
+- **未配置模型时**：系统不会用任何"模拟输出"顶上——CLI 与 WebUI 会明确说明"模型通道未配置"并指向「提供商」页。
 
 ## 智能体组
 
@@ -279,7 +279,7 @@ exm agent reset-adaptation <identifier>              # 重置
 | 对话 [CHAT] | 主交互面：切换交互目标（组 / 智能体）、实时流式输出、任务时间线、语音输入与朗读 |
 | 智能体 / 智能体组 | 独立智能体与组的管理：编成、主智能体、组工作区、默认模型 |
 | 个体 [UNITS] | 激活组编成清单、人设可视化编辑、经验优化 |
-| 模型提供商 [PROVIDERS] | 端点与密钥唯一下发处：多档案、Key 池、连通测试、全局默认 |
+| 提供商 [PROVIDERS] | 端点与密钥唯一下发处：多档案、Key 池、连通测试、全局默认 |
 | 任务图 [DAG] / 三账 [LEDGER] | 任务 DAG 可视化 / 任务账·证据账·风险账 |
 | 记忆 [MEMORY] / 事件 [EVENTS] | 记忆检索与治理 / 事件溯源回放 |
 | 技能 / 自动化 / 审批 / 通道 | 技能包、定时任务、命令审批、Telegram 与 Webhook 通道 |
@@ -300,7 +300,7 @@ npm run build:webui                     # WebUI 构建（tsc + vite）
 
 | 文档 | 内容 |
 |------|------|
-| [docs/安装指南.md](./docs/安装指南.md) | 环境要求、安装步骤、模型提供商与密钥配置、访问密钥、Docker |
+| [docs/安装指南.md](./docs/安装指南.md) | 环境要求、安装步骤、提供商与密钥配置、访问密钥、Docker |
 | [docs/使用指南.md](./docs/使用指南.md) | CLI 全命令与 WebUI 全面板手册、典型工作流 |
 | [docs/架构与设计.md](./docs/架构与设计.md) | 设计理念、分层架构、核心机制（调度 / 契约回流 / 三账 / 记忆 / 模型解析） |
 | [docs/协议与契约.md](./docs/协议与契约.md) | 语言规范、核心实体 schema、编排契约、REST/WS API、存储布局、扩展点 |

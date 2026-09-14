@@ -442,7 +442,7 @@ export const api = {
   activateLlmProfile: (id: string) =>
     req<{ ok: boolean; active: string; mock: boolean }>("/llm/active", { method: "PUT", body: JSON.stringify({ id }) }),
   testLlmProfile: (id?: string) =>
-    req<{ ok: boolean; mock?: boolean; status?: number; snippet?: string; message?: string; error?: string }>("/llm/test", {
+    req<{ ok: boolean; mock?: boolean; configured?: boolean; status?: number; snippet?: string; message?: string; error?: string }>("/llm/test", {
       method: "POST",
       body: JSON.stringify(id ? { id } : {}),
     }),

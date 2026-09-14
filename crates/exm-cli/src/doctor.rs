@@ -141,7 +141,7 @@ pub fn run_doctor(workspace_root: &Path) -> anyhow::Result<()> {
             Err(format!("测试替身通道（EXM_LLM_MOCK=1）{profile_note}"))
         } else if !configured {
             Err(format!(
-                "未配置模型提供商 —— 请在「模型提供商」页填写端点与 API Key{profile_note}"
+                "未配置提供商 —— 请在「提供商」页填写端点与 API Key{profile_note}"
             ))
         } else {
             match crate::install::probe_llm(&cfg) {

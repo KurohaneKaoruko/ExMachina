@@ -1011,7 +1011,7 @@ pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
             if configured {
                 format!("{}（{}）", if c.active_profile.is_empty() { "全局通道" } else { c.active_profile.as_str() }, c.llm.base_url)
             } else {
-                "未配置 —— 请在「模型提供商」页填写端点与 API Key".to_string()
+                "未配置 —— 请在「提供商」页填写端点与 API Key".to_string()
             }
         }
     );

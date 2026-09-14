@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Button, Empty, Segmented, Space, Spin, Table, Tag, message } from "antd";
 import { CheckOutlined, CloseOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type ApprovalRequest } from "../api";
+import { PageHeader } from "../components/PageHeader";
 
 export function ApprovalsView(): React.ReactElement {
   const [status, setStatus] = useState<string>("pending");
@@ -40,24 +41,25 @@ export function ApprovalsView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Segmented
-            value={status}
-            onChange={(v) => setStatus(v as string)}
-            options={[
-              { value: "pending", label: "待审批" },
-              { value: "all", label: "全部" },
-            ]}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
-          </Button>
-          <span className="pane-hint">
-            闸门由设置页 security.execApproval 控制（off / risky / always）；批准后由系统代执行并记录输出。
-          </span>
-        </Space>
-      </div>
+      <PageHeader
+        title="审批"
+        desc="终端命令的拦截与放行记录：闸门档位在「设置」页 security.execApproval 控制（off / risky / always），批准后由系统代执行并留存输出。"
+        actions={
+          <>
+            <Segmented
+              value={status}
+              onChange={(v) => setStatus(v as string)}
+              options={[
+                { value: "pending", label: "待审批" },
+                { value: "all", label: "全部" },
+              ]}
+            />
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
       <Spin spinning={loading}>
         <Table<ApprovalRequest>
           size="small"

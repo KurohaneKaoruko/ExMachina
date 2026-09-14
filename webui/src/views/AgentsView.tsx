@@ -15,6 +15,7 @@ import {
 } from "antd";
 import { DeleteOutlined, EditOutlined, PlusOutlined, UndoOutlined } from "@ant-design/icons";
 import { api, type PersonaInfo } from "../api";
+import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 import type { AgentDefinition } from "../types";
 
@@ -149,25 +150,29 @@ export function AgentsView(): React.ReactElement {
 
   return (
     <div className="agents-wrap">
-      <Space className="agents-toolbar" align="center">
-        <span>
-          智能体组：
-          <Select
-            style={{ minWidth: 200 }}
-            value={gid || undefined}
-            onChange={(v) => setGid(v)}
-            options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
-          />
-        </span>
-        {!isBuiltin && (
-          <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建子个体
-          </Button>
-        )}
-        {isBuiltin && (
-          <span className="persona-hint">内置组编成受保护；自定义集群请新建组</span>
-        )}
-      </Space>
+      <PageHeader
+        title="子个体"
+        desc={
+          isBuiltin
+            ? "当前查看内置组的编成（受保护，不可增删）；人设与经验优化可在此调整。"
+            : "当前查看自定义组的编成：可新建 / 删除个体，并调整人设与经验优化。"
+        }
+        actions={
+          <>
+            <Select
+              style={{ minWidth: 200 }}
+              value={gid || undefined}
+              onChange={(v) => setGid(v)}
+              options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
+            />
+            {!isBuiltin && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                新建子个体
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <Card size="small" className="agents-group">
         <Table

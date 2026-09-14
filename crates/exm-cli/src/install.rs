@@ -52,7 +52,7 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     // 2) 模型接入
     let mut cfg = ExmConfig::load(workspace_root);
     let base_url = ask("LLM Base URL（OpenAI 兼容）", &cfg.llm.base_url);
-    let api_key = ask("API Key（可留空，稍后在「模型提供商」页补配）", "");
+    let api_key = ask("API Key（可留空，稍后在「提供商」页补配）", "");
     let orch_model = ask("指挥体模型", &cfg.llm.orch_model);
     let unit_model = ask("子个体模型", &cfg.llm.unit_model);
     let concurrency = ask("子个体并发数", &cfg.max_concurrency.to_string())
@@ -88,7 +88,7 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     if configured && !cfg.use_mock {
         probe = match probe_llm(&cfg) {
             Ok(msg) => ok(format!("通过：{msg}")),
-            Err(e) => warn(format!("未通过（{e}）—— 可在「模型提供商」页或 config.json 修正")),
+            Err(e) => warn(format!("未通过（{e}）—— 可在「提供商」页或 config.json 修正")),
         };
     }
 
@@ -104,7 +104,7 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
         println!();
         println!("{}", warn("注意：尚未配置模型——对话前请先完成模型接入（下列任一步）"));
         println!("  {}  {}", dim("·"), "exm model add <id> --base-url <url> --api-key <key> --orch-model <m> --unit-model <m>".cyan());
-        println!("  {}  {}", dim("·"), "exm serve  # 打开「模型提供商」页图形化配置".cyan());
+        println!("  {}  {}", dim("·"), "exm serve  # 打开「提供商」页图形化配置".cyan());
     }
     println!();
     println!("{}", "下一步".bold().to_string());

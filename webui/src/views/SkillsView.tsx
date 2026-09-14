@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Space, Spin, Tag, message } from "antd";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type SkillDef } from "../api";
+import { PageHeader } from "../components/PageHeader";
 
 export function SkillsView(): React.ReactElement {
   const [skills, setSkills] = useState<SkillDef[]>([]);
@@ -55,19 +56,20 @@ export function SkillsView(): React.ReactElement {
 
   return (
     <div className="pane-wrap">
-      <div className="pane-toolbar">
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
-            新建技能
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-            刷新
-          </Button>
-          <span className="pane-hint">
-            技能全体组共用（动态加载，新增即生效）；任务目标命中触发词时，指令自动注入相关个体的派发。
-          </span>
-        </Space>
-      </div>
+      <PageHeader
+        title="技能"
+        desc="技能由全体智能体共用，新增即生效：任务目标命中触发词时，对应指令自动注入被派发个体的上下文。"
+        actions={
+          <>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
+              新建技能
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
       <Spin spinning={loading}>
         <div className="skill-grid">
           {skills.map((s) => (

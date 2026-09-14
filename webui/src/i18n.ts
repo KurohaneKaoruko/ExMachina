@@ -10,7 +10,7 @@ const DICT: Record<string, Entry> = {
   "nav.units": ["子个体", "Units"],
   "nav.groups": ["智能体组", "Groups"],
   "nav.skills": ["技能", "Skills"],
-  "nav.providers": ["模型提供商", "Providers"],
+  "nav.providers": ["提供商", "Providers"],
   "nav.dag": ["任务图", "Task Graph"],
   "nav.cron": ["自动化", "Automations"],
   "nav.approvals": ["审批", "Approvals"],
@@ -27,7 +27,7 @@ const DICT: Record<string, Entry> = {
   "session.new": ["新会话", "New Session"],
   "settings.title": ["设置", "Settings"],
   "settings.sub": [
-    "模型接入在「模型提供商」页维护",
+    "模型接入在「提供商」页维护",
     "Model access lives on the Providers page",
   ],
   "settings.save": ["保存全部", "Save All"],

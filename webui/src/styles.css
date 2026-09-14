@@ -445,6 +445,55 @@ body {
 .mono { font-family: var(--mono); }
 .dim { color: var(--muted); }
 
+/* 统一页头：标题 / 说明 / 操作区 */
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line, rgba(120, 160, 180, 0.18));
+}
+.page-head-main { min-width: 0; }
+.page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+.page-desc {
+  margin: 6px 0 0;
+  max-width: 720px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.page-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+/* 表单：分组标题与字段提示 */
+.form-section {
+  margin: 4px 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.form-section::before { content: "// "; font-family: var(--mono); opacity: 0.7; }
+.form-advanced { margin-top: 4px; }
+.form-advanced .ant-collapse-header { font-size: 12px; color: var(--muted); }
+.form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+
+/* 提供商卡片 */
+.model-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.model-kv { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8fa6b8; }
+.model-kv + .model-kv { margin-top: 6px; }
+.model-kv .k { color: var(--muted); min-width: 56px; }
+
+/* 设置项分组（模态内小标题） */
+.settings-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
+
 /* 对话页：内嵌会话栏 */
 .chat-shell { display: flex; gap: 16px; height: calc(100vh - 32px); max-width: 1200px; margin: 0 auto; }
 .chat-rail {
