@@ -114,7 +114,7 @@ export function SettingsView(): React.ReactElement {
             onClick={() => setSelected(g.key)}
           >
             <span className="cfg-nav-icon">{SECTIONS[g.key]?.icon ?? <SettingOutlined />}</span>
-            <span>{SECTIONS[g.key]?.title ?? g.label}</span>
+            <span>{SECTIONS[g.key] ? t(SECTIONS[g.key]!.titleKey) : g.label}</span>
           </button>
         ))}
       </nav>
@@ -124,8 +124,8 @@ export function SettingsView(): React.ReactElement {
         {current && meta ? (
           <>
             <header className="cfg-panel-head">
-              <h3>{meta.title}</h3>
-              <p>{meta.desc}。改动保存后热生效，无需重启。</p>
+              <h3>{t(meta.titleKey)}</h3>
+              <p>{t(meta.descKey)}。改动保存后热生效，无需重启。</p>
             </header>
             <div className="cfg-list">
               {current.fields.map((f) => {
@@ -173,7 +173,7 @@ export function SettingsView(): React.ReactElement {
             </div>
             <div className="cfg2-foot">
               <Button type="primary" loading={saving} onClick={save}>
-                保存{meta.title}
+                保存{t(meta.titleKey)}
               </Button>
               <span className="dim">保存后热生效，无需重启</span>
             </div>
