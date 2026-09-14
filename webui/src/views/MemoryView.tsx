@@ -38,7 +38,7 @@ function MdEditor(): React.ReactElement {
         const resp = await fetch("/api/memory/md", {
           headers: key ? { "X-Auth-Key": key } : {},
         });
-        const data = (await resp.json()) as { content: string; path: string };
+        const data = (await resp.json()) as { content: string; path: string; deepEnabled?: boolean };
         setContent(data.content);
         setPath(data.path);
       } catch (e) {
@@ -51,13 +51,20 @@ function MdEditor(): React.ReactElement {
     setSaving(true);
     try {
       const key = localStorage.getItem("exm.key") ?? "";
-      await fetch("/api/memory/md", {
+      const resp = await fetch("/api/memory/md", {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(key ? { "X-Auth-Key": key } : {}) },
         body: JSON.stringify({ content }),
       });
+      const data = (await resp.json()) as { ok?: boolean; compacting?: boolean; error?: string };
       setDirty(false);
-      message.success("memory.md 已保存（下一轮对话即注入）");
+      if (data.compacting) {
+        message.info("已保存；内容超过字数上限，AI 正在后台自主压缩，原文已归档");
+      } else if (data.error) {
+        message.error(data.error);
+      } else {
+        message.success("memory.md 已保存（下一轮对话即注入）");
+      }
     } catch (e) {
       message.error(`保存失败：${String(e)}`);
     } finally {
@@ -78,7 +85,8 @@ function MdEditor(): React.ReactElement {
       >
         <div className="dim" style={{ marginBottom: 8 }}>
           深层记忆已关闭——本文件是唯一记忆载体，随每轮对话注入。直接用 Markdown 维护
-          （目标、偏好、事实、教训均可）；保存在 {path || "memory.md"}
+          （目标、偏好、事实、教训均可）；保存在 {path || "memory.md"}。
+          当前 {content.length} 字（上限 5000，超出保存后 AI 自动压缩并归档原文）
         </div>
         <Input.TextArea
           value={content}

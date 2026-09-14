@@ -1076,7 +1076,10 @@ fn respond(req: &ChatRequest) -> String {
         .unwrap_or_default();
     let user = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
 
-    if system.contains("会话压缩") {
+    if system.contains("记忆压缩") {
+        let kept: String = user.chars().take(120).collect();
+        format!("- 【已压缩】{kept}\n- 细节已归档，按需查阅")
+    } else if system.contains("会话压缩") {
         "目标与进展：用户持续在推进当前任务；关键结论与未决事项已由最近对话承载。".to_string()
     } else if system.contains("经验改进要点合成") {
         adaptation_text(&system)

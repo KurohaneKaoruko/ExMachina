@@ -842,14 +842,20 @@ async fn put_memory_md(State(st): State<AppState>, Json(b): Json<serde_json::Val
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "缺少 content" }))).into_response();
     };
     let path = st.core.config().memory_md_path.clone();
-    match std::fs::write(&path, content) {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("写入失败: {e}") })),
-        )
-            .into_response(),
+    if let Err(e) = std::fs::write(&path, content) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("写入失败: {e}") }))).into_response();
     }
+    // 超限自主压缩：后台执行（LLM 简略 + 旧文归档），写入立即返回
+    let over = content.chars().count() > st.core.config().memory_md_max_chars;
+    if over {
+        let core = st.core.clone();
+        tokio::spawn(async move {
+            if let Err(e) = core.compact_memory_md().await {
+                eprintln!("[memory] memory.md 自动压缩失败：{e}");
+            }
+        });
+    }
+    Json(json!({ "ok": true, "compacting": over })).into_response()
 }
 
 async fn memory_render(State(st): State<AppState>) -> impl IntoResponse {

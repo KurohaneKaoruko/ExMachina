@@ -98,6 +98,43 @@ impl Orchestrator {
         self.orch_provider.transcribe("whisper-1", audio, filename).await
     }
 
+    /// memory.md 超限自主压缩：LLM 简略化，旧全文归档（深层开 = 存数据库；关 = 存工作区归档文件）
+    /// 返回 (压缩前字数, 压缩后字数)；未超限返回 Ok((len, len))
+    pub async fn compact_memory_md(&self, max_chars: usize) -> anyhow::Result<(usize, usize)> {
+        let md = std::fs::read_to_string(&self.memory_md_path).unwrap_or_default();
+        let len = md.chars().count();
+        if len <= max_chars {
+            return Ok((len, len));
+        }
+        let system = "你是记忆压缩器【记忆压缩】。把 memory.md 压简为要点清单：保留目标、偏好、事实与教训的关键信息，删除重复与冗余；只输出压缩后的 Markdown 正文，不要任何前后缀。";
+        let user = format!(
+            "以下 memory.md 超出上限（{len} 字符 > {max_chars}），请压缩到约 {} 字符以内：\n\n{md}",
+            max_chars * 4 / 5
+        );
+        let req = ChatRequest::new(
+            self.orch_model.clone(),
+            vec![ChatMessage::system(system), ChatMessage::user(user)],
+        );
+        let resp = self.orch_provider.chat(req).await?;
+        let compressed = resp.content.trim().to_string();
+        anyhow::ensure!(!compressed.is_empty(), "压缩结果为空");
+
+        // 归档：深层开 → 存数据库（digest 条目，全局可见）；关 → 追加工作区归档文件
+        if self.memory_enabled {
+            let draft = MemoryDraft::new(MemoryKind::Digest, format!("memory.md 归档 {}", now_iso()), md.clone())
+                .importance(0.4);
+            let _ = self.memory.remember(&draft);
+        } else {
+            let archive = self.memory_md_path.with_file_name("memory_archive.md");
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&archive) {
+                use std::io::Write as _;
+                let _ = writeln!(f, "\n## 归档 {}\n\n{md}\n", now_iso());
+            }
+        }
+        std::fs::write(&self.memory_md_path, &compressed)?;
+        Ok((len, compressed.chars().count()))
+    }
+
     /// 语音合成：全局生效档案的 Provider（tts 系模型，mp3 字节）
     pub async fn speak_audio(&self, text: &str) -> anyhow::Result<Vec<u8>> {
         self.orch_provider.speak("tts-1", text).await

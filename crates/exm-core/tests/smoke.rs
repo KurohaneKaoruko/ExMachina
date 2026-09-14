@@ -764,6 +764,45 @@ async fn web_fetch工具与图片暂存() {
     assert!(exm_core::image_stash::take("s-img").is_empty(), "取走即清");
 }
 
+/// memory.md 超限自主压缩：LLM 简略 + 原文归档（工作区文件 / 数据库）
+#[tokio::test]
+async fn 记忆压缩_超限归档两模式() {
+    let _serial = serial_guard();
+    let mut cfg = test_config();
+    cfg.memory_md_max_chars = 100;
+    cfg.memory_enabled = false; // 深层关：归档到工作区文件
+    let core = Core::with_config(cfg.clone()).expect("创建 Core 失败");
+
+    let long_md: String = std::iter::repeat("记忆条目内容测试。").take(60).collect(); // ~480 字
+    std::fs::write(&core.config().memory_md_path, &long_md).unwrap();
+
+    let (before, after) = core.compact_memory_md().await.expect("压缩失败");
+    assert_eq!(before, long_md.chars().count());
+    assert!(after < before, "压缩后应变短：{before} -> {after}");
+    let compacted = std::fs::read_to_string(&core.config().memory_md_path).unwrap();
+    assert!(compacted.contains("已压缩"), "Mock 压缩输出应落盘");
+    // 归档文件应包含原文
+    let archive = std::fs::read_to_string(
+        core.config().memory_md_path.with_file_name("memory_archive.md"),
+    )
+    .unwrap_or_default();
+    assert!(archive.contains("记忆条目内容测试"), "原文应归档");
+
+    // 深层开：归档进数据库（digest 条目）
+    let mut cfg2 = test_config();
+    cfg2.memory_md_max_chars = 100;
+    cfg2.memory_enabled = true;
+    let core2 = Core::with_config(cfg2).expect("创建 Core 失败");
+    let long2: String = std::iter::repeat("深层归档验证。").take(60).collect();
+    std::fs::write(&core2.config().memory_md_path, &long2).unwrap();
+    core2.compact_memory_md().await.expect("压缩失败");
+    let hits = core2
+        .memory
+        .recall_all("memory.md 归档", 10, None, None)
+        .unwrap_or_default();
+    assert!(hits.iter().any(|h| h.entry.title.contains("memory.md 归档")), "归档应进深层记忆");
+}
+
 /// 分布式执行节点：工作者（独立 Core，Mock）接入 → 派发远程执行 → 回流收束
 #[tokio::test]
 async fn 分布式执行_工作者节点全链() {

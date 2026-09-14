@@ -110,6 +110,8 @@ pub struct ExmConfig {
     pub max_concurrency: usize,
     /// 会话 token 预算（估算：字符/4；0 = 不限；超出后拒绝新轮次）
     pub max_session_tokens: u64,
+    /// memory.md 字数上限（超限触发 AI 自主压缩，旧内容归档）
+    pub memory_md_max_chars: usize,
     /// 记忆系统开关与参数
     pub memory_enabled: bool,
     pub memory_recall_limit: usize,
@@ -140,6 +142,8 @@ struct ConfigFile {
     max_concurrency: Option<usize>,
     #[serde(default)]
     max_session_tokens: Option<u64>,
+    #[serde(default)]
+    memory_md_max_chars: Option<usize>,
     #[serde(default)]
     memory: Option<MemoryConfigFile>,
     #[serde(default)]
@@ -364,6 +368,7 @@ impl ExmConfig {
             llm,
             max_concurrency: file.max_concurrency.unwrap_or(4),
             max_session_tokens: file.max_session_tokens.unwrap_or(0),
+            memory_md_max_chars: file.memory_md_max_chars.unwrap_or(5000),
             memory_enabled: file_mem.enabled.unwrap_or(true),
             memory_recall_limit: file_mem.recall_limit.unwrap_or(5),
             memory_half_life_days: file_mem.half_life_days.unwrap_or(30.0),
@@ -383,6 +388,7 @@ impl ExmConfig {
             llm: Some(self.llm.clone()),
             max_concurrency: Some(self.max_concurrency),
             max_session_tokens: Some(self.max_session_tokens),
+            memory_md_max_chars: Some(self.memory_md_max_chars),
             memory: Some(MemoryConfigFile {
                 enabled: Some(self.memory_enabled),
                 recall_limit: Some(self.memory_recall_limit),
@@ -513,6 +519,9 @@ pub fn config_schema() -> serde_json::Value {
                     { "key": "memory.enabled", "label": "深层记忆（数据库检索 + 自动写入）", "kind": "boolean",
                       "default": "true", "required": false,
                       "help": "关闭后仅使用 memory.md 文件记忆（OpenClaw/Hermes 模式）：规划时注入该文件内容，可在记忆面板直接编辑；不写数据库、不做语义检索" },
+                    { "key": "memory.mdMaxChars", "label": "memory.md 字数上限", "kind": "number",
+                      "default": "5000", "required": false, "min": 500, "max": 100000,
+                      "help": "超过上限触发 AI 自主压缩简略；被精简的原文自动归档（深层开 = 存数据库，关 = 存工作区归档文件）" },
                     { "key": "memory.recallLimit", "label": "单轮召回条数", "kind": "number",
                       "default": "5", "required": false, "min": 0, "max": 20,
                       "help": "注入指挥体上下文的历史记忆条数" },

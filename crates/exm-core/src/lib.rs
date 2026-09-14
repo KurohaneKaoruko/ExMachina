@@ -235,6 +235,13 @@ impl Core {
         orch.speak_audio(text).await
     }
 
+    /// memory.md 超限自主压缩（LLM 简略 + 旧文归档）；返回 (压缩前, 压缩后) 字数
+    pub async fn compact_memory_md(&self) -> anyhow::Result<(usize, usize)> {
+        let max = self.config().memory_md_max_chars;
+        let orch = self.orchestrator();
+        orch.compact_memory_md(max).await
+    }
+
     /// 会话 token 估算（全部消息陈述字符 / 4）
     pub fn session_tokens_estimate(&self, session_id: &str) -> u64 {
         self.store
