@@ -44,7 +44,7 @@ pub const PLANNING_CONTRACT: &str = "
 - agentIdentifier 只能取自下方可调度子个体清单。
 - 创建/修改组内个体必须由用户明确要求；用户未要求时禁止规划任何个体管理类节点。";
 
-/// 单体模式契约：独立智能体直接完成任务，不派发
+/// 单体模式契约：单体智能体直接完成任务，不派发
 pub const SINGLE_CONTRACT: &str = r#"""
 
 ---
@@ -808,7 +808,7 @@ impl Orchestrator {
             format!("# {}\n\n你是本组的主智能体，直接对接用户并调度组内个体。", primary.name)
         });
         if self.registry.single_mode() {
-            // 单体模式：独立智能体直接完成，禁止派发
+            // 单体模式：单体智能体直接完成，禁止派发
             system_prompt.push_str(SINGLE_CONTRACT);
         } else if !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true) {
             // 自定义组：追加系统级规划契约（内置组提示词已内含）
