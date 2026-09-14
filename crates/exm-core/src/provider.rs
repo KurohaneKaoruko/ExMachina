@@ -6,21 +6,50 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
+/// 原生 function calling：暴露给模型的工具定义（parameters = JSON Schema 对象）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// 模型发起的一次工具调用
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// assistant 消息携带的工具调用（回传线程用）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// tool 结果消息：对应的调用 id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// tool 结果消息：工具名（gemini functionResponse 需要）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        ChatMessage { role: "system".into(), content: content.into() }
+        ChatMessage { role: "system".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        ChatMessage { role: "user".into(), content: content.into() }
+        ChatMessage { role: "user".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        ChatMessage { role: "assistant".into(), content: content.into() }
+        ChatMessage { role: "assistant".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: None, name: None }
+    }
+    /// 工具结果消息（openai 形态 role=tool；anthropic/gemini 在请求映射时转换）
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        ChatMessage { role: "tool".into(), content: content.into(), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()), name: None }
     }
 }
 
@@ -33,11 +62,13 @@ pub struct ChatRequest {
     /// 发起方标识（个体/指挥体）：多 Key 时按此粘性选键——同发起方不换 Key，
     /// 仅当前 Key 限额（429/402/配额类错误）时前进到下一把并继续粘住。
     pub key_hint: Option<String>,
+    /// 原生 function calling：非空即随请求下发
+    pub tools: Vec<ToolSpec>,
 }
 
 impl ChatRequest {
     pub fn new(model: impl Into<String>, messages: Vec<ChatMessage>) -> Self {
-        ChatRequest { model: model.into(), messages, temperature: 0.2, max_tokens: None, key_hint: None }
+        ChatRequest { model: model.into(), messages, temperature: 0.2, max_tokens: None, key_hint: None, tools: Vec::new() }
     }
 
     pub fn with_key_hint(mut self, hint: impl Into<String>) -> Self {
@@ -51,6 +82,8 @@ pub struct ChatResponse {
     pub content: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// 模型发起的工具调用（原生 function calling）
+    pub tool_calls: Vec<ToolCall>,
 }
 
 // ---------------------------------------------------------------- 模型档案运行池
@@ -60,6 +93,10 @@ pub struct ChatResponse {
 /// 档案编辑经 apply_config 重建池，组/个体的提示则热读取。
 pub struct ModelPool {
     entries: std::collections::HashMap<String, (std::sync::Arc<dyn LlmProvider>, String, String)>,
+    /// 档案失败回退链：id → 下一个档案 id
+    fallbacks: std::collections::HashMap<String, String>,
+    /// 全局生效档案 id（回退链的最终兜底）
+    active_id: String,
 }
 
 impl Default for ModelPool {
@@ -70,7 +107,50 @@ impl Default for ModelPool {
 
 impl ModelPool {
     pub fn new() -> Self {
-        ModelPool { entries: std::collections::HashMap::new() }
+        ModelPool {
+            entries: std::collections::HashMap::new(),
+            fallbacks: std::collections::HashMap::new(),
+            active_id: String::new(),
+        }
+    }
+
+    /// 全局生效档案 id（build_orchestrator 注入）
+    pub fn set_active(&mut self, id: impl Into<String>) {
+        self.active_id = id.into();
+    }
+
+    pub fn active_id(&self) -> String {
+        self.active_id.clone()
+    }
+
+    /// 声明档案失败回退（指向下一档案 id；空串清除）
+    pub fn set_fallback(&mut self, id: &str, next: &str) {
+        if next.trim().is_empty() {
+            self.fallbacks.remove(id);
+        } else {
+            self.fallbacks.insert(id.to_string(), next.trim().to_string());
+        }
+    }
+
+    /// 从起始档案展开回退链（去重 + 成环截断，最长 16 跳）
+    pub fn chain(&self, start: &str) -> Vec<String> {
+        let mut out = vec![start.to_string()];
+        let mut cur = start.to_string();
+        for _ in 0..16 {
+            let Some(next) = self.fallbacks.get(&cur).cloned() else { break };
+            if next == start || out.contains(&next) || next.is_empty() {
+                break;
+            }
+            out.push(next.clone());
+            cur = next;
+        }
+        out
+    }
+
+    /// 取档案的 (Provider, 模型名)；unit=true 取子个体模型
+    pub fn entry(&self, id: &str, unit: bool) -> Option<(std::sync::Arc<dyn LlmProvider>, String)> {
+        let (provider, orch, unit_model) = self.entries.get(id)?;
+        Some((provider.clone(), if unit { unit_model.clone() } else { orch.clone() }))
     }
 
     pub fn insert(
@@ -89,12 +169,22 @@ impl ModelPool {
         hint: &str,
         unit: bool,
     ) -> Option<(std::sync::Arc<dyn LlmProvider>, String)> {
+        self.resolve_full(hint, unit).map(|(_, p, m)| (p, m))
+    }
+
+    /// 解析模型提示：返回 (档案ID, Provider, 生效模型名)
+    pub fn resolve_full(
+        &self,
+        hint: &str,
+        unit: bool,
+    ) -> Option<(String, std::sync::Arc<dyn LlmProvider>, String)> {
         let (pid, explicit) = match hint.split_once('/') {
             Some((p, m)) if !m.trim().is_empty() => (p, Some(m.trim().to_string())),
             _ => (hint, None),
         };
+        let pid = pid.trim().to_string();
         let entry: &(std::sync::Arc<dyn LlmProvider>, String, String) =
-            self.entries.get(pid.trim())?;
+            self.entries.get(&pid)?;
         let provider: std::sync::Arc<dyn LlmProvider> = entry.0.clone();
         let model: String = match explicit {
             Some(m) => m,
@@ -106,8 +196,56 @@ impl ModelPool {
                 }
             }
         };
-        Some((provider, model))
+        Some((pid, provider, model))
     }
+}
+
+// ---------------------------------------------------------------- 失败回退
+
+/// 失败冷却时长（秒）：档案失败后回退链上被跳过的时间窗
+pub const FAILOVER_COOLDOWN_SECS: u64 = 45;
+
+/// 失败冷却：档案请求失败后标记一段时间，回退链上被跳过（首个候选除外）
+pub struct FailoverState {
+    until: parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+}
+
+impl Default for FailoverState {
+    fn default() -> Self {
+        FailoverState { until: parking_lot::Mutex::new(std::collections::HashMap::new()) }
+    }
+}
+
+impl FailoverState {
+    pub fn cooling(&self, id: &str) -> bool {
+        let mut m = self.until.lock();
+        match m.get(id) {
+            Some(t) if *t > std::time::Instant::now() => true,
+            Some(_) => {
+                m.remove(id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// 标记冷却（秒）
+    pub fn cool(&self, id: &str, secs: u64) {
+        self.until
+            .lock()
+            .insert(id.to_string(), std::time::Instant::now() + std::time::Duration::from_secs(secs));
+    }
+
+    /// 成功即解除冷却
+    pub fn clear(&self, id: &str) {
+        self.until.lock().remove(id);
+    }
+}
+
+/// 回退候选链：按顺序尝试，失败（未发出内容前）切换下一候选并冷却失败者
+pub struct ModelChain {
+    pub candidates: Vec<(String, std::sync::Arc<dyn LlmProvider>, String)>,
+    pub failover: std::sync::Arc<FailoverState>,
 }
 
 #[async_trait]
@@ -233,7 +371,7 @@ impl OpenAiCompatibleProvider {
     }
 
     fn body(&self, req: &ChatRequest, stream: bool) -> serde_json::Value {
-        match self.api_format.as_str() {
+        let mut base = match self.api_format.as_str() {
             "anthropic" => {
                 let system: String = req
                     .messages
@@ -247,7 +385,7 @@ impl OpenAiCompatibleProvider {
                     .messages
                     .iter()
                     .filter(|m| m.role != "system")
-                    .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                    .map(|m| self.map_message(m))
                     .collect();
                 serde_json::json!({
                     "model": req.model, "system": system, "messages": messages,
@@ -266,12 +404,7 @@ impl OpenAiCompatibleProvider {
                     .messages
                     .iter()
                     .filter(|m| m.role != "system")
-                    .map(|m| {
-                        serde_json::json!({
-                            "role": if m.role == "assistant" { "model" } else { &m.role },
-                            "parts": [{ "text": m.content }],
-                        })
-                    })
+                    .map(|m| self.map_message(m))
                     .collect();
                 let mut body = serde_json::json!({
                     "contents": contents,
@@ -289,7 +422,7 @@ impl OpenAiCompatibleProvider {
                 let messages: Vec<serde_json::Value> = req
                     .messages
                     .iter()
-                    .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                    .map(|m| self.map_message(m))
                     .collect();
                 let mut body = serde_json::json!({
                     "model": req.model, "messages": messages,
@@ -300,6 +433,121 @@ impl OpenAiCompatibleProvider {
                 }
                 body
             }
+        };
+        // 原生 function calling：按协议注入工具定义
+        if !req.tools.is_empty() {
+            match self.api_format.as_str() {
+                "anthropic" => {
+                    base["tools"] = serde_json::json!(req.tools.iter().map(|t| serde_json::json!({
+                        "name": t.name, "description": t.description, "input_schema": t.parameters,
+                    })).collect::<Vec<_>>());
+                }
+                "gemini" => {
+                    base["tools"] = serde_json::json!([{ "functionDeclarations": req.tools.iter().map(|t| serde_json::json!({
+                        "name": t.name, "description": t.description, "parameters": t.parameters,
+                    })).collect::<Vec<_>>() }]);
+                }
+                _ => {
+                    base["tools"] = serde_json::json!(req.tools.iter().map(|t| serde_json::json!({
+                        "type": "function",
+                        "function": { "name": t.name, "description": t.description, "parameters": t.parameters },
+                    })).collect::<Vec<_>>());
+                    base["tool_choice"] = serde_json::json!("auto");
+                }
+            }
+        }
+        base
+    }
+
+    /// 单条消息 → 各协议请求形态（含原生工具调用线程）
+    fn map_message(&self, m: &ChatMessage) -> serde_json::Value {
+        match self.api_format.as_str() {
+            "anthropic" => {
+                if !m.tool_calls.is_empty() {
+                    let mut blocks: Vec<serde_json::Value> = Vec::new();
+                    if !m.content.is_empty() {
+                        blocks.push(serde_json::json!({ "type": "text", "text": m.content }));
+                    }
+                    for c in &m.tool_calls {
+                        blocks.push(serde_json::json!({ "type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments }));
+                    }
+                    serde_json::json!({ "role": "assistant", "content": blocks })
+                } else if m.role == "tool" {
+                    serde_json::json!({
+                        "role": "user",
+                        "content": [{ "type": "tool_result", "tool_use_id": m.tool_call_id.clone().unwrap_or_default(), "content": m.content }],
+                    })
+                } else {
+                    serde_json::json!({ "role": m.role, "content": m.content })
+                }
+            }
+            "gemini" => {
+                if !m.tool_calls.is_empty() {
+                    let parts: Vec<serde_json::Value> = m.tool_calls.iter()
+                        .map(|c| serde_json::json!({ "functionCall": { "name": c.name, "args": c.arguments } }))
+                        .collect();
+                    serde_json::json!({ "role": "model", "parts": parts })
+                } else if m.role == "tool" {
+                    let name = m.name.clone().or_else(|| m.tool_call_id.clone()).unwrap_or_default();
+                    serde_json::json!({
+                        "role": "user",
+                        "parts": [{ "functionResponse": { "name": name, "response": { "result": m.content } } }],
+                    })
+                } else {
+                    let role = if m.role == "assistant" { "model" } else { m.role.as_str() };
+                    serde_json::json!({ "role": role, "parts": [{ "text": m.content }] })
+                }
+            }
+            _ => {
+                if !m.tool_calls.is_empty() {
+                    let calls: Vec<serde_json::Value> = m.tool_calls.iter().map(|c| serde_json::json!({
+                        "id": c.id, "type": "function",
+                        "function": { "name": c.name, "arguments": serde_json::to_string(&c.arguments).unwrap_or_default() },
+                    })).collect();
+                    let content = if m.content.is_empty() { serde_json::Value::Null } else { serde_json::json!(m.content) };
+                    serde_json::json!({ "role": "assistant", "content": content, "tool_calls": calls })
+                } else if m.role == "tool" {
+                    serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
+                        "content": m.content,
+                    })
+                } else {
+                    serde_json::json!({ "role": m.role, "content": m.content })
+                }
+            }
+        }
+    }
+
+    /// 非流式响应中的工具调用（各协议）
+    fn parse_tool_calls(&self, v: &serde_json::Value) -> Vec<ToolCall> {
+        match self.api_format.as_str() {
+            "anthropic" => v.get("content").and_then(|c| c.as_array()).map(|arr| arr.iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                .enumerate()
+                .map(|(i, b)| ToolCall {
+                    id: b.get("id").and_then(|x| x.as_str()).map(String::from).unwrap_or_else(|| format!("call_{i}")),
+                    name: b.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                    arguments: b.get("input").cloned().unwrap_or_else(|| serde_json::json!({})),
+                }).collect()).unwrap_or_default(),
+            "gemini" => v.pointer("/candidates/0/content/parts").and_then(|p| p.as_array()).map(|arr| arr.iter()
+                .enumerate()
+                .filter_map(|(i, part)| part.get("functionCall").map(|fc| ToolCall {
+                    id: format!("call_{i}"),
+                    name: fc.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+                    arguments: fc.get("args").cloned().unwrap_or_else(|| serde_json::json!({})),
+                })).collect()).unwrap_or_default(),
+            _ => v.pointer("/choices/0/message/tool_calls").and_then(|c| c.as_array()).map(|arr| arr.iter()
+                .enumerate()
+                .filter_map(|(i, tc)| {
+                    let name = tc.pointer("/function/name").and_then(|n| n.as_str())?;
+                    let raw = tc.pointer("/function/arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                    Some(ToolCall {
+                        id: tc.get("id").and_then(|x| x.as_str()).map(String::from).unwrap_or_else(|| format!("call_{i}")),
+                        name: name.to_string(),
+                        arguments: serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({})),
+                    })
+                }).collect()).unwrap_or_default(),
         }
     }
 
@@ -408,6 +656,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             }
             let parsed: serde_json::Value = resp.json().await?;
             let content = self.parse_response(&parsed).unwrap_or_default();
+            let tool_calls = self.parse_tool_calls(&parsed);
             let usage = parsed.get("usage");
             let pt = usage
                 .and_then(|u| {
@@ -425,7 +674,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 })
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            return Ok(ChatResponse { content, prompt_tokens: pt, completion_tokens: ct });
+            return Ok(ChatResponse { content, prompt_tokens: pt, completion_tokens: ct, tool_calls });
         }
         anyhow::bail!("全部 API Key 均不可用：{last_err}")
     }
@@ -460,6 +709,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let mut acc = String::new();
         let mut buf = String::new();
+        // 工具调用流式分片组装：openai/anthropic 按索引拼增量，gemini 为整块
+        let mut call_frags: Vec<(String, String, String)> = Vec::new(); // (id, name, arguments-json)
+        let mut gemini_calls: Vec<ToolCall> = Vec::new();
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let bytes = chunk?;
@@ -474,10 +726,66 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 if payload == "[DONE]" {
                     break;
                 }
-                if payload == "[DONE]" {
-                    continue;
-                }
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+                    match self.api_format.as_str() {
+                        "anthropic" => {
+                            let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            if ty == "content_block_start" {
+                                if let Some(block) = v.pointer("/content_block") {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                        let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                                        while call_frags.len() <= idx {
+                                            call_frags.push((String::new(), String::new(), String::new()));
+                                        }
+                                        call_frags[idx].0 = block.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                        call_frags[idx].1 = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                    }
+                                }
+                            } else if ty == "content_block_delta" {
+                                if let Some(d) = v.get("delta") {
+                                    if d.get("type").and_then(|t| t.as_str()) == Some("input_json_delta") {
+                                        let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                                        while call_frags.len() <= idx {
+                                            call_frags.push((String::new(), String::new(), String::new()));
+                                        }
+                                        call_frags[idx].2.push_str(d.get("partial_json").and_then(|p| p.as_str()).unwrap_or(""));
+                                    }
+                                }
+                            }
+                        }
+                        "gemini" => {
+                            if let Some(parts) = v.pointer("/candidates/0/content/parts").and_then(|p| p.as_array()) {
+                                for part in parts {
+                                    if let Some(fc) = part.get("functionCall") {
+                                        gemini_calls.push(ToolCall {
+                                            id: format!("gem_{}", gemini_calls.len()),
+                                            name: fc.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+                                            arguments: fc.get("args").cloned().unwrap_or_else(|| serde_json::json!({})),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Some(fcs) = v.pointer("/choices/0/delta/tool_calls").and_then(|c| c.as_array()) {
+                                for tc in fcs {
+                                    let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(call_frags.len() as u64) as usize;
+                                    while call_frags.len() <= idx {
+                                        call_frags.push((String::new(), String::new(), String::new()));
+                                    }
+                                    if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
+                                        call_frags[idx].0 = id.to_string();
+                                    }
+                                    if let Some(nm) = tc.pointer("/function/name").and_then(|x| x.as_str()) {
+                                        call_frags[idx].1 = nm.to_string();
+                                    }
+                                    if let Some(a) = tc.pointer("/function/arguments").and_then(|x| x.as_str()) {
+                                        call_frags[idx].2.push_str(a);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(delta) = self.parse_delta(&v) {
                         acc.push_str(&delta);
                         let _ = tx.send(delta);
@@ -485,7 +793,18 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 }
             }
         }
-        Ok(ChatResponse { content: acc, prompt_tokens: 0, completion_tokens: 0 })
+        let mut tool_calls: Vec<ToolCall> = call_frags
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (_, name, _))| !name.is_empty())
+            .map(|(i, (id, name, args))| ToolCall {
+                id: if id.is_empty() { format!("call_{i}") } else { id },
+                name,
+                arguments: serde_json::from_str(&args).unwrap_or_else(|_| serde_json::json!({})),
+            })
+            .collect();
+        tool_calls.extend(gemini_calls);
+        Ok(ChatResponse { content: acc, prompt_tokens: 0, completion_tokens: 0, tool_calls })
     }
 }
 
@@ -501,7 +820,7 @@ impl LlmProvider for MockLlmProvider {
     }
 
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
-        Ok(ChatResponse { content: respond(&req), prompt_tokens: 100, completion_tokens: 200 })
+        Ok(ChatResponse { content: respond(&req), prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
     }
 
     async fn stream(
@@ -515,7 +834,7 @@ impl LlmProvider for MockLlmProvider {
             let _ = tx.send(piece);
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
-        Ok(ChatResponse { content, prompt_tokens: 100, completion_tokens: 200 })
+        Ok(ChatResponse { content, prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
     }
 }
 
@@ -528,7 +847,9 @@ fn respond(req: &ChatRequest) -> String {
         .unwrap_or_default();
     let user = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
 
-    if system.contains("经验改进要点合成") {
+    if system.contains("会话压缩") {
+        "目标与进展：用户持续在推进当前任务；关键结论与未决事项已由最近对话承载。".to_string()
+    } else if system.contains("经验改进要点合成") {
         adaptation_text(&system)
     } else if user.starts_with("【收束请求】") {
         converge_text(&user)

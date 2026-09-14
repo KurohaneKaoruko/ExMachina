@@ -3,7 +3,7 @@
 
 use crate::memory::{MemoryDraft, MemoryKind, MemoryStore};
 use crate::parse;
-use crate::provider::{ChatMessage, ChatRequest, LlmProvider, ModelPool};
+use crate::provider::{ChatMessage, ChatRequest, FailoverState, LlmProvider, ModelChain, ModelPool};
 use crate::registry::LocalRegistry;
 use crate::runtime::AgentRuntime;
 use crate::store::Store;
@@ -72,6 +72,8 @@ pub struct Orchestrator {
     pub orch_provider: Arc<dyn LlmProvider>,
     /// 模型档案运行池：按个体/组默认模型解析生效 (Provider, 模型名)
     pub model_pool: Arc<ModelPool>,
+    /// 失败冷却状态（档案失败后一段时间内被回退链跳过）
+    pub failover: Arc<FailoverState>,
     pub unit_runtime: Arc<AgentRuntime>,
     pub store: Arc<Store>,
     pub memory: Arc<MemoryStore>,
@@ -106,26 +108,61 @@ impl Orchestrator {
 
     /// 指挥体生效模型：目标提示 → 全局生效档案
     fn resolve_orch_model(&self) -> (Arc<dyn LlmProvider>, String) {
-        if let Some(hint) = self.target_model_hint() {
-            if let Some(resolved) = self.model_pool.resolve(&hint, false) {
-                return resolved;
-            }
-        }
-        (self.orch_provider.clone(), self.orch_model.clone())
+        self.orch_candidates()
+            .into_iter()
+            .next()
+            .map(|(_, p, m)| (p, m))
+            .unwrap_or_else(|| (self.orch_provider.clone(), self.orch_model.clone()))
     }
 
-    /// 子个体生效模型：个体默认模型 → 所属组默认 → 全局生效档案
-    fn resolve_unit_model(&self, def: &AgentDefinition) -> (Arc<dyn LlmProvider>, String) {
-        let hint = def
+    /// 回退链展开：起始档案 → fallback 链 → 全局生效档案兜底；冷却中的档案跳过（保底留一个）
+    fn expand_chain(&self, start: &str, unit: bool) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
+        let mut ids = self.model_pool.chain(start);
+        let active = self.model_pool.active_id();
+        if !active.is_empty() && !ids.contains(&active) {
+            ids.push(active);
+        }
+        let total = ids.len();
+        let mut out: Vec<(String, Arc<dyn LlmProvider>, String)> = Vec::new();
+        for (n, id) in ids.into_iter().enumerate() {
+            let Some((provider, model)) = self.model_pool.entry(&id, unit) else { continue };
+            if !out.is_empty() && n + 1 < total && self.failover.cooling(&id) {
+                continue; // 冷却中且后面还有候选：跳过
+            }
+            out.push((id, provider, model));
+        }
+        out
+    }
+
+    /// 指挥体候选链（目标提示 → 全局 → 回退链）
+    fn orch_candidates(&self) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
+        let start = self
+            .target_model_hint()
+            .and_then(|h| self.model_pool.resolve_full(&h, false).map(|(id, _, _)| id))
+            .unwrap_or_else(|| self.model_pool.active_id());
+        if start.is_empty() {
+            return Vec::new();
+        }
+        self.expand_chain(&start, false)
+    }
+
+    /// 子个体候选链（个体 → 组 → 全局 → 回退链）
+    fn unit_candidates(&self, def: &AgentDefinition) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
+        let start = def
             .model_hint
             .clone()
-            .or_else(|| self.registry.active_group_meta().and_then(|m| m.model));
-        if let Some(hint) = &hint {
-            if let Some(resolved) = self.model_pool.resolve(hint, true) {
-                return resolved;
-            }
+            .or_else(|| self.registry.active_group_meta().and_then(|m| m.model))
+            .and_then(|h| self.model_pool.resolve_full(&h, true).map(|(id, _, _)| id))
+            .unwrap_or_else(|| self.model_pool.active_id());
+        if start.is_empty() {
+            return Vec::new();
         }
-        self.unit_runtime.default_target()
+        self.expand_chain(&start, true)
+    }
+
+    /// 子个体回退链（run_node → AgentRuntime）
+    fn unit_chain_for(&self, def: &AgentDefinition) -> ModelChain {
+        ModelChain { candidates: self.unit_candidates(def), failover: self.failover.clone() }
     }
 
     // ---------------------------------------------------------- 事件
@@ -151,6 +188,81 @@ impl Orchestrator {
 
     // ---------------------------------------------------------- 主入口
 
+    /// collect：上一条非 user（orchestrator/unit/system）消息之后的所有 user 输入合并
+    fn collect_pending_inputs(&self, session_id: &str) -> Option<String> {
+        // list_messages 为时间正序（read_lines 语义）：从尾部反向收集连续 user 消息
+        let msgs: Vec<crate::types::ChatMessage> = self.store.list_messages(session_id, 200).ok()?;
+        let mut pending: Vec<String> = Vec::new();
+        for m in msgs.iter().rev() {
+            if m.role != MessageRole::User {
+                break;
+            }
+            let mut stmts: Vec<String> = m.statements.iter().map(|s| s.text.clone()).collect();
+            stmts.reverse();
+            pending.extend(stmts);
+        }
+        if pending.is_empty() {
+            return None;
+        }
+        pending.reverse(); // 时间正序
+        Some(pending.join("\n"))
+    }
+
+    /// 上下文压缩（docs/架构与设计.md）：历史超过阈值时，旧消息压成滚动摘要，保留最近窗口原文
+    /// 返回 (滚动摘要, 最近窗口消息原文文本)
+    async fn ensure_compacted(&self, session_id: &str) -> (Option<String>, String) {
+        type StoredMessage = crate::types::ChatMessage;
+        const TRIGGER: usize = 20; // 超过才压缩
+        const KEEP: usize = 12; // 保留最近 N 条原文
+        let msgs: Vec<StoredMessage> = self.store.list_messages(session_id, 500).unwrap_or_default();
+        if msgs.len() <= TRIGGER {
+            return (None, render_recent(&msgs));
+        }
+        // list_messages 为时间正序：older = 前段（压入摘要）；recent = 尾部 KEEP 条原文窗口
+        let split = msgs.len().saturating_sub(KEEP);
+        let older: Vec<&StoredMessage> = msgs.iter().take(split).collect();
+        let recent: Vec<&StoredMessage> = msgs.iter().skip(split).collect();
+        let session = self.store.get_session(session_id).ok().flatten();
+        let upto = older.len();
+        let prev_upto = session.as_ref().and_then(|s| s.summary_upto).unwrap_or(0);
+        let prev_summary = session.as_ref().and_then(|s| s.rolling_summary.clone()).unwrap_or_default();
+        if prev_upto == upto {
+            return (Some(prev_summary), render_recent_hlp(&recent));
+        }
+        // 增量压缩：已有摘要 + 新纳入的旧消息 → 新摘要（LLM 非流式，指挥体模型）
+        let transcript: String = older
+            .iter()
+            .map(|m| {
+                let who = match m.role {
+                    MessageRole::User => "用户",
+                    MessageRole::Orchestrator => m.agent_id.as_deref().unwrap_or("指挥体"),
+                    MessageRole::Unit => m.agent_id.as_deref().unwrap_or("子个体"),
+                    MessageRole::System => "系统",
+                };
+                let body = m.statements.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("；");
+                format!("[{who}] {}", body.chars().take(400).collect::<String>())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let system = "你是会话压缩器【会话压缩】。把历史对话压成不超过 400 字的连续上下文摘要：保留目标、关键结论、证据与未决事项；只输出摘要正文，不要任何前后缀。";
+        let user = format!("已有摘要：\n{prev_summary}\n\n新增对话：\n{transcript}\n\n输出合并后的新摘要。");
+        let summary = match self.resolve_orch_model() {
+            (provider, model) => {
+                let req = ChatRequest::new(model, vec![ChatMessage::system(system), ChatMessage::user(user)]);
+                provider.chat(req).await.map(|r| r.content).unwrap_or_else(|e| {
+                    eprintln!("[orchestrator] 会话压缩失败（沿用旧摘要）：{e}");
+            			if prev_summary.is_empty() { String::new() } else { prev_summary.clone() }
+                })
+            }
+        };
+        if !summary.trim().is_empty() {
+            let _ = self.store.update_compaction(session_id, &summary, upto);
+            (Some(summary), render_recent_hlp(&recent))
+        } else {
+            (None, render_recent_hlp(&recent))
+        }
+    }
+
     pub async fn handle_user_message(
         self: &Arc<Self>,
         session_id: &str,
@@ -164,12 +276,16 @@ impl Orchestrator {
         self.store
             .add_message(session_id, MessageRole::User, None, vec![Statement::new(SpeechTag::要求, text)])?;
 
+        // collect 语义：把「上一条非 user 消息之后到达的全部用户输入」合并为本轮目标
+        // （串行锁保证的排队窗口内的多条消息 = 一轮处理，避免逐条各跑一遍）
+        let goal = self.collect_pending_inputs(session_id).unwrap_or_else(|| text.to_string());
+
         let ledger = self.store.mutate_ledger(session_id, |l| {
-            l.task.goal = text.to_string();
+            l.task.goal = goal.clone();
         })?;
         self.emit(session_id, "ledger.updated", serde_json::to_value(&ledger)?);
 
-        let result = self.run_round(session_id, text).await;
+        let result = self.run_round(session_id, &goal).await;
         if let Err(err) = &result {
             self.emit(session_id, "run.error", serde_json::json!({ "message": err.to_string() }));
             let _ = self.store.add_message(
@@ -665,12 +781,21 @@ impl Orchestrator {
             _ => String::new(),
         };
 
+        // 会话上下文（多轮记忆）：滚动摘要（压缩后的更早历史）+ 最近窗口原文
+        let (summary, recent) = self.ensure_compacted(session_id).await;
+        let context_block = match (&summary, recent.is_empty()) {
+            (Some(s), false) if !s.trim().is_empty() => format!("## 会话上下文（更早对话摘要）\n{s}\n\n## 最近对话\n{recent}\n\n"),
+            (Some(s), _) if !s.trim().is_empty() => format!("## 会话上下文（更早对话摘要）\n{s}\n\n"),
+            (_, false) => format!("## 最近对话\n{recent}\n\n"),
+            _ => String::new(),
+        };
+
         let mut messages = vec![
             ChatMessage::system(format!(
                 "{system_prompt}\n\n## 当前可调度子个体\n{registry_brief}\n\n{skill_brief}{playbook_brief}{stats_block}{memory_block}"
             )),
             ChatMessage::user(format!(
-                "用户任务输入：{text}\n\n【要求】按 OrchestratorPlan 契约输出 JSON。nodes 中的 agentIdentifier 必须来自上方可调度清单。"
+                "{context_block}用户任务输入：{text}\n\n【要求】按 OrchestratorPlan 契约输出 JSON。nodes 中的 agentIdentifier 必须来自上方可调度清单。"
             )),
         ];
 
@@ -750,30 +875,72 @@ impl Orchestrator {
         session_id: &str,
         messages: &[ChatMessage],
     ) -> anyhow::Result<String> {
-        let (provider, model) = self.resolve_orch_model();
-        let mut req = ChatRequest::new(model, messages.to_vec());
-        req.key_hint = Some("__orch__".into());
-        let (tx, mut rx) = unbounded_channel::<String>();
-        let req_clone = req.clone();
-        let stream_provider = provider.clone();
-        let handle = tokio::spawn(async move { stream_provider.stream(req_clone, tx).await });
+        // 回退链逐档尝试：失败且未发出任何 token 时切换下一档案并冷却失败者
+        let candidates = self.orch_candidates();
+        let mut last_err: Option<anyhow::Error> = None;
+        for (pid, provider, model) in candidates {
+            let mut req = ChatRequest::new(model, messages.to_vec());
+            req.key_hint = Some("__orch__".into());
+            let (tx, mut rx) = unbounded_channel::<String>();
+            let req_clone = req.clone();
+            let stream_provider = provider.clone();
+            let handle = tokio::spawn(async move { stream_provider.stream(req_clone, tx).await });
 
-        let mut acc = String::new();
-        while let Some(delta) = rx.recv().await {
-            acc.push_str(&delta);
-            self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": delta }));
+            let mut acc = String::new();
+            while let Some(delta) = rx.recv().await {
+                acc.push_str(&delta);
+                self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": delta }));
+            }
+            match handle.await {
+                Ok(Ok(resp)) => {
+                    self.failover.clear(&pid);
+                    if acc.is_empty() {
+                        let fallback = provider.chat(req).await?;
+                        self.emit(
+                            session_id,
+                            "orchestrator.token",
+                            serde_json::json!({ "delta": fallback.content }),
+                        );
+                        return Ok(fallback.content);
+                    }
+                    return Ok(if resp.content.is_empty() { acc } else { resp.content });
+                }
+                Ok(Err(e)) => {
+                    if !acc.is_empty() || e.to_string().contains("未配置 API Key") {
+                        return Err(e);
+                    }
+                    self.failover.cool(&pid, crate::provider::FAILOVER_COOLDOWN_SECS);
+                    self.emit(
+                        session_id,
+                        "model.failover",
+                        serde_json::json!({ "profile": pid, "error": e.to_string() }),
+                    );
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(anyhow::anyhow!("流式任务失败: {e}")),
+            }
         }
-        let resp = handle.await??;
-        if acc.is_empty() {
-            let fallback = provider.chat(req).await?;
-            self.emit(
-                session_id,
-                "orchestrator.token",
-                serde_json::json!({ "delta": fallback.content }),
-            );
-            return Ok(fallback.content);
+        // 候选链耗尽：用首候选做最后一次非流式尝试，仍失败才报错
+        if let Some(last) = last_err {
+            let (_, provider, model) = self
+                .orch_candidates()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| (String::new(), self.orch_provider.clone(), self.orch_model.clone()));
+            let mut req = ChatRequest::new(model, messages.to_vec());
+            req.key_hint = Some("__orch__".into());
+            if let Ok(resp) = provider.chat(req).await {
+                self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": resp.content }));
+                return Ok(resp.content);
+            }
+            return Err(last);
         }
-        Ok(if resp.content.is_empty() { acc } else { resp.content })
+        // 无候选链（池空）：全局档案直答
+        let mut req = ChatRequest::new(self.orch_model.clone(), messages.to_vec());
+        req.key_hint = Some("__orch__".into());
+        let resp = self.orch_provider.chat(req).await?;
+        self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": resp.content }));
+        Ok(resp.content)
     }
 }
 
@@ -908,11 +1075,11 @@ impl ExecCtx {
         let node_id = node.id.clone();
         let agent_label = def.identifier.clone();
         let events = o.events.clone();
-        // 个体默认模型 → 组默认模型 → 全局生效档案
-        let resolved = o.resolve_unit_model(&def);
+        // 个体默认模型 → 组默认模型 → 全局生效档案 → 档案回退链
+        let chain = o.unit_chain_for(&def);
         let result = o
             .unit_runtime
-            .execute(&def, &order, Some(resolved), move |delta| {
+            .execute(&def, &order, chain, move |delta| {
                 let evt = CoreEvent {
                     kind: "unit.token".into(),
                     session_id: session_id.clone(),
@@ -1040,6 +1207,27 @@ fn sanitize_adaptation(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------- 收束文本 → 陈述序列
+
+/// 最近窗口消息渲染为文本（新→旧输入，按时间正序输出）
+fn render_recent(msgs: &[crate::types::ChatMessage]) -> String {
+    render_recent_hlp(&msgs.iter().collect::<Vec<_>>())
+}
+
+fn render_recent_hlp(msgs: &[&crate::types::ChatMessage]) -> String {
+    msgs.iter()
+        .map(|m| {
+            let who = match m.role {
+                MessageRole::User => "用户",
+                MessageRole::Orchestrator => m.agent_id.as_deref().unwrap_or("指挥体"),
+                MessageRole::Unit => m.agent_id.as_deref().unwrap_or("子个体"),
+                MessageRole::System => "系统",
+            };
+            let body = m.statements.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("；");
+            format!("[{who}] {}", body.chars().take(300).collect::<String>())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 pub fn text_to_statements(text: &str) -> Vec<Statement> {
     let mut out = Vec::new();

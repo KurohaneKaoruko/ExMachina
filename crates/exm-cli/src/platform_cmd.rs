@@ -161,6 +161,7 @@ pub fn run_model_add(
     use exm_core::config::LlmProfile;
     let mut cfg = (*core.config()).clone();
     let profile = LlmProfile {
+        fallback: None,
         id: id.trim().to_string(),
         name: name.trim().to_string(),
         base_url: base_url.trim().to_string(),

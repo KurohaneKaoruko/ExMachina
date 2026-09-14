@@ -52,6 +52,7 @@ export function ModelsView(): React.ReactElement {
       id: p.id, name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey,
       apiKeys: (p.apiKeys ?? []).join("\\n"),
       orchModel: p.orchModel, unitModel: p.unitModel,
+      fallback: p.fallback ?? "",
     });
     setModal(true);
   };
@@ -82,6 +83,7 @@ export function ModelsView(): React.ReactElement {
           .filter(Boolean),
         orchModel: v.orchModel,
         unitModel: v.unitModel,
+        fallback: v.fallback || "",
       });
       message.success(`提供商已保存：${v.name}`);
       setModal(false);
@@ -276,6 +278,19 @@ export function ModelsView(): React.ReactElement {
               <Input placeholder="deepseek-chat" />
             </Form.Item>
           </Space>
+          <Form.Item
+            name="fallback"
+            label="失败回退"
+            extra="该档案请求失败（未发出内容前）自动切换到所选档案，失败者进入 45 秒冷却；可串成多级回退链"
+          >
+            <Select
+              allowClear
+              placeholder="无（不回退）"
+              options={(info?.profiles ?? [])
+                .filter((p) => p.id !== (editing?.id ?? form.getFieldValue("id")))
+                .map((p) => ({ value: p.id, label: `${p.name}（${p.id}）` }))}
+            />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

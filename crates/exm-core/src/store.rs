@@ -43,6 +43,8 @@ impl Store {
             title: title.to_string(),
             status: "active".into(),
             group_id: if group_id.trim().is_empty() { "default".into() } else { group_id.to_string() },
+            rolling_summary: None,
+            summary_upto: None,
             ledger: SessionLedger::default(),
             created_at: now.clone(),
             updated_at: now,
@@ -92,6 +94,19 @@ impl Store {
 
     pub fn ledger_of(&self, session_id: &str) -> Result<SessionLedger> {
         Ok(self.get_session(session_id)?.map(|s| s.ledger).unwrap_or_default())
+    }
+
+    /// 更新会话滚动摘要（上下文压缩，docs/架构与设计.md）
+    pub fn update_compaction(&self, session_id: &str, summary: &str, upto: usize) -> Result<()> {
+        let _guard = self.ledger_lock.lock().unwrap();
+        let mut session = match self.get_session(session_id)? {
+            Some(s) => s,
+            None => anyhow::bail!("会话不存在: {session_id}"),
+        };
+        session.rolling_summary = if summary.trim().is_empty() { None } else { Some(summary.to_string()) };
+        session.summary_upto = Some(upto);
+        session.updated_at = now_iso();
+        self.db.put("sessions", session_id, &session)
     }
 
     // ---------------- 消息 ----------------

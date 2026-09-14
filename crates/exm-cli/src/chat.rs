@@ -190,8 +190,7 @@ pub async fn run_chat(core: Arc<Core>, text: &str, opts: &ChatOptions) -> anyhow
         }
     });
 
-    let orch = core.orchestrator();
-    orch.handle_user_message(&session.id, text).await?;
+    core.chat(&session.id, text).await?;
     // 等待渲染循环收到 run.finished 并退出
     let _ = tokio::time::timeout(std::time::Duration::from_secs(600), render_task).await;
     Ok(())

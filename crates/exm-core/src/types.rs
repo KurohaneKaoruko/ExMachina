@@ -440,6 +440,12 @@ pub struct Session {
     /// 会话归属的智能体组（组是交互对象：切组即切换会话上下文；旧数据归入 default）
     #[serde(default = "default_session_group")]
     pub group_id: String,
+    /// 滚动摘要：超出窗口的历史经 LLM 压缩后的连续上下文（多轮对话记忆）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rolling_summary: Option<String>,
+    /// 摘要已覆盖到的消息条数（增量压缩从此续起）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_upto: Option<usize>,
     pub ledger: SessionLedger,
     pub created_at: String,
     pub updated_at: String,

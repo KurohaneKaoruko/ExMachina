@@ -727,8 +727,7 @@ pub async fn channel_inbound(
     let text = b.text.clone();
     let sid = session.id.clone();
     tokio::spawn(async move {
-        let orch = core.orchestrator();
-        let r = orch.handle_user_message(&sid, &text).await;
+        let r = core.chat(&sid, &text).await;
         if switched {
             let _ = core.registry().set_active_group(&prev_group);
         }

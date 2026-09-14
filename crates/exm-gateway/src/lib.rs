@@ -350,12 +350,11 @@ async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Js
     if st.core.store.get_session(&id).ok().flatten().is_none() {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "会话不存在" }))).into_response();
     }
-    // 202 受理，运行过程经 WS 推流
+    // 202 受理，运行过程经 WS 推流（core.chat：会话串行 + followup/collect）
     let core = st.core.clone();
     let text = body.text.clone();
     tokio::spawn(async move {
-        let orch = core.orchestrator();
-        if let Err(e) = orch.handle_user_message(&id, &text).await {
+        if let Err(e) = core.chat(&id, &text).await {
             let _ = core.events.send(CoreEvent {
                 kind: "run.error".into(),
                 session_id: id.clone(),

@@ -204,8 +204,7 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, text: &str
         }
     });
 
-    let orch = core.orchestrator();
-    if let Err(e) = orch.handle_user_message(&session.id, text).await {
+    if let Err(e) = core.chat(&session.id, text).await {
         eprintln!("[telegram:{}] 执行失败：{e}", ch.id);
     }
     if switched {

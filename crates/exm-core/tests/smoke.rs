@@ -497,3 +497,79 @@ fn 默认模型_组与个体解析与持久化() {
     // 不存在的个体必须报错
     assert!(reg.set_agent_model("ghost", "p-a").is_err());
 }
+
+#[test]
+fn 模型回退链_展开与冷却() {
+    use exm_core::provider::{FailoverState, ModelPool};
+    use std::sync::Arc;
+
+    let mut pool = ModelPool::new();
+    pool.insert("p-a", Arc::new(exm_core::provider::MockLlmProvider), "a-orch", "a-unit");
+    pool.insert("p-b", Arc::new(exm_core::provider::MockLlmProvider), "b-orch", "b-unit");
+    pool.insert("p-c", Arc::new(exm_core::provider::MockLlmProvider), "c-orch", "c-unit");
+    pool.set_active("p-a");
+    pool.set_fallback("p-a", "p-b");
+    pool.set_fallback("p-b", "p-c");
+    // 成环：c → a 应被截断
+    pool.set_fallback("p-c", "p-a");
+
+    let chain = pool.chain("p-a");
+    assert_eq!(chain, vec!["p-a".to_string(), "p-b".to_string(), "p-c".to_string()]);
+    // 起点即全局档案时不追加重复兜底
+    assert_eq!(pool.chain("p-a").len(), 3);
+    // entry 按角色取模型
+    let (_, m) = pool.entry("p-b", true).expect("p-b 应存在");
+    assert_eq!(m, "b-unit");
+    let (_, m) = pool.entry("p-b", false).expect("p-b 应存在");
+    assert_eq!(m, "b-orch");
+
+    // 冷却：cool → cooling；clear → 解除
+    let fo = FailoverState::default();
+    assert!(!fo.cooling("p-b"));
+    fo.cool("p-b", 60);
+    assert!(fo.cooling("p-b"));
+    fo.clear("p-b");
+    assert!(!fo.cooling("p-b"));
+    // 短冷却（0 秒）立即过期
+    fo.cool("p-c", 0);
+    assert!(!fo.cooling("p-c"));
+}
+
+#[tokio::test]
+async fn 上下文压缩与collect_多轮会话语义() {
+    let cfg = test_config();
+    let core = Core::with_config(cfg).expect("创建 Core 失败");
+
+    // 单体会话：L0 直答路径
+    core.registry().set_active_single(Some("machina")).expect("切单体失败");
+    let s = core.create_session("压缩演练").expect("建会话失败");
+
+    // 灌入 25 条消息（> TRIGGER=20）：12 条 user 旧消息 + 12 条 system 回复 + 1 条新 user
+    use exm_core::types::{MessageRole, SpeechTag, Statement};
+    for k in 0..12 {
+        core.store
+            .add_message(&s.id, MessageRole::User, None, vec![Statement::new(SpeechTag::要求, format!("旧问题{k}"))])
+            .unwrap();
+        core.store
+            .add_message(&s.id, MessageRole::System, None, vec![Statement::report(format!("旧答复{k}"))])
+            .unwrap();
+    }
+
+    // 触发一轮对话：plan 应完成压缩（rolling_summary 生成，summary_upto=24）并成功收束
+    core.chat(&s.id, "用一句话介绍你自己").await.expect("对话失败");
+    let sess = core.store.get_session(&s.id).unwrap().expect("会话存在");
+    assert!(sess.rolling_summary.is_some(), "应生成滚动摘要");
+    assert_eq!(sess.summary_upto, Some(13), "摘要应覆盖 13 条旧消息（25 总量 - 12 保留窗口）");
+
+    // collect：上一轮收束后再连发两条（未跑），第三条触发时应合并三条为一轮目标
+    core.store
+        .add_message(&s.id, MessageRole::User, None, vec![Statement::new(SpeechTag::要求, "补充一".to_string())])
+        .unwrap();
+    core.store
+        .add_message(&s.id, MessageRole::User, None, vec![Statement::new(SpeechTag::要求, "补充二".to_string())])
+        .unwrap();
+    core.chat(&s.id, "现在处理").await.expect("collect 轮失败");
+    let ledger = core.store.ledger_of(&s.id).unwrap();
+    assert!(ledger.task.goal.contains("补充一") && ledger.task.goal.contains("补充二"),
+        "collect 应合并排队输入，实际 goal: {:?}", ledger.task.goal);
+}

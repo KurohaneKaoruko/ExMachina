@@ -128,6 +128,59 @@ impl ToolGateway {
         }
     }
 
+    /// 原生 function calling：按白名单生成工具 schema（docs/协议与契约.md）
+    pub fn tool_specs(allowlist: &[ToolName]) -> Vec<crate::provider::ToolSpec> {
+        let mut specs: Vec<crate::provider::ToolSpec> = Vec::new();
+        let mut push = |name: ToolName, description: &str, parameters: serde_json::Value| {
+            if allowlist.contains(&name) {
+                specs.push(crate::provider::ToolSpec { name: name.key().to_string(), description: description.to_string(), parameters });
+            }
+        };
+        push(ToolName::Read, "读取工作区内文件或目录内容", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "相对工作区的文件或目录路径" },
+                "maxChars": { "type": "integer", "description": "最多返回字符数，默认 8000" }
+            },
+            "required": ["path"]
+        }));
+        push(ToolName::Filesystem, "文件系统操作：list/write/mkdir/delete", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "op": { "type": "string", "enum": ["list", "write", "mkdir", "delete"] },
+                "path": { "type": "string", "description": "相对工作区的路径" },
+                "content": { "type": "string", "description": "op=write 时的文件内容" }
+            },
+            "required": ["op", "path"]
+        }));
+        push(ToolName::Terminal, "在工作区内执行终端命令（受审批闸门与白名单约束）", serde_json::json!({
+            "type": "object",
+            "properties": { "command": { "type": "string" } },
+            "required": ["command"]
+        }));
+        push(ToolName::WebSearch, "联网搜索并返回结果摘要", serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } },
+            "required": ["query"]
+        }));
+        push(ToolName::AgentManage, "组内个体管理（仅主智能体）：create/update/remove/setPrimary", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "op": { "type": "string", "enum": ["create", "update", "remove"] },
+                "identifier": { "type": "string" },
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "domain": { "type": "string" },
+                "tier": { "type": "string", "enum": ["unit", "orchestrator"] },
+                "prompt": { "type": "string" },
+                "capabilities": { "type": "array", "items": { "type": "string" } },
+                "setPrimary": { "type": "boolean" }
+            },
+            "required": ["op"]
+        }));
+        specs
+    }
+
     /// 执行工具：白名单外拒绝，执行后写审计
     pub async fn execute(
         &self,

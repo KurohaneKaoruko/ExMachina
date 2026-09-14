@@ -26,7 +26,7 @@ use crate::config::ExmConfig;
 use crate::cron::CronStore;
 use crate::memory::{MemoryDraft, MemoryEntry, MemoryKind, MemoryStore, RecallHit};
 use crate::orchestrator::{Orchestrator, ORCHESTRATOR_ID};
-use crate::provider::{LlmProvider, MockLlmProvider, ModelPool, OpenAiCompatibleProvider};
+use crate::provider::{FailoverState, LlmProvider, MockLlmProvider, ModelPool, OpenAiCompatibleProvider};
 use crate::registry::LocalRegistry;
 use crate::runtime::AgentRuntime;
 use crate::store::Store;
@@ -44,6 +44,8 @@ pub struct Core {
     pub memory: Arc<MemoryStore>,
     pub events: broadcast::Sender<CoreEvent>,
     pub cron: Arc<CronStore>,
+    /// 会话级运行串行：同一会话的并发输入排队（followup），不互踩任务图
+    run_locks: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     orchestrator: RwLock<Arc<Orchestrator>>,
     config: RwLock<Arc<ExmConfig>>,
 }
@@ -75,6 +77,7 @@ impl Core {
             memory,
             events,
             cron,
+            run_locks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             orchestrator: RwLock::new(orchestrator),
             config: RwLock::new(Arc::new(cfg)),
         })
@@ -202,6 +205,21 @@ impl Core {
 
     pub fn reset_persona(&self, identifier: &str) -> anyhow::Result<bool> {
         self.registry.reset_persona(identifier)
+    }
+
+    /// 统一对话入口：会话级串行（运行中的后续输入排队为 followup，收束后依次处理；
+    /// 排队窗内到达的多条输入由 handle_user_message 的 collect 合并为一轮）
+    pub async fn chat(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        let lock = {
+            let mut locks = self.run_locks.lock();
+            locks
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        let orch = self.orchestrator();
+        orch.handle_user_message(session_id, text).await
     }
 
     pub fn orchestrator(&self) -> Arc<Orchestrator> {
@@ -399,8 +417,7 @@ impl Core {
                 .create_session(&title)
                 .expect("定时任务会话创建失败"),
         };
-        let orch = self.orchestrator();
-        let result = orch.handle_user_message(&session.id, &job.prompt).await;
+        let result = self.chat(&session.id, &job.prompt).await;
         if switched {
             let _ = self.registry.set_active_group(&prev_group);
         }
@@ -490,11 +507,16 @@ pub fn build_orchestrator(
             ))
         };
         pool.insert(p.id.clone(), profile_provider, p.orch_model.clone(), p.unit_model.clone());
+        if let Some(fb) = &p.fallback {
+            pool.set_fallback(&p.id, fb);
+        }
     }
+    pool.set_active(cfg.active_profile.clone());
     Ok(Orchestrator {
         registry: registry.clone(),
         orch_provider: provider,
         model_pool: Arc::new(pool),
+        failover: Arc::new(FailoverState::default()),
         unit_runtime,
         store: store.clone(),
         memory: memory.clone(),
