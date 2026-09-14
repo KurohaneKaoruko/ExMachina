@@ -25,6 +25,8 @@ futures-util.workspace = true
 chrono.workspace = true
 # webhook 通道出站回调
 reqwest.workspace = true
+async-trait.workspace = true
+parking_lot = "0.12"
 
 [dev-dependencies]
 # 端到端验收示例（crates/exm-gateway/examples/e2e.rs）用

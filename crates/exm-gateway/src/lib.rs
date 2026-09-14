@@ -20,6 +20,7 @@ pub mod llm_admin;
 pub mod singles;
 pub mod platform;
 pub mod telegram;
+pub mod worker_hub;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -105,6 +106,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(platform::routes())
         .merge(llm_admin::routes())
         .merge(singles::routes())
+        .merge(worker_hub::routes())
         .route("/api/auth/verify", post(verify_auth))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
@@ -847,6 +849,11 @@ async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<
 pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
     platform::spawn_cron_scheduler(core.clone());
     telegram::spawn_supervisor(core.clone());
+    // 分布式执行：工作者池注入（有工作者在线即自动路由远程，失败回落本地）
+    {
+        let st = AppState { core: core.clone() };
+        core.set_remote(worker_hub::hub(&st))?;
+    }
     // MCP 工具清单后台刷新（懒连接，失败仅记录；首次调用会重试）
     {
         let mcp = core.mcp();

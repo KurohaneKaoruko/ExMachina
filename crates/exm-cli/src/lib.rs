@@ -71,6 +71,18 @@ enum Commands {
         #[arg(short, long, default_value_t = 4173)]
         port: u16,
     },
+    /// 分布式执行节点：接入网关承接子个体派发（旧设备算力入池）
+    Worker {
+        /// 网关工作者端点，如 ws://192.168.1.10:4173/worker
+        #[arg(short, long)]
+        url: String,
+        /// 工作者密钥（= 网关 authKey；未配置鉴权可省略）
+        #[arg(short, long, default_value = "")]
+        token: String,
+        /// 本节点标识（缺省 = 主机名）
+        #[arg(short, long, default_value = "")]
+        id: String,
+    },
     /// 智能体组：列出 / 创建 / 切换 / 删除（组是隔离与切换的基本单位）
     Group {
         #[command(subcommand)]
@@ -455,6 +467,18 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Commands::Serve { port } => {
             let core = build_core(&workspace)?;
             exm_gateway::serve(core, port).await
+        }
+        Commands::Worker { url, token, id } => {
+            let core = build_core(&workspace)?;
+            let worker_id = if id.is_empty() {
+                std::env::var("COMPUTERNAME")
+                    .or_else(|_| std::env::var("HOSTNAME"))
+                    .unwrap_or_else(|_| "worker".into())
+            } else {
+                id
+            };
+            eprintln!("[worker] 本地就绪（模型：{}），接入 {url}", if core.is_mock() { "Mock" } else { "已配置" });
+            exm_core::remote::WorkerSession::run(&url, &token, &worker_id, core).await
         }
         Commands::Config { action } => {
             let root = workspace.canonicalize().unwrap_or(workspace);

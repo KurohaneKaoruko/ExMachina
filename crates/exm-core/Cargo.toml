@@ -17,6 +17,7 @@ reqwest.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 parking_lot = "0.12"
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

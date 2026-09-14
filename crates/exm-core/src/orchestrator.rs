@@ -74,6 +74,10 @@ pub struct Orchestrator {
     pub model_pool: Arc<ModelPool>,
     /// 失败冷却状态（档案失败后一段时间内被回退链跳过）
     pub failover: Arc<FailoverState>,
+    /// 远程执行器（工作者节点池；None = 全本地执行）
+    pub remote: Option<Arc<dyn crate::remote::RemoteExecutor>>,
+    /// 远程派发开关（工作者在线即路由远程，失败回落本地）
+    pub remote_enabled: bool,
     pub unit_runtime: Arc<AgentRuntime>,
     pub store: Arc<Store>,
     pub memory: Arc<MemoryStore>,
@@ -89,6 +93,20 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 exmachina-orchestrator）。
+    /// 工作者端执行入口：远程派发在本地执行（供 WorkerSession 调用）
+    pub async fn execute_unit<F>(
+        &self,
+        def: &AgentDefinition,
+        order: &DispatchOrder,
+        mut on_token: F,
+    ) -> anyhow::Result<SyncReport>
+    where
+        F: FnMut(&str),
+    {
+        let chain = self.unit_chain_for(def);
+        self.unit_runtime.execute(def, order, chain, |d| on_token(d)).await
+    }
+
     pub fn orch_id(&self) -> String {
         self.registry
             .primary()
@@ -1123,23 +1141,66 @@ impl ExecCtx {
         let node_id = node.id.clone();
         let agent_label = def.identifier.clone();
         let events = o.events.clone();
-        // 个体默认模型 → 组默认模型 → 全局生效档案 → 档案回退链
-        let chain = o.unit_chain_for(&def);
-        let result = o
-            .unit_runtime
-            .execute(&def, &order, chain, move |delta| {
-                let evt = CoreEvent {
-                    kind: "unit.token".into(),
-                    session_id: session_id.clone(),
-                    payload: serde_json::json!({
-                        "agentId": agent_label,
-                        "nodeId": node_id,
-                        "delta": delta
-                    }),
-                };
-                let _ = events.send(evt);
-            })
-            .await;
+        // 远程工作者优先（失败/超时回落本地）；令牌流统一进事件总线
+        let result = {
+            let orch = o.clone();
+            let sid = session_id.clone();
+            let nid = node_id.clone();
+            let label = agent_label.clone();
+            let evts = events.clone();
+            // 先判定远程可用性（注册表同步查询，避免闭包在分支间移动）
+            let use_remote = orch.remote_enabled
+                && orch.remote.as_ref().map(|r| r.accepts(&def)).unwrap_or(false);
+            if use_remote {
+                let remote = orch.remote.clone().unwrap();
+                let def2 = def.clone();
+                let order2 = order.clone();
+                let sid2 = sid.clone();
+                match remote
+                    .execute(
+                        &sid2,
+                        &def2,
+                        &order2,
+                        &move |delta: String| {
+                            let _ = evts.send(CoreEvent {
+                                kind: "unit.token".into(),
+                                session_id: sid.clone(),
+                                payload: serde_json::json!({
+                                    "agentId": label, "nodeId": nid, "delta": delta
+                                }),
+                            });
+                        },
+                    )
+                    .await
+                {
+                    Ok(report) => Ok(report),
+                    Err(e) => {
+                        let _ = orch.events.send(CoreEvent {
+                            kind: "remote.fallback".into(),
+                            session_id: self.session_id.clone(),
+                            payload: serde_json::json!({ "agentId": def.identifier, "reason": e.to_string() }),
+                        });
+                        let chain = orch.unit_chain_for(&def);
+                        orch.unit_runtime
+                            .execute(&def, &order, chain, |_delta| {})
+                            .await
+                    }
+                }
+            } else {
+                let chain = orch.unit_chain_for(&def);
+                orch.unit_runtime
+                    .execute(&def, &order, chain, move |delta| {
+                        let _ = evts.send(CoreEvent {
+                            kind: "unit.token".into(),
+                            session_id: sid.clone(),
+                            payload: serde_json::json!({
+                                "agentId": label, "nodeId": nid, "delta": delta
+                            }),
+                        });
+                    })
+                    .await
+            }
+        };
 
         match result {
             Ok(report) => {

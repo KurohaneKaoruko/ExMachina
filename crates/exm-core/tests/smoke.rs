@@ -743,3 +743,122 @@ async fn web_fetch工具与图片暂存() {
     assert_eq!(taken.len(), 1);
     assert!(exm_core::image_stash::take("s-img").is_empty(), "取走即清");
 }
+
+/// 分布式执行节点：工作者（独立 Core，Mock）接入 → 派发远程执行 → 回流收束
+#[tokio::test]
+async fn 分布式执行_工作者节点全链() {
+    use exm_core::remote::{RemoteExecutor, WorkerFrame};
+    use futures_util::{SinkExt, StreamExt};
+    use std::sync::Arc;
+
+    let _serial = serial_guard();
+
+    // ---- 最小 hub：实现 RemoteExecutor（工作者出站通道 + 回流 oneshot）----
+    struct MiniHub {
+        out: tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>>>,
+        report_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<exm_core::types::SyncReport, String>>>>,
+    }
+    #[async_trait::async_trait]
+    impl RemoteExecutor for MiniHub {
+        fn accepts(&self, _def: &exm_core::types::AgentDefinition) -> bool {
+            true
+        }
+        async fn execute(
+            &self,
+            _session_id: &str,
+            def: &exm_core::types::AgentDefinition,
+            order: &exm_core::types::DispatchOrder,
+            _on_token: &(dyn Fn(String) + Send + Sync),
+        ) -> anyhow::Result<exm_core::types::SyncReport> {
+            let out = self.out.lock().await.clone().ok_or_else(|| anyhow::anyhow!("无工作者"))?;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            *self.report_tx.lock().await = Some(tx);
+            let frame = serde_json::to_string(&WorkerFrame::Dispatch {
+                did: "d-test".into(),
+                def: def.clone(),
+                order: order.clone(),
+            })?;
+            out.send(axum::extract::ws::Message::Text(frame)).ok();
+            match rx.await {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => anyhow::bail!("{e}"),
+                Err(_) => anyhow::bail!("工作者断开"),
+            }
+        }
+    }
+
+    let hub = Arc::new(MiniHub {
+        out: tokio::sync::Mutex::new(None),
+        report_tx: tokio::sync::Mutex::new(None),
+    });
+    let hub2 = hub.clone();
+
+    // ---- WS 端点（axum）：Hello 注册出站通道；Report/Error 回流 oneshot ----
+    let app = axum::Router::new().route(
+        "/worker",
+        axum::routing::get(move |ws: axum::extract::ws::WebSocketUpgrade| {
+            let hub = hub2.clone();
+            async move {
+                ws.on_upgrade(move |socket| async move {
+                    let (sink, mut stream) = socket.split();
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<axum::extract::ws::Message>();
+                    let mut sink = sink;
+                    tokio::spawn(async move {
+                        while let Some(m) = rx.recv().await {
+                            if sink.send(m).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    while let Some(Ok(msg)) = stream.next().await {
+                        let axum::extract::ws::Message::Text(t) = msg else { continue };
+                        let Ok(frame) = serde_json::from_str::<WorkerFrame>(&t) else { continue };
+                        match frame {
+                            WorkerFrame::Hello { .. } => {
+                                *hub.out.lock().await = Some(tx.clone());
+                            }
+                            WorkerFrame::Report { report, .. } => {
+                                if let Some(s) = hub.report_tx.lock().await.take() {
+                                    let _ = s.send(Ok(report));
+                                }
+                            }
+                            WorkerFrame::Error { message, .. } => {
+                                if let Some(s) = hub.report_tx.lock().await.take() {
+                                    let _ = s.send(Err(message));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                })
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // ---- 工作者：独立 Core（Mock）+ WorkerSession 接入 ----
+    let worker_cfg = test_config();
+    let worker_core = Arc::new(Core::with_config(worker_cfg).expect("工作者 Core 失败"));
+    let ws_task = tokio::spawn({
+        let url = format!("ws://{addr}/worker");
+        let core = worker_core.clone();
+        async move { exm_core::remote::WorkerSession::run(&url, "", "w-test", core).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // ---- 中心侧 Core 注入 hub → 全远程链路 ----
+    let cfg = test_config();
+    let core = Core::with_config(cfg).expect("中心 Core 失败");
+    core.set_remote(hub).expect("注入远程执行器失败");
+    let s = core.create_session("分布式演练").unwrap();
+    core.chat(&s.id, "评估当前项目的架构风险").await.expect("分布式任务失败");
+
+    let graph = core.store.latest_graph(&s.id).unwrap().expect("任务图缺失");
+    assert!(graph.nodes.iter().all(|n| n.status.is_terminal()), "节点应全部终态");
+    let done = graph.nodes.iter().filter(|n| n.status == exm_core::types::TaskStatus::Done).count();
+    assert!(done >= 3, "远程执行完成节点应 >= 3，实际 {done}");
+
+    ws_task.abort();
+}

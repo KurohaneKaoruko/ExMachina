@@ -17,6 +17,7 @@ pub mod orchestrator;
 pub mod parse;
 pub mod provider;
 pub mod registry;
+pub mod remote;
 pub mod runtime;
 pub mod store;
 pub mod task;
@@ -50,6 +51,8 @@ pub struct Core {
     run_locks: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// MCP 服务器池（与 Orchestrator 内工具网关共用同一实例）
     mcp: Arc<crate::mcp::McpRegistry>,
+    /// 远程执行器（工作者池；网关在 serve 时注入）
+    remote: parking_lot::RwLock<Option<Arc<dyn crate::remote::RemoteExecutor>>>,
     orchestrator: RwLock<Arc<Orchestrator>>,
     config: RwLock<Arc<ExmConfig>>,
 }
@@ -75,6 +78,7 @@ impl Core {
             &events,
             &memory,
             Some(mcp_handle.clone()),
+            None,
         )?);
 
         Ok(Core {
@@ -86,6 +90,7 @@ impl Core {
             cron,
             run_locks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             mcp: mcp_handle.clone(),
+            remote: parking_lot::RwLock::new(None),
             orchestrator: RwLock::new(orchestrator),
             config: RwLock::new(Arc::new(cfg)),
         })
@@ -95,7 +100,7 @@ impl Core {
     pub fn apply_config(&self, cfg: ExmConfig) -> anyhow::Result<()> {
         cfg.save()?;
         self.mcp.configure(&cfg.mcp_servers);
-        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()))?;
+        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote())?;
         *self.orchestrator.write() = Arc::new(orch);
         *self.config.write() = Arc::new(cfg);
         Ok(())
@@ -233,6 +238,23 @@ impl Core {
 
     pub fn mcp(&self) -> Arc<crate::mcp::McpRegistry> {
         self.mcp.clone()
+    }
+
+    /// 注入远程执行器（工作者池）并热重建 Orchestrator 启用远程路由
+    pub fn set_remote(&self, remote: Arc<dyn crate::remote::RemoteExecutor>) -> anyhow::Result<()> {
+        *self.remote.write() = Some(remote);
+        self.rebuild_orchestrator()
+    }
+
+    fn remote(&self) -> Option<Arc<dyn crate::remote::RemoteExecutor>> {
+        self.remote.read().clone()
+    }
+
+    fn rebuild_orchestrator(&self) -> anyhow::Result<()> {
+        let cfg = self.config();
+        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote())?;
+        *self.orchestrator.write() = Arc::new(orch);
+        Ok(())
     }
 
     /// 暂存图片附件（随该会话下一轮对话注入规划；每轮取走即清）
@@ -482,6 +504,7 @@ pub fn build_orchestrator(
     events: &broadcast::Sender<CoreEvent>,
     memory: &Arc<MemoryStore>,
     mcp: Option<Arc<crate::mcp::McpRegistry>>,
+    remote: Option<Arc<dyn crate::remote::RemoteExecutor>>,
 ) -> anyhow::Result<Orchestrator> {
     let provider: Arc<dyn LlmProvider> = if cfg.use_mock {
         Arc::new(MockLlmProvider)
@@ -544,6 +567,8 @@ pub fn build_orchestrator(
         orch_provider: provider,
         model_pool: Arc::new(pool),
         failover: Arc::new(FailoverState::default()),
+        remote_enabled: remote.is_some(),
+        remote,
         unit_runtime,
         store: store.clone(),
         memory: memory.clone(),

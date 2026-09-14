@@ -363,6 +363,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-tungstenite",
  "uuid",
 ]
 
@@ -371,10 +372,12 @@ name = "exm-gateway"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "exm-core",
  "futures-util",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
