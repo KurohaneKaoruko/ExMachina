@@ -836,6 +836,14 @@ impl Orchestrator {
                     }),
                 );
             }
+        } else {
+            // 深层记忆关闭：回落 memory.md 文件记忆（OpenClaw/Hermes 模式）
+            if let Ok(md) = std::fs::read_to_string(&self.memory_md_path) {
+                let trimmed: String = md.chars().take(8000).collect();
+                if !trimmed.trim().is_empty() {
+                    memory_block = format!("## Memory (memory.md)\n{trimmed}\n\n");
+                }
+            }
         }
         let stats_block = match self.memory.agent_stats(12) {
             Ok(stats) if !stats.is_empty() => {

@@ -25,6 +25,75 @@ import { DeleteOutlined, PushpinOutlined, ReloadOutlined, SearchOutlined } from 
 import { api, type MemoryEntry, type MemoryStats, type RecallHit } from "../api";
 import { useExm } from "../store";
 
+function MdEditor(): React.ReactElement {
+  const [content, setContent] = useState("");
+  const [path, setPath] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const key = localStorage.getItem("exm.key") ?? "";
+        const resp = await fetch("/api/memory/md", {
+          headers: key ? { "X-Auth-Key": key } : {},
+        });
+        const data = (await resp.json()) as { content: string; path: string };
+        setContent(data.content);
+        setPath(data.path);
+      } catch (e) {
+        message.error(`读取 memory.md 失败：${String(e)}`);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const key = localStorage.getItem("exm.key") ?? "";
+      await fetch("/api/memory/md", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(key ? { "X-Auth-Key": key } : {}) },
+        body: JSON.stringify({ content }),
+      });
+      setDirty(false);
+      message.success("memory.md 已保存（下一轮对话即注入）");
+    } catch (e) {
+      message.error(`保存失败：${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="memory-wrap">
+      <Card
+        size="small"
+        title="文件记忆（memory.md）"
+        extra={
+          <Button type="primary" size="small" loading={saving} disabled={!dirty} onClick={() => void save()}>
+            保存
+          </Button>
+        }
+      >
+        <div className="dim" style={{ marginBottom: 8 }}>
+          深层记忆已关闭——本文件是唯一记忆载体，随每轮对话注入。直接用 Markdown 维护
+          （目标、偏好、事实、教训均可）；保存在 {path || "memory.md"}
+        </div>
+        <Input.TextArea
+          value={content}
+          onChange={(e) => {
+            setContent(e.target.value);
+            setDirty(true);
+          }}
+          rows={22}
+          style={{ fontFamily: "inherit" }}
+        />
+      </Card>
+    </div>
+  );
+}
+
 const KIND_COLORS: Record<string, string> = {
   fact: "blue",
   decision: "purple",
@@ -36,6 +105,7 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 export function MemoryView(): React.ReactElement {
+  const deepEnabled = useExm((s) => s.config?.memory.enabled !== false);
   const memoryVersion = useExm((s) => s.memoryVersion);
   const agents = useExm((s) => s.agents);
   const groups = useExm((s) => s.groups);
@@ -59,6 +129,10 @@ export function MemoryView(): React.ReactElement {
   useEffect(() => {
     void reload();
   }, [reload, memoryVersion]);
+
+  if (!deepEnabled) {
+    return <MdEditor />;
+  }
 
   return (
     <div className="memory-wrap">

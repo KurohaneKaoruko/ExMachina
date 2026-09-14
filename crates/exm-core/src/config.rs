@@ -510,9 +510,9 @@ pub fn config_schema() -> serde_json::Value {
                 "key": "memory",
                 "label": "记忆系统",
                 "fields": [
-                    { "key": "memory.enabled", "label": "启用记忆系统", "kind": "boolean",
+                    { "key": "memory.enabled", "label": "深层记忆（数据库检索 + 自动写入）", "kind": "boolean",
                       "default": "true", "required": false,
-                      "help": "关闭后不召回、不写入深层记忆（memory.md 保留只读）" },
+                      "help": "关闭后仅使用 memory.md 文件记忆（OpenClaw/Hermes 模式）：规划时注入该文件内容，可在记忆面板直接编辑；不写数据库、不做语义检索" },
                     { "key": "memory.recallLimit", "label": "单轮召回条数", "kind": "number",
                       "default": "5", "required": false, "min": 0, "max": 20,
                       "help": "注入指挥体上下文的历史记忆条数" },

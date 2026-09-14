@@ -31,6 +31,21 @@ export interface GatewayConfig {
   maxConcurrency: number;
   /** 会话 token 预算（估算；0 = 不限） */
   maxSessionTokens: number;
+  memory: {
+    enabled: boolean;
+    recallLimit: number;
+    halfLifeDays: number;
+  };
+  security: {
+    execApproval: string;
+    execAllowlist: string;
+  };
+  automation: {
+    heartbeatEnabled: boolean;
+    heartbeatIntervalMinutes: number;
+    heartbeatPrompt: string;
+    autoAdapt: boolean;
+  };
   mock: boolean;
 }
 

@@ -27,9 +27,32 @@ const ENUM_OVERRIDES: Record<string, { value: string; label: string }[]> = {
 
 function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
   if (!cfg) return undefined;
-  if (key === "maxConcurrency") return cfg.maxConcurrency;
-  if (key === "maxSessionTokens") return cfg.maxSessionTokens;
-  return undefined;
+  switch (key) {
+    case "maxConcurrency":
+      return cfg.maxConcurrency;
+    case "maxSessionTokens":
+      return cfg.maxSessionTokens;
+    case "memory.enabled":
+      return cfg.memory.enabled;
+    case "memory.recallLimit":
+      return cfg.memory.recallLimit;
+    case "memory.halfLifeDays":
+      return cfg.memory.halfLifeDays;
+    case "security.execApproval":
+      return cfg.security.execApproval;
+    case "security.execAllowlist":
+      return cfg.security.execAllowlist;
+    case "automation.heartbeatEnabled":
+      return cfg.automation.heartbeatEnabled;
+    case "automation.heartbeatIntervalMinutes":
+      return cfg.automation.heartbeatIntervalMinutes;
+    case "automation.heartbeatPrompt":
+      return cfg.automation.heartbeatPrompt;
+    case "automation.autoAdapt":
+      return cfg.automation.autoAdapt;
+    default:
+      return undefined;
+  }
 }
 
 export function SettingsView(): React.ReactElement {

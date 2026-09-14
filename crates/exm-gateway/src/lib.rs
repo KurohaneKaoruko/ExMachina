@@ -105,6 +105,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/memory/render", post(memory_render))
         .route("/api/memory/:id", axum::routing::delete(forget_memory))
         .route("/api/memory/:id/pin", post(pin_memory))
+        .route("/api/memory/md", get(get_memory_md).put(put_memory_md))
         .route("/ws", get(ws_handler))
         .merge(platform::routes())
         .merge(llm_admin::routes())
@@ -148,6 +149,21 @@ async fn get_config(State(st): State<AppState>) -> impl IntoResponse {
         },
         "maxConcurrency": cfg.max_concurrency,
         "maxSessionTokens": cfg.max_session_tokens,
+        "memory": {
+            "enabled": cfg.memory_enabled,
+            "recallLimit": cfg.memory_recall_limit,
+            "halfLifeDays": cfg.memory_half_life_days,
+        },
+        "security": {
+            "execApproval": cfg.security.exec_approval,
+            "execAllowlist": cfg.security.exec_allowlist,
+        },
+        "automation": {
+            "heartbeatEnabled": cfg.automation.heartbeat_enabled,
+            "heartbeatIntervalMinutes": cfg.automation.heartbeat_interval_minutes,
+            "heartbeatPrompt": cfg.automation.heartbeat_prompt,
+            "autoAdapt": cfg.automation.auto_adapt,
+        },
         "mock": st.core.is_mock(),
     }))
 }
@@ -806,6 +822,33 @@ async fn memory_decay(State(st): State<AppState>) -> impl IntoResponse {
     match st.core.memory_decay(0.05) {
         Ok(n) => Json(json!({ "ok": true, "changed": n })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 读取 memory.md（深层记忆关闭时的唯一记忆载体；OpenClaw/Hermes 文件记忆模式）
+async fn get_memory_md(State(st): State<AppState>) -> impl IntoResponse {
+    let path = st.core.config().memory_md_path.clone();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    Json(json!({
+        "content": content,
+        "path": path.display().to_string(),
+        "deepEnabled": !st.core.config().memory_enabled,
+    }))
+}
+
+/// 保存 memory.md
+async fn put_memory_md(State(st): State<AppState>, Json(b): Json<serde_json::Value>) -> impl IntoResponse {
+    let Some(content) = b.get("content").and_then(|c| c.as_str()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "缺少 content" }))).into_response();
+    };
+    let path = st.core.config().memory_md_path.clone();
+    match std::fs::write(&path, content) {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("写入失败: {e}") })),
+        )
+            .into_response(),
     }
 }
 
