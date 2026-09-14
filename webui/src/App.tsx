@@ -19,6 +19,7 @@ import {
 } from "@ant-design/icons";
 import { api } from "./api";
 import { useExm } from "./store";
+import { useLang, useT } from "./i18n";
 import { ACCENTS, accentOf, useTheme } from "./theme";
 import { LoginView } from "./views/LoginView";
 import { ChatView } from "./views/ChatView";
@@ -60,6 +61,10 @@ export default function App(): React.ReactElement {
   const setAccent = useTheme((s) => s.setAccent);
   const [view, setView] = useState<ViewKey>("chat");
   const [themeOpen, setThemeOpen] = useState(false);
+  const [langOpen, setLangOpen] = useState(false);
+  const t = useT();
+  const lang = useLang((s) => s.lang);
+  const setLang = useLang((s) => s.setLang);
   // 登录门：null = 鉴权中；false = 未解锁；true = 已进入
   const [authed, setAuthed] = useState<boolean | null>(null);
 
@@ -111,7 +116,7 @@ export default function App(): React.ReactElement {
             <span className="brand-name">EX·MACHINA</span>
           </div>
           <div className="brand-sub">
-            智械体集群 // 控制台<span className="cursor-blink">▊</span>
+            {t("brand.sub")}<span className="cursor-blink">▊</span>
           </div>
         </div>
         <Menu
@@ -119,20 +124,20 @@ export default function App(): React.ReactElement {
           selectedKeys={[view]}
           className="nav-menu"
           items={[
-            { key: "chat", icon: <MessageOutlined />, label: <><span>对话</span> <span className="label-en">[CHAT]</span></> },
-            { key: "agent", icon: <UserOutlined />, label: <><span>智能体</span> <span className="label-en">[AGENT]</span></> },
-            { key: "groups", icon: <TeamOutlined />, label: <><span>智能体组</span> <span className="label-en">[GROUPS]</span></> },
-            { key: "agents", icon: <RobotOutlined />, label: <><span>子个体</span> <span className="label-en">[UNITS]</span></> },
-            { key: "skills", icon: <DeploymentUnitOutlined />, label: <><span>技能</span> <span className="label-en">[SKILLS]</span></> },
-            { key: "models", icon: <ApiOutlined />, label: <><span>模型提供商</span> <span className="label-en">[PROVIDERS]</span></> },
-            { key: "graph", icon: <ApartmentOutlined />, label: <><span>任务图</span> <span className="label-en">[DAG]</span></> },
-            { key: "automations", icon: <ClockCircleOutlined />, label: <><span>自动化</span> <span className="label-en">[CRON]</span></> },
-            { key: "approvals", icon: <BellOutlined />, label: <><span>审批</span> <span className="label-en">[APPROVALS]</span></> },
-            { key: "channels", icon: <CloudUploadOutlined />, label: <><span>通道</span> <span className="label-en">[CHANNELS]</span></> },
-            { key: "ledger", icon: <FundOutlined />, label: <><span>三账</span> <span className="label-en">[LEDGER]</span></> },
-            { key: "memory", icon: <DatabaseOutlined />, label: <><span>记忆</span> <span className="label-en">[MEMORY]</span></> },
-            { key: "activity", icon: <FileTextOutlined />, label: <><span>事件</span> <span className="label-en">[EVENTS]</span></> },
-            { key: "settings", icon: <SettingOutlined />, label: <><span>设置</span> <span className="label-en">[CONFIG]</span></> },
+            { key: "chat", icon: <MessageOutlined />, label: <><span>{t("nav.chat")}</span> <span className="label-en">[CHAT]</span></> },
+            { key: "agent", icon: <UserOutlined />, label: <><span>{t("nav.units")}</span> <span className="label-en">[UNITS]</span></> },
+            { key: "groups", icon: <TeamOutlined />, label: <><span>{t("nav.groups")}</span> <span className="label-en">[GROUPS]</span></> },
+            { key: "agents", icon: <RobotOutlined />, label: <><span>{t("nav.units")}</span> <span className="label-en">[UNITS]</span></> },
+            { key: "skills", icon: <DeploymentUnitOutlined />, label: <><span>{t("nav.skills")}</span> <span className="label-en">[SKILLS]</span></> },
+            { key: "models", icon: <ApiOutlined />, label: <><span>{t("nav.providers")}</span> <span className="label-en">[PROVIDERS]</span></> },
+            { key: "graph", icon: <ApartmentOutlined />, label: <><span>{t("nav.dag")}</span> <span className="label-en">[DAG]</span></> },
+            { key: "automations", icon: <ClockCircleOutlined />, label: <><span>{t("nav.cron")}</span> <span className="label-en">[CRON]</span></> },
+            { key: "approvals", icon: <BellOutlined />, label: <><span>{t("nav.approvals")}</span> <span className="label-en">[APPROVALS]</span></> },
+            { key: "channels", icon: <CloudUploadOutlined />, label: <><span>{t("nav.channels")}</span> <span className="label-en">[CHANNELS]</span></> },
+            { key: "ledger", icon: <FundOutlined />, label: <><span>{t("nav.ledger")}</span> <span className="label-en">[LEDGER]</span></> },
+            { key: "memory", icon: <DatabaseOutlined />, label: <><span>{t("nav.memory")}</span> <span className="label-en">[MEMORY]</span></> },
+            { key: "activity", icon: <FileTextOutlined />, label: <><span>{t("nav.events")}</span> <span className="label-en">[EVENTS]</span></> },
+            { key: "settings", icon: <SettingOutlined />, label: <><span>{t("nav.settings")}</span> <span className="label-en">[CONFIG]</span></> },
           ]}
           onClick={({ key }) => setView(key as ViewKey)}
         />
@@ -162,9 +167,33 @@ export default function App(): React.ReactElement {
             ))}
           </div>
         </div>
+        <div className={`theme-switcher ${langOpen ? "open" : ""}`}>
+          <button className="theme-toggle" onClick={() => setLangOpen(!langOpen)}>
+            <span className="theme-label">{t("lang.label")}</span>
+            <span className="theme-current">{lang === "zh" ? "中文" : "English"}</span>
+            <span className={`theme-caret ${langOpen ? "up" : ""}`}>▸</span>
+          </button>
+          <div className="theme-panel">
+            {([
+              { key: "zh" as const, name: "中文" },
+              { key: "en" as const, name: "English" },
+            ]).map((l) => (
+              <button
+                key={l.key}
+                className={`theme-option ${lang === l.key ? "active" : ""}`}
+                onClick={() => {
+                  setLang(l.key);
+                  setLangOpen(false);
+                }}
+              >
+                <span>{l.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="nav-footer">
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} />
-          <span className="status-text">{wsConnected ? "网关已连结" : "通道重连中"}</span>
+          <span className="status-text">{wsConnected ? t("status.connected") : t("status.reconnecting")}</span>
           <Tag color={config?.mock ? "warning" : "success"} className="brand-tag">
             {config?.mock ? "MOCK" : "LINK"}
           </Tag>

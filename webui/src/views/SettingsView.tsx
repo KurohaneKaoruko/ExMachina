@@ -6,14 +6,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, InputNumber, message, Select, Switch } from "antd";
 import { DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
+import { useT } from "../i18n";
 import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
 
 /** 分组元数据 */
-const SECTIONS: Record<string, { icon: React.ReactNode; title: string; desc: string }> = {
-  runtime: { icon: <SettingOutlined />, title: "运行时", desc: "并发与资源上限" },
-  memory: { icon: <DatabaseOutlined />, title: "记忆系统", desc: "召回范围与生命周期" },
-  security: { icon: <SafetyCertificateOutlined />, title: "安全与审批", desc: "命令闸门与白名单" },
-  automation: { icon: <FieldTimeOutlined />, title: "自动化", desc: "心跳巡检与自优化" },
+const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: string; descKey: string }> = {
+  runtime: { icon: <SettingOutlined />, titleKey: "sec.runtime", descKey: "sec.runtime.desc" },
+  memory: { icon: <DatabaseOutlined />, titleKey: "sec.memory", descKey: "sec.memory.desc" },
+  security: { icon: <SafetyCertificateOutlined />, titleKey: "sec.security", descKey: "sec.security.desc" },
+  automation: { icon: <FieldTimeOutlined />, titleKey: "sec.automation", descKey: "sec.automation.desc" },
 };
 
 /** 特定字段用选择器而非自由文本 */
@@ -57,6 +58,7 @@ function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
 
 export function SettingsView(): React.ReactElement {
   const { config, saveConfig } = useExm();
+  const t = useT();
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [selected, setSelected] = useState<string>("runtime");

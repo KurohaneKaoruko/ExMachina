@@ -137,7 +137,7 @@ export function GroupsView(): React.ReactElement {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
             新建组
           </Button>
-          <span className="pane-hint">切组请到「对话」页左栏，此处只做编成与默认模型管理</span>
+          
           <Button
             danger
             icon={<UsergroupDeleteOutlined />}
