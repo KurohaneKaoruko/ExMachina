@@ -66,8 +66,9 @@ impl AgentRuntime {
 
         let max_steps = order.constraints.max_steps.max(1);
         let mut rewrites: u32 = 0;
-        // 原生 function calling：按白名单生成工具 schema（Mock/兼容端点自动退回文本协议）
-        let specs = crate::tools::ToolGateway::tool_specs(&order.tool_allowlist);
+        // 原生 function calling：按白名单生成工具 schema + 该个体可见的 MCP 工具
+        let mut specs = crate::tools::ToolGateway::tool_specs(&order.tool_allowlist);
+        specs.extend(self.tools.mcp().tool_snapshot_for(&def.identifier));
 
         for _step in 0..max_steps {
             let (text, calls) = self
@@ -80,23 +81,33 @@ impl AgentRuntime {
                 assistant.tool_calls = calls.clone();
                 messages.push(assistant);
                 for c in &calls {
-                    let feedback = match ToolName::parse(&c.name) {
-                        Some(tool) => {
-                            let result = self
-                                .tools
-                                .execute(&def.identifier, &order.tool_allowlist, tool, &c.arguments)
-                                .await;
-                            if result.ok {
-                                format!("【报告】工具 {} 执行结果：\n{}", c.name, result.output)
-                            } else {
-                                format!(
-                                    "【警告】工具 {} 执行失败：{}",
-                                    c.name,
-                                    result.error.unwrap_or_default()
-                                )
-                            }
+                    let feedback = if c.name.starts_with("mcp:") {
+                        // MCP 工具（第三方生态）：审计与错误语义与内置工具一致
+                        let result = self.tools.execute_mcp(&def.identifier, &c.name, &c.arguments).await;
+                        if result.ok {
+                            format!("【报告】工具 {} 执行结果：\n{}", c.name, result.output)
+                        } else {
+                            format!("【警告】工具 {} 执行失败：{}", c.name, result.error.unwrap_or_default())
                         }
-                        None => format!("【警告】未知工具：{}", c.name),
+                    } else {
+                        match ToolName::parse(&c.name) {
+                            Some(tool) => {
+                                let result = self
+                                    .tools
+                                    .execute(&def.identifier, &order.tool_allowlist, tool, &c.arguments)
+                                    .await;
+                                if result.ok {
+                                    format!("【报告】工具 {} 执行结果：\n{}", c.name, result.output)
+                                } else {
+                                    format!(
+                                        "【警告】工具 {} 执行失败：{}",
+                                        c.name,
+                                        result.error.unwrap_or_default()
+                                    )
+                                }
+                            }
+                            None => format!("【警告】未知工具：{}", c.name),
+                        }
                     };
                     let mut msg = ChatMessage::tool_result(&c.id, feedback);
                     msg.name = Some(c.name.clone());

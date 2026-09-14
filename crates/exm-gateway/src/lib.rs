@@ -90,6 +90,8 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/playbooks", get(list_playbooks))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/schema", get(get_config_schema))
+        .route("/api/mcp", get(mcp_servers))
+        .route("/api/mcp/refresh", post(mcp_refresh))
         // 记忆系统（docs/08 §6）
         .route("/api/memory", get(list_memory).post(add_memory))
         .route("/api/memory/search", post(search_memory))
@@ -598,6 +600,24 @@ async fn get_config_schema() -> impl IntoResponse {
     Json(exm_core::config::config_schema())
 }
 
+// ---------------------------------------------------------------- MCP（第三方工具生态）
+
+async fn mcp_servers(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({ "servers": st.core.mcp().servers_brief() }))
+}
+
+async fn mcp_refresh(State(st): State<AppState>) -> impl IntoResponse {
+    let results = st.core.mcp().refresh_all().await;
+    let out: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|(id, r)| match r {
+            Ok(n) => json!({ "id": id, "ok": true, "tools": n }),
+            Err(e) => json!({ "id": id, "ok": false, "error": e.to_string() }),
+        })
+        .collect();
+    Json(json!({ "refreshed": out }))
+}
+
 async fn list_memory(
     State(st): State<AppState>,
     Query(q): Query<MemoryQuery>,
@@ -820,6 +840,19 @@ async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<
 pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
     platform::spawn_cron_scheduler(core.clone());
     telegram::spawn_supervisor(core.clone());
+    // MCP 工具清单后台刷新（懒连接，失败仅记录；首次调用会重试）
+    {
+        let mcp = core.mcp();
+        tokio::spawn(async move {
+            for (id, r) in mcp.refresh_all().await {
+                match r {
+                    Ok(n) if n > 0 => println!("[mcp] {id}: {n} 个工具就绪"),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[mcp] {id}: 清单获取失败（首次调用时重试）: {e}"),
+                }
+            }
+        });
+    }
     let router = build_router(core.clone());
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;

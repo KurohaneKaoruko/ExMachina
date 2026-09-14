@@ -10,6 +10,7 @@ pub mod bus;
 pub mod config;
 pub mod cron;
 pub mod fsdb;
+pub mod mcp;
 pub mod memory;
 pub mod orchestrator;
 pub mod parse;
@@ -46,6 +47,8 @@ pub struct Core {
     pub cron: Arc<CronStore>,
     /// 会话级运行串行：同一会话的并发输入排队（followup），不互踩任务图
     run_locks: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// MCP 服务器池（与 Orchestrator 内工具网关共用同一实例）
+    mcp: Arc<crate::mcp::McpRegistry>,
     orchestrator: RwLock<Arc<Orchestrator>>,
     config: RwLock<Arc<ExmConfig>>,
 }
@@ -62,12 +65,15 @@ impl Core {
         let registry = Arc::new(LocalRegistry::new(&cfg.agents_dir)?);
         let bus: Arc<dyn MessageBus> = Arc::new(InProcessBus::new());
         let (events, _rx) = broadcast::channel(8192);
+        let mcp_handle = crate::mcp::McpRegistry::shared();
+        mcp_handle.configure(&cfg.mcp_servers);
         let orchestrator = Arc::new(build_orchestrator(
             &cfg,
             &store,
             &registry,
             &events,
             &memory,
+            Some(mcp_handle.clone()),
         )?);
 
         Ok(Core {
@@ -78,6 +84,7 @@ impl Core {
             events,
             cron,
             run_locks: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            mcp: mcp_handle.clone(),
             orchestrator: RwLock::new(orchestrator),
             config: RwLock::new(Arc::new(cfg)),
         })
@@ -86,7 +93,8 @@ impl Core {
     /// 配置热更新（设置页）：重建 Provider / Runtime / Orchestrator
     pub fn apply_config(&self, cfg: ExmConfig) -> anyhow::Result<()> {
         cfg.save()?;
-        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory)?;
+        self.mcp.configure(&cfg.mcp_servers);
+        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()))?;
         *self.orchestrator.write() = Arc::new(orch);
         *self.config.write() = Arc::new(cfg);
         Ok(())
@@ -220,6 +228,10 @@ impl Core {
         let _guard = lock.lock().await;
         let orch = self.orchestrator();
         orch.handle_user_message(session_id, text).await
+    }
+
+    pub fn mcp(&self) -> Arc<crate::mcp::McpRegistry> {
+        self.mcp.clone()
     }
 
     pub fn orchestrator(&self) -> Arc<Orchestrator> {
@@ -463,6 +475,7 @@ pub fn build_orchestrator(
     registry: &Arc<LocalRegistry>,
     events: &broadcast::Sender<CoreEvent>,
     memory: &Arc<MemoryStore>,
+    mcp: Option<Arc<crate::mcp::McpRegistry>>,
 ) -> anyhow::Result<Orchestrator> {
     let provider: Arc<dyn LlmProvider> = if cfg.use_mock {
         Arc::new(MockLlmProvider)
@@ -477,13 +490,18 @@ pub fn build_orchestrator(
             &cfg.llm.api_format,
         ))
     };
-    let tools = Arc::new(ToolGateway::new(
-        &cfg.workspace_root,
-        store.clone(),
-        registry.clone(),
-        events.clone(),
-        cfg.security.clone(),
-    ));
+    let mcp = mcp.unwrap_or_else(crate::mcp::McpRegistry::shared);
+    mcp.configure(&cfg.mcp_servers);
+    let tools = Arc::new(
+        ToolGateway::new(
+            &cfg.workspace_root,
+            store.clone(),
+            registry.clone(),
+            events.clone(),
+            cfg.security.clone(),
+        )
+        .with_mcp(mcp),
+    );
     let unit_runtime = Arc::new(AgentRuntime::new(
         registry.clone(),
         provider.clone(),

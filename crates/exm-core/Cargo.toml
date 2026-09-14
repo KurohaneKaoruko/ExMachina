@@ -20,3 +20,5 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+# MCP http 传输冒烟：测试内起最小 JSON-RPC 服务器
+axum.workspace = true

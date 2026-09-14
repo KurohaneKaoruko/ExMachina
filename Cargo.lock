@@ -354,6 +354,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "chrono",
  "futures-util",
  "parking_lot",

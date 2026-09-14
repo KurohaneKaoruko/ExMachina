@@ -573,3 +573,71 @@ async fn 上下文压缩与collect_多轮会话语义() {
     assert!(ledger.task.goal.contains("补充一") && ledger.task.goal.contains("补充二"),
         "collect 应合并排队输入，实际 goal: {:?}", ledger.task.goal);
 }
+
+/// MCP 客户端（http 传输）：测试内起一个最小 JSON-RPC 服务器，走完 configure→refresh→snapshot→call 全链
+#[tokio::test]
+async fn mcp_客户端_http全链() {
+    use exm_core::mcp::{McpRegistry, McpServerConfig};
+    use std::collections::HashMap;
+
+    // 最小 MCP 服务器（axum，随机端口）：initialize / tools/list / tools/call
+    let app = axum::Router::new().route(
+        "/mcp",
+        axum::routing::post(async |body: String| {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let id = v.get("id").cloned().unwrap_or(serde_json::json!(0));
+            let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let result = match method {
+                "initialize" => serde_json::json!({ "protocolVersion": "2025-03-26", "capabilities": { "tools": {} } }),
+                "tools/list" => serde_json::json!({ "tools": [{
+                    "name": "echo",
+                    "description": "回声工具",
+                    "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+                }]}),
+                "tools/call" => {
+                    let text = v.pointer("/params/arguments/text").and_then(|t| t.as_str()).unwrap_or("");
+                    serde_json::json!({ "content": [{ "type": "text", "text": format!("回声:{text}") }], "isError": false })
+                }
+                _ => serde_json::Value::Null,
+            };
+            axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let mut cfg = McpServerConfig {
+        id: "t".into(),
+        transport: "http".into(),
+        command: None,
+        args: vec![],
+        env: HashMap::new(),
+        url: Some(format!("http://{addr}/mcp")),
+        allowed_agents: vec![],
+        enabled: true,
+    };
+    let reg = McpRegistry::shared();
+    reg.configure(&[cfg.clone()]);
+
+    let results = reg.refresh_all().await;
+    assert!(matches!(&results[..], [(id, Ok(n))] if id == "t" && *n == 1), "应列出 1 个工具: {results:?}");
+
+    // 快照：个体可见（allowedAgents 空 = 全体）
+    let snap = reg.tool_snapshot_for("anyone");
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].name, "mcp:t:echo");
+
+    // 调用：全名 → 回声
+    let r = reg.call("mcp:t:echo", "anyone", &serde_json::json!({ "text": "你好" })).await.expect("调用失败");
+    assert!(r.ok);
+    assert_eq!(r.text, "回声:你好");
+
+    // 个体白名单：仅限 scout-agent
+    cfg.allowed_agents = vec!["scout-agent".into()];
+    reg.configure(&[cfg]);
+    let denied = reg.call("mcp:t:echo", "other-agent", &serde_json::json!({ "text": "x" })).await;
+    assert!(matches!(denied, Some(r) if !r.ok), "白名单外的个体应被拒绝");
+    assert!(reg.tool_snapshot_for("other-agent").is_empty());
+    assert_eq!(reg.tool_snapshot_for("scout-agent").len(), 1);
+}

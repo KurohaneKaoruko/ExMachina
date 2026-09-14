@@ -120,6 +120,8 @@ pub struct ExmConfig {
     pub active_profile: String,
     /// 界面与提示词语言（EXM_LANG，zh/en）：en 时优先装载 {stem}.{lang}.md 提示词变体
     pub language: String,
+    /// MCP 服务器（第三方工具生态，docs/架构与设计.md 扩展点）
+    pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -141,6 +143,8 @@ struct ConfigFile {
     llm_profiles: Option<Vec<LlmProfile>>,
     #[serde(default)]
     active_profile: Option<String>,
+    #[serde(default)]
+    mcp_servers: Option<Vec<crate::mcp::McpServerConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -360,6 +364,7 @@ impl ExmConfig {
             llm_profiles,
             active_profile,
             language: std::env::var("EXM_LANG").unwrap_or_else(|_| "zh".into()),
+            mcp_servers: file.mcp_servers.unwrap_or_default(),
         }
     }
 
@@ -375,6 +380,7 @@ impl ExmConfig {
             }),
             llm_profiles: Some(self.llm_profiles.clone()),
             active_profile: Some(self.active_profile.clone()),
+            mcp_servers: Some(self.mcp_servers.clone()),
             security: Some(SecurityFile {
                 exec_approval: Some(self.security.exec_approval.clone()),
                 exec_allowlist: Some(self.security.exec_allowlist.clone()),

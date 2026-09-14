@@ -79,6 +79,8 @@ pub struct ToolGateway {
     events: tokio::sync::broadcast::Sender<CoreEvent>,
     security: SecurityConfig,
     web_search: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    /// MCP 服务器池（第三方工具：mcp:server:tool 全名空间）
+    mcp: Arc<crate::mcp::McpRegistry>,
 }
 
 impl ToolGateway {
@@ -96,7 +98,38 @@ impl ToolGateway {
             events,
             security,
             web_search: None,
+            mcp: crate::mcp::McpRegistry::shared(),
         }
+    }
+
+    /// 注入 MCP 服务器池（build_orchestrator 配置后传入同一实例）
+    pub fn with_mcp(mut self, mcp: Arc<crate::mcp::McpRegistry>) -> Self {
+        self.mcp = mcp;
+        self
+    }
+
+    pub fn mcp(&self) -> Arc<crate::mcp::McpRegistry> {
+        self.mcp.clone()
+    }
+
+    /// 执行 MCP 工具（全名 mcp:server:tool）；审计与内置工具一致落库
+    pub async fn execute_mcp(&self, agent_id: &str, full_name: &str, args: &serde_json::Value) -> ToolResult {
+        let started = Instant::now();
+        let result = match self.mcp.call(full_name, agent_id, args).await {
+            Some(r) => ToolResult {
+                ok: r.ok,
+                output: r.text.chars().take(8000).collect(),
+                error: if r.ok { None } else { Some(r.text.chars().take(2000).collect()) },
+            },
+            None => ToolResult::err(format!("MCP 工具不存在或未开放: {full_name}")),
+        };
+        let summary: String = if result.ok {
+            result.output.chars().take(200).collect()
+        } else {
+            result.error.clone().unwrap_or_default().chars().take(200).collect()
+        };
+        let _ = self.store.audit_tool(agent_id, full_name, args, &summary, started.elapsed().as_millis() as u64);
+        result
     }
 
     pub fn with_web_search(
