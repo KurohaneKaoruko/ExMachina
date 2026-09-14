@@ -22,9 +22,14 @@ pub async fn run_chat(core: Arc<Core>, text: &str, opts: &ChatOptions) -> anyhow
     };
 
     let channel_label = if core.is_mock() {
-        "mock（模拟）".to_string()
+        "测试替身（EXM_LLM_MOCK=1）".to_string()
     } else {
-        core.config().llm.base_url.clone()
+        let cfg = core.config();
+        if cfg.active_profile.is_empty() {
+            cfg.llm.base_url.clone()
+        } else {
+            format!("{}（{}）", cfg.active_profile, cfg.llm.base_url)
+        }
     };
     println!("{}", dim(format!("会话 {}｜LLM 通道：{}", session.id, channel_label)));
     println!("{}", render_role("user", None, &[exm_core::types::Statement::new(exm_core::types::SpeechTag::要求, text)]));

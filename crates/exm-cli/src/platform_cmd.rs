@@ -145,7 +145,20 @@ pub fn run_model_list(core: &Core) -> anyhow::Result<()> {
         let key_count = p.api_keys.len().max(if p.api_key.is_empty() { 0 } else { 1 });
         println!("    {}", dim(format!("apiKey: {}｜Key 池 {} 把", masked(&p.api_key), key_count)));
     }
-    println!("{}", dim(format!("通道：{}", if cfg.use_mock { "Mock 模拟（apiKey 为空）" } else { "真实推理" })));
+    let configured = !cfg.llm.api_key.trim().is_empty() || !cfg.llm.api_keys.is_empty();
+    println!(
+        "{}",
+        dim(format!(
+            "通道：{}",
+            if cfg.use_mock {
+                "测试替身（EXM_LLM_MOCK=1）"
+            } else if !configured {
+                "未配置 —— 请为档案填写 API Key"
+            } else {
+                "真实推理"
+            }
+        ))
+    );
     Ok(())
 }
 
@@ -187,7 +200,7 @@ pub fn run_model_add(
             unit_model: profile.unit_model,
         };
     }
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty() && cfg.llm.api_keys.is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     core.apply_config(cfg)?;
     println!("{} 模型档案已保存：{}", ok("完成"), id.cyan());
     Ok(())
@@ -211,7 +224,7 @@ pub fn run_model_use(core: &Core, id: &str) -> anyhow::Result<()> {
         orch_model: p.orch_model,
         unit_model: p.unit_model,
     };
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty() && cfg.llm.api_keys.is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     let base = cfg.llm.base_url.clone();
     core.apply_config(cfg)?;
     println!("{} 已切换到档案 {}（{}）", ok("完成"), id.cyan(), dim(&base));
@@ -243,7 +256,7 @@ pub fn run_model_remove(core: &Core, id: &str) -> anyhow::Result<()> {
             unit_model: first.unit_model.clone(),
         };
     }
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty() && cfg.llm.api_keys.is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     core.apply_config(cfg)?;
     println!("{} 模型档案已删除：{id}", ok("完成"));
     Ok(())

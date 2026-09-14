@@ -279,7 +279,7 @@ async fn 执行审批_高危命令拦截与批准放行() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn 单体智能体_目标切换与L0直答() {
+async fn single_agent_target_switch_and_l0_direct() {
     let cfg = test_config();
     // 残留清理（只清演练个体与目标状态；不得动 agents/singles 全目录——默认智能体种子在此）
     let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("agents");
@@ -375,7 +375,6 @@ async fn 端到端_对话到收束全链路() {
     let session = core.create_session("冒烟").expect("建会话失败");
     let mut rx = core.subscribe();
 
-    let mut kinds: Vec<String> = Vec::new();
     let collector = tokio::spawn(async move {
         let mut seen = Vec::new();
         loop {
@@ -398,7 +397,7 @@ async fn 端到端_对话到收束全链路() {
         .await
         .expect("任务执行失败");
 
-    kinds = tokio::time::timeout(Duration::from_secs(10), collector)
+    let kinds = tokio::time::timeout(Duration::from_secs(10), collector)
         .await
         .expect("事件收集超时")
         .expect("收集任务 panic");

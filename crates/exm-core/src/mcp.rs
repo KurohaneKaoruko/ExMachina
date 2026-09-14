@@ -55,6 +55,7 @@ struct RpcRequest<'a> {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct RpcResponse {
     #[serde(default)]
     id: Option<u64>,

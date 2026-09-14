@@ -29,7 +29,10 @@ use crate::config::ExmConfig;
 use crate::cron::CronStore;
 use crate::memory::{MemoryDraft, MemoryEntry, MemoryKind, MemoryStore, RecallHit};
 use crate::orchestrator::{Orchestrator, ORCHESTRATOR_ID};
-use crate::provider::{FailoverState, LlmProvider, MockLlmProvider, ModelPool, OpenAiCompatibleProvider};
+use crate::provider::{
+    FailoverState, LlmProvider, MockLlmProvider, ModelPool, OpenAiCompatibleProvider,
+    UnconfiguredProvider,
+};
 use crate::registry::LocalRegistry;
 use crate::runtime::AgentRuntime;
 use crate::store::Store;
@@ -685,18 +688,25 @@ pub fn build_orchestrator(
     mcp: Option<Arc<crate::mcp::McpRegistry>>,
     remote: Option<Arc<dyn crate::remote::RemoteExecutor>>,
 ) -> anyhow::Result<Orchestrator> {
-    let provider: Arc<dyn LlmProvider> = if cfg.use_mock {
-        Arc::new(MockLlmProvider)
-    } else {
+    // 全局通道：有端点与密钥即真实推理；未配置时——测试替身模式给替身，产品模式给「未配置」指引通道
+    let provider: Arc<dyn LlmProvider> = {
         let mut keys = cfg.llm.api_keys.clone();
         if keys.is_empty() && !cfg.llm.api_key.trim().is_empty() {
             keys.push(cfg.llm.api_key.clone());
         }
-        Arc::new(OpenAiCompatibleProvider::with_format(
-            cfg.llm.base_url.clone(),
-            keys,
-            &cfg.llm.api_format,
-        ))
+        if keys.is_empty() || cfg.llm.base_url.trim().is_empty() {
+            if cfg.use_mock {
+                Arc::new(MockLlmProvider)
+            } else {
+                Arc::new(UnconfiguredProvider::new("全局通道"))
+            }
+        } else {
+            Arc::new(OpenAiCompatibleProvider::with_format(
+                cfg.llm.base_url.clone(),
+                keys,
+                &cfg.llm.api_format,
+            ))
+        }
     };
     let mcp = mcp.unwrap_or_else(crate::mcp::McpRegistry::shared);
     mcp.configure(&cfg.mcp_servers);
@@ -716,15 +726,20 @@ pub fn build_orchestrator(
         tools,
         cfg.llm.unit_model.clone(),
     ));
-    // 模型档案运行池：每个档案独立 Provider（密钥空缺的档案退化为 Mock，行为与全局一致）
+    // 模型档案运行池：每个档案独立 Provider。
+    // 规则：**显式配置优先**——有端点与密钥即真实推理；未配置时，测试替身模式给替身，产品模式给「未配置」指引通道。
     let mut pool = ModelPool::new();
     for p in &cfg.llm_profiles {
         let mut keys = p.api_keys.clone();
         if keys.is_empty() && !p.api_key.trim().is_empty() {
             keys.push(p.api_key.clone());
         }
-        let profile_provider: Arc<dyn LlmProvider> = if keys.is_empty() {
-            Arc::new(MockLlmProvider)
+        let profile_provider: Arc<dyn LlmProvider> = if keys.is_empty() || p.base_url.trim().is_empty() {
+            if cfg.use_mock {
+                Arc::new(MockLlmProvider)
+            } else {
+                Arc::new(UnconfiguredProvider::new(format!("档案 {}", p.id)))
+            }
         } else {
             Arc::new(OpenAiCompatibleProvider::with_format(
                 p.base_url.clone(),

@@ -670,33 +670,6 @@ impl OpenAiCompatibleProvider {
     }
 }
 
-#[derive(Deserialize)]
-struct ChatCompletion {
-    choices: Vec<Choice>,
-    #[serde(default)]
-    usage: Option<Usage>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: Option<RespMessage>,
-    delta: Option<RespMessage>,
-}
-
-#[derive(Deserialize)]
-struct RespMessage {
-    #[serde(default)]
-    content: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Usage {
-    #[serde(default)]
-    prompt_tokens: u64,
-    #[serde(default)]
-    completion_tokens: u64,
-}
-
 #[async_trait]
 impl LlmProvider for OpenAiCompatibleProvider {
     /// 文本嵌入：openai 协议走 /embeddings；azure 走 deployments/{model}/embeddings；其余不支持
@@ -1020,9 +993,66 @@ impl LlmProvider for OpenAiCompatibleProvider {
     }
 }
 
-// ---------------------------------------------------------------- Mock 通道
+// ---------------------------------------------------------------- 未配置的模型通道
 
-/// 确定性模拟：计划/子个体/收束三类请求各自产出合法契约产物
+/// 未配置端点/密钥的模型档案：调用即返回可执行的配置指引。
+///
+/// 产品行为：**不做任何静默降级**——没有模型就没有回答，并明确指出去哪里配置。
+pub struct UnconfiguredProvider {
+    /// 展示给用户的档案标识（如「全局通道」或档案 id）
+    pub label: String,
+}
+
+impl UnconfiguredProvider {
+    pub fn new(label: impl Into<String>) -> Self {
+        UnconfiguredProvider { label: label.into() }
+    }
+
+    fn hint(&self) -> String {
+        format!(
+            "模型通道未配置（{}）：请在「模型提供商」页填写端点与 API Key，\
+             或执行 `exm model add <id> --base-url <url> --api-key <key> --orch-model <m> --unit-model <m>` 后 `exm model use <id>`。",
+            self.label
+        )
+    }
+}
+
+#[async_trait]
+impl LlmProvider for UnconfiguredProvider {
+    fn name(&self) -> &'static str {
+        "unconfigured"
+    }
+
+    async fn chat(&self, _req: ChatRequest) -> anyhow::Result<ChatResponse> {
+        anyhow::bail!("{}", self.hint())
+    }
+
+    async fn stream(
+        &self,
+        _req: ChatRequest,
+        _tx: UnboundedSender<String>,
+    ) -> anyhow::Result<ChatResponse> {
+        anyhow::bail!("{}", self.hint())
+    }
+
+    async fn embed(&self, _model: &str, _texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        anyhow::bail!("{}", self.hint())
+    }
+
+    async fn transcribe(&self, _model: &str, _audio: &[u8], _filename: &str) -> anyhow::Result<String> {
+        anyhow::bail!("{}", self.hint())
+    }
+
+    async fn speak(&self, _model: &str, _text: &str) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("{}", self.hint())
+    }
+}
+
+// ---------------------------------------------------------------- 测试替身（确定性）
+
+/// 测试替身：计划/子个体/收束等请求各自产出合法契约产物，供单测与端到端验收使用。
+///
+/// 仅在测试代码或显式设置 `EXM_LLM_MOCK=1`（联调流程时）启用；产品运行时不参与推理。
 pub struct MockLlmProvider;
 
 /// 确定性伪嵌入（Mock 通道）：64 维，token 哈希累加后归一——同义文本向量稳定相近

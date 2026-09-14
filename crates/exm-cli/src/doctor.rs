@@ -132,10 +132,17 @@ pub fn run_doctor(workspace_root: &Path) -> anyhow::Result<()> {
         cfg.llm_profiles.len(),
         cfg.active_profile
     );
+    let configured = !cfg.llm.api_key.trim().is_empty()
+        || !cfg.llm.api_keys.is_empty()
+        || cfg.llm_profiles.iter().any(|p| !p.api_key.trim().is_empty() || !p.api_keys.is_empty());
     d.soft(
         "LLM 通道",
         if cfg.use_mock {
-            Err(format!("未配置 API Key —— Mock 模拟通道 {profile_note}"))
+            Err(format!("测试替身通道（EXM_LLM_MOCK=1）{profile_note}"))
+        } else if !configured {
+            Err(format!(
+                "未配置模型提供商 —— 请在「模型提供商」页填写端点与 API Key{profile_note}"
+            ))
         } else {
             match crate::install::probe_llm(&cfg) {
                 Ok(msg) => Ok(msg),

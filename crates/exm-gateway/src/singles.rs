@@ -6,7 +6,7 @@ use crate::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use exm_core::types::AgentDefinition;
 use serde::Deserialize;
@@ -50,13 +50,13 @@ pub struct TargetBody {
 /// 切换交互目标：mode=group 回到激活组；mode=single 切到指定单体
 pub async fn set_target(State(st): State<AppState>, Json(b): Json<TargetBody>) -> impl IntoResponse {
     let result = match b.mode.as_str() {
-        "group" => st.core.registry().set_active_single(None).map(|_| (json!({ "mode": "group" }))),
+        "group" => st.core.registry().set_active_single(None).map(|_| json!({ "mode": "group" })),
         "single" => {
             let id = b.id.clone().unwrap_or_default();
             st.core
                 .registry()
                 .set_active_single(Some(&id))
-                .map(|_| (json!({ "mode": "single", "id": id })))
+                .map(|_| json!({ "mode": "single", "id": id }))
         }
         _ => Err(anyhow::anyhow!("mode 须为 group 或 single")),
     };

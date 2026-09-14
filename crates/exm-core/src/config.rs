@@ -116,7 +116,7 @@ pub struct ExmConfig {
     pub memory_enabled: bool,
     pub memory_recall_limit: usize,
     pub memory_half_life_days: f64,
-    /// 无密钥时启用 Mock 通道
+    /// 测试替身通道（仅 `EXM_LLM_MOCK=1` 或测试代码置位；产品运行时不生效）
     pub use_mock: bool,
     /// 执行审批（安全闸门）
     pub security: SecurityConfig,
@@ -237,6 +237,15 @@ impl Default for InstallManifest {
     }
 }
 
+/// 测试替身开关：仅 `EXM_LLM_MOCK=1|true|yes` 时启用（单测/端到端验收/无网联调流程）。
+/// 产品运行时**不存在**"无密钥自动降级"这一类行为——未配置模型即明确报错并引导配置。
+pub fn mock_enabled_from_env() -> bool {
+    matches!(
+        std::env::var("EXM_LLM_MOCK").unwrap_or_default().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 impl ExmConfig {
     /// 语言（仅供低层组件读取，避免整份配置依赖）：EXM_LANG，默认 zh
     pub fn load_language() -> String {
@@ -355,7 +364,9 @@ impl ExmConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|_| root.join("webui").join("dist"));
 
-        let use_mock = llm.api_key.trim().is_empty();
+        // 无密钥**不再**自动降级为模拟通道：未配置模型就是未配置，由界面/CLI 明确引导。
+        // 测试替身仅在显式设置环境变量时启用（见 docs/架构与设计.md「测试策略」）。
+        let use_mock = mock_enabled_from_env();
 
         ExmConfig {
             config_version: CONFIG_VERSION,

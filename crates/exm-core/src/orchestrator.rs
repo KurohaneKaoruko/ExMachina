@@ -535,7 +535,7 @@ impl Orchestrator {
         statements: &[Statement],
     ) -> Vec<String> {
         let mut written: Vec<serde_json::Value> = Vec::new();
-        let mut entry_ids: Vec<String> = Vec::new();
+        let entry_ids: Vec<String> = Vec::new();
         // 组级记忆隔离：任务产物归属激活组（docs/09 §6）
         let gid = self.registry.active_group();
 
@@ -1198,7 +1198,7 @@ impl ExecCtx {
         let events = o.events.clone();
         // 远程工作者优先（失败/超时回落本地）；令牌流统一进事件总线
         let result = {
-            let orch = o.clone();
+            let orch = o;
             let sid = session_id.clone();
             let nid = node_id.clone();
             let label = agent_label.clone();

@@ -122,7 +122,24 @@ pub async fn execute_shell_command_timed(workspace_root: &Path, cmd: &str, timeo
         Err(e) => return ToolResult::err(format!("命令执行失败: {e}")),
     };
     let pid = child.id();
-    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs.max(1)), child.wait_with_output()).await {
+    // 管道读取放入独立任务：超时路径可 abort，避免残留读端拖住运行时收尾
+    let out_task = child.stdout.take().map(|mut s| {
+        tokio::spawn(async move {
+            let mut b = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut b).await;
+            b
+        })
+    });
+    let err_task = child.stderr.take().map(|mut s| {
+        tokio::spawn(async move {
+            let mut b = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut b).await;
+            b
+        })
+    });
+
+    let budget = std::time::Duration::from_secs(timeout_secs.max(1));
+    match tokio::time::timeout(budget, child.wait()).await {
         Err(_) => {
             // 进程树强杀：Windows taskkill /T /F（cmd 的子进程一并终止）
             #[cfg(target_os = "windows")]
@@ -137,18 +154,34 @@ pub async fn execute_shell_command_timed(workspace_root: &Path, cmd: &str, timeo
                         .await;
                 }
             }
+            // 有界回收：等待被杀进程退出，最长 3s——超时路径绝不无限阻塞
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+            if let Some(t) = out_task {
+                t.abort();
+            }
+            if let Some(t) = err_task {
+                t.abort();
+            }
             ToolResult::err(format!("命令超时（{timeout_secs}s）已终止"))
         }
         Ok(Err(e)) => ToolResult::err(format!("命令执行失败: {e}")),
-        Ok(Ok(out)) => {
-            let text = String::from_utf8_lossy(&out.stdout).to_string();
-            let err = String::from_utf8_lossy(&out.stderr).to_string();
+        Ok(Ok(status)) => {
+            let stdout = match out_task {
+                Some(t) => t.await.unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let stderr = match err_task {
+                Some(t) => t.await.unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let text = String::from_utf8_lossy(&stdout).to_string();
+            let err = String::from_utf8_lossy(&stderr).to_string();
             let mut text = text.chars().take(8000).collect::<String>();
             if !err.trim().is_empty() {
                 text.push_str("\n[stderr] ");
                 text.push_str(&err.chars().take(2000).collect::<String>());
             }
-            ToolResult { ok: out.status.success(), output: text, error: None }
+            ToolResult { ok: status.success(), output: text, error: None }
         }
     }
 }

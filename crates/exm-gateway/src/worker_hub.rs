@@ -34,7 +34,7 @@ pub struct WorkerHub {
 }
 
 #[derive(Deserialize)]
-struct WorkerQuery {
+pub struct WorkerQuery {
     #[serde(default)]
     key: Option<String>,
 }
@@ -86,7 +86,7 @@ async fn worker_loop(mut socket: WebSocket, st: AppState) {
                     }
                     WorkerFrame::Tokens { did, delta } => {
                         let evt = {
-                            let mut pending = hub.pending.lock();
+                            let pending = hub.pending.lock();
                             pending.get(&did).map(|p| {
                                 let _ = p.token_tx.send(delta.clone());
                                 exm_core::types::CoreEvent {

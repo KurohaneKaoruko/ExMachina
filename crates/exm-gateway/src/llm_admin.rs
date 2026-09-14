@@ -157,7 +157,7 @@ pub async fn save_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
             unit_model: profile.unit_model.clone(),
         };
     }
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty() && cfg.llm.api_keys.is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     match st.core.apply_config(cfg) {
         Ok(_) => Json(json!({ "ok": true, "id": profile.id, "mock": st.core.is_mock() })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
@@ -189,7 +189,7 @@ pub async fn delete_profile(State(st): State<AppState>, Path(id): Path<String>) 
             unit_model: first.unit_model.clone(),
         };
     }
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty() && cfg.llm.api_keys.is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     let active = cfg.active_profile.clone();
     match st.core.apply_config(cfg) {
         Ok(_) => Json(json!({ "ok": true, "active": active })).into_response(),
@@ -219,7 +219,7 @@ pub async fn activate_profile(State(st): State<AppState>, Json(b): Json<LlmProfi
         orch_model: p.orch_model,
         unit_model: p.unit_model,
     };
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty() && cfg.llm.api_keys.is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     match st.core.apply_config(cfg) {
         Ok(_) => Json(json!({ "ok": true, "active": id, "mock": st.core.is_mock() })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
@@ -247,8 +247,8 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
     let Some(p) = profile else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "档案不存在" }))).into_response();
     };
-    if p.api_key.trim().is_empty() {
-        return Json(json!({ "ok": false, "mock": true, "message": "未配置 apiKey（当前为模拟通道）" }))
+    if p.api_key.trim().is_empty() && p.api_keys.is_empty() {
+        return Json(json!({ "ok": false, "configured": false, "message": "该档案尚未配置 API Key" }))
             .into_response();
     }
     // 按档案协议构造 1-token 探针（URL / 鉴权头 / 请求体各不相同）

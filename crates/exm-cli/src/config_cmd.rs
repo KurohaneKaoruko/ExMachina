@@ -56,7 +56,7 @@ pub fn run_config_set(workspace_root: &Path, key: &str, value: &str) -> anyhow::
         "memory.halfLifeDays" => cfg.memory_half_life_days = value.parse()?,
         other => anyhow::bail!("未知配置键：{other}"),
     }
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     cfg.save()?;
     println!("{} {} = {}", ok("已写入"), key, if key.ends_with("apiKey") { "***" } else { value });
     println!("{}", dim("提示：正在运行的网关/会话需重新加载配置（WebUI 设置页可热生效）"));

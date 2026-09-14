@@ -299,7 +299,8 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
         },
         ..(*current).clone()
     };
-    next.use_mock = next.llm.api_key.trim().is_empty();
+    // 测试替身状态由运行期/环境决定，配置载荷不改变它（设置页的 llm 修改只在"真实通道"语义内生效）
+    next.use_mock = st.core.is_mock() || exm_core::config::mock_enabled_from_env();
     // 设置页对 llm 的修改同步回生效档案（避免档案切换时被旧值回退）
     if let Some(slot) = next.llm_profiles.iter_mut().find(|p| p.id == next.active_profile) {
         slot.base_url = next.llm.base_url.clone();
@@ -1002,7 +1003,17 @@ pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
     println!("[gateway]   WS    ws://127.0.0.1:{port}/ws?sessionId=<id>");
     println!(
         "[gateway]   LLM   {}",
-        if core.is_mock() { "mock（未配置密钥，模拟通道）".to_string() } else { core.config().llm.base_url.clone() }
+        if core.is_mock() {
+            "测试替身（EXM_LLM_MOCK=1）".to_string()
+        } else {
+            let c = core.config();
+            let configured = !c.llm.api_key.trim().is_empty() || !c.llm.api_keys.is_empty();
+            if configured {
+                format!("{}（{}）", if c.active_profile.is_empty() { "全局通道" } else { c.active_profile.as_str() }, c.llm.base_url)
+            } else {
+                "未配置 —— 请在「模型提供商」页填写端点与 API Key".to_string()
+            }
+        }
     );
     println!("[gateway]   个体  {}（1 指挥体 + {} 子个体）", core.registry.count(), core.registry.units().len());
     let dist = core.config().webui_dist.clone();

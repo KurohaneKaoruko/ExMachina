@@ -52,7 +52,7 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     // 2) 模型接入
     let mut cfg = ExmConfig::load(workspace_root);
     let base_url = ask("LLM Base URL（OpenAI 兼容）", &cfg.llm.base_url);
-    let api_key = ask("API Key（留空则使用 Mock 模拟通道）", "");
+    let api_key = ask("API Key（可留空，稍后在「模型提供商」页补配）", "");
     let orch_model = ask("指挥体模型", &cfg.llm.orch_model);
     let unit_model = ask("子个体模型", &cfg.llm.unit_model);
     let concurrency = ask("子个体并发数", &cfg.max_concurrency.to_string())
@@ -65,7 +65,7 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
         api_format: String::new(), base_url, api_key, orch_model, unit_model };
     cfg.max_concurrency = concurrency.clamp(1, 32);
     cfg.memory_enabled = memory;
-    cfg.use_mock = cfg.llm.api_key.trim().is_empty();
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
 
     // 3) 落盘
     cfg.save()?;
@@ -82,12 +82,13 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     let core = exm_core::Core::with_config(cfg.clone())?;
     core.render_memory_md()?;
 
-    // 5) 连接自检（仅真实通道尝试一次极短探针）
-    let mut probe = "跳过（Mock 通道）".to_string();
-    if !cfg.use_mock {
+    // 5) 连接自检（配置了密钥才发探针；未配置则明确提示去配置）
+    let configured = !cfg.llm.api_key.trim().is_empty() || !cfg.llm.api_keys.is_empty();
+    let mut probe = "跳过（未配置模型）".to_string();
+    if configured && !cfg.use_mock {
         probe = match probe_llm(&cfg) {
             Ok(msg) => ok(format!("通过：{msg}")),
-            Err(e) => warn(format!("未通过（{e}）—— 可在设置页或 config.json 修正")),
+            Err(e) => warn(format!("未通过（{e}）—— 可在「模型提供商」页或 config.json 修正")),
         };
     }
 
@@ -97,8 +98,14 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     println!("  {} {}", dim("安装清单"), cfg.install_manifest_path().display());
     println!("  {} {}", dim("数据目录"), cfg.data_dir.display());
     println!("  {} {}", dim("基础记忆"), cfg.memory_md_path.display());
-    println!("  {} {}", dim("LLM 通道"), if cfg.use_mock { "mock（模拟，无需密钥）".into() } else { cfg.llm.base_url.clone() });
+    println!("  {} {}", dim("LLM 通道"), if configured { cfg.llm.base_url.clone() } else { warn("未配置（对话前需先配置模型端点与密钥）") });
     println!("  {} {}", dim("连接自检"), probe);
+    if !configured {
+        println!();
+        println!("{}", warn("注意：尚未配置模型——对话前请先完成模型接入（下列任一步）"));
+        println!("  {}  {}", dim("·"), "exm model add <id> --base-url <url> --api-key <key> --orch-model <m> --unit-model <m>".cyan());
+        println!("  {}  {}", dim("·"), "exm serve  # 打开「模型提供商」页图形化配置".cyan());
+    }
     println!();
     println!("{}", "下一步".bold().to_string());
     println!("  {}  {}{}", dim("1."), "exm chat \"分析当前项目的架构风险\"".cyan(), dim("   # 终端直接对话"));
