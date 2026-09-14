@@ -74,7 +74,6 @@ export function GraphView(): React.ReactElement {
     return (
       <div className="pane-wrap">
         <PageHeader
-          no="07"
           en="DAG"
           title="任务图"
           desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色，点开可查看目标、验收断言与依赖。"
@@ -87,7 +86,6 @@ export function GraphView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
-        no="07"
         en="DAG"
         title="任务图"
         desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色，点开可查看目标、验收断言与依赖。"

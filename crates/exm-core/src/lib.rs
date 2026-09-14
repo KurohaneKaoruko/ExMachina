@@ -724,7 +724,7 @@ pub fn build_orchestrator(
         registry.clone(),
         provider.clone(),
         tools,
-        cfg.llm.unit_model.clone(),
+        cfg.llm.model.clone(),
     ));
     // 模型档案运行池：每个档案独立 Provider。
     // 规则：**显式配置优先**——有端点与密钥即真实推理；未配置时，测试替身模式给替身，产品模式给「未配置」指引通道。
@@ -747,12 +747,9 @@ pub fn build_orchestrator(
                 &p.api_format,
             ))
         };
-        pool.insert(p.id.clone(), profile_provider, p.orch_model.clone(), p.unit_model.clone());
+        pool.insert(p.id.clone(), profile_provider, p.model.clone());
         if let Some(fb) = &p.fallback {
             pool.set_fallback(&p.id, fb);
-        }
-        if let Some(em) = &p.embed_model {
-            pool.set_embed_model(&p.id, em);
         }
     }
     pool.set_active(cfg.active_profile.clone());
@@ -770,7 +767,8 @@ pub fn build_orchestrator(
         memory_recall_limit: cfg.memory_recall_limit,
         memory_md_path: cfg.memory_md_path.clone(),
         events: events.clone(),
-        orch_model: cfg.llm.orch_model.clone(),
+        orch_model: cfg.llm.model.clone(),
+        memory_semantic_model: cfg.memory_semantic_model.clone(),
         max_concurrency: cfg.max_concurrency,
         auto_adapt: cfg.automation.auto_adapt,
     })

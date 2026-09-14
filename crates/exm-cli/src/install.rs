@@ -53,16 +53,19 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     let mut cfg = ExmConfig::load(workspace_root);
     let base_url = ask("LLM Base URL（OpenAI 兼容）", &cfg.llm.base_url);
     let api_key = ask("API Key（可留空，稍后在「提供商」页补配）", "");
-    let orch_model = ask("指挥体模型", &cfg.llm.orch_model);
-    let unit_model = ask("子个体模型", &cfg.llm.unit_model);
+    let model = ask("默认模型", &cfg.llm.model);
     let concurrency = ask("子个体并发数", &cfg.max_concurrency.to_string())
         .parse::<usize>()
         .unwrap_or(cfg.max_concurrency);
     let memory = ask_yes("启用记忆系统（可检索深层记忆 + memory.md 基础记忆）", true);
 
     cfg.llm = LlmConfig {
-            api_keys: Vec::new(),
-        api_format: String::new(), base_url, api_key, orch_model, unit_model };
+        api_keys: Vec::new(),
+        api_format: String::new(),
+        base_url,
+        api_key,
+        model,
+    };
     cfg.max_concurrency = concurrency.clamp(1, 32);
     cfg.memory_enabled = memory;
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
@@ -103,7 +106,7 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     if !configured {
         println!();
         println!("{}", warn("注意：尚未配置模型——对话前请先完成模型接入（下列任一步）"));
-        println!("  {}  {}", dim("·"), "exm model add <id> --base-url <url> --api-key <key> --orch-model <m> --unit-model <m>".cyan());
+        println!("  {}  {}", dim("·"), "exm model add <id> --name <名称> --base-url <url> --api-key <key> --model <模型名>".cyan());
         println!("  {}  {}", dim("·"), "exm serve  # 打开「提供商」页图形化配置".cyan());
     }
     println!();

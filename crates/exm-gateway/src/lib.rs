@@ -148,8 +148,7 @@ async fn get_config(State(st): State<AppState>) -> impl IntoResponse {
         "llm": {
             "baseUrl": cfg.llm.base_url,
             "apiKey": masked,
-            "orchModel": cfg.llm.orch_model,
-            "unitModel": cfg.llm.unit_model,
+            "model": cfg.llm.model,
         },
         "maxConcurrency": cfg.max_concurrency,
         "maxSessionTokens": cfg.max_session_tokens,
@@ -157,6 +156,7 @@ async fn get_config(State(st): State<AppState>) -> impl IntoResponse {
             "enabled": cfg.memory_enabled,
             "recallLimit": cfg.memory_recall_limit,
             "halfLifeDays": cfg.memory_half_life_days,
+            "semanticModel": cfg.memory_semantic_model,
         },
         "security": {
             "execApproval": cfg.security.exec_approval,
@@ -222,6 +222,8 @@ struct PartialMemory {
     recall_limit: Option<usize>,
     #[serde(default)]
     half_life_days: Option<f64>,
+    #[serde(default)]
+    semantic_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -232,9 +234,7 @@ struct PartialLlm {
     #[serde(default)]
     api_key: Option<String>,
     #[serde(default)]
-    orch_model: Option<String>,
-    #[serde(default)]
-    unit_model: Option<String>,
+    model: Option<String>,
 }
 
 async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) -> impl IntoResponse {
@@ -242,8 +242,7 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
     let partial = body.llm.unwrap_or(PartialLlm {
         base_url: None,
         api_key: None,
-        orch_model: None,
-        unit_model: None,
+        model: None,
     });
     let api_key = match partial.api_key.as_deref() {
         Some("***已配置***") | None => current.llm.api_key.clone(),
@@ -254,6 +253,7 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
         enabled: None,
         recall_limit: None,
         half_life_days: None,
+        semantic_model: None,
     });
     let sec = body
         .security
@@ -270,14 +270,16 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
             api_key,
             api_keys: current.llm.api_keys.clone(),
             api_format: current.llm.api_format.clone(),
-            orch_model: partial.orch_model.unwrap_or_else(|| current.llm.orch_model.clone()),
-            unit_model: partial.unit_model.unwrap_or_else(|| current.llm.unit_model.clone()),
+            model: partial.model.unwrap_or_else(|| current.llm.model.clone()),
         },
         max_concurrency: body.max_concurrency.unwrap_or(current.max_concurrency),
         max_session_tokens: body.max_session_tokens.unwrap_or(current.max_session_tokens),
         memory_enabled: mem.enabled.unwrap_or(current.memory_enabled),
         memory_recall_limit: mem.recall_limit.unwrap_or(current.memory_recall_limit),
         memory_half_life_days: mem.half_life_days.unwrap_or(current.memory_half_life_days),
+        memory_semantic_model: mem
+            .semantic_model
+            .unwrap_or_else(|| current.memory_semantic_model.clone()),
         use_mock: false,
         security: exm_core::config::SecurityConfig {
             exec_approval: sec.exec_approval.unwrap_or_else(|| current.security.exec_approval.clone()),
@@ -306,8 +308,7 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
         slot.base_url = next.llm.base_url.clone();
         slot.api_key = next.llm.api_key.clone();
         slot.api_keys = next.llm.api_keys.clone();
-        slot.orch_model = next.llm.orch_model.clone();
-        slot.unit_model = next.llm.unit_model.clone();
+        slot.model = next.llm.model.clone();
     }
 
     match st.core.apply_config(next) {

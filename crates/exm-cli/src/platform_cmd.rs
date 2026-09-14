@@ -140,7 +140,7 @@ pub fn run_model_list(core: &Core) -> anyhow::Result<()> {
             mark,
             p.id.cyan(),
             p.name.bold(),
-            dim(format!("{}｜{} / {}", p.base_url, p.orch_model, p.unit_model))
+            dim(format!("{}｜{}", p.base_url, p.model))
         );
         let key_count = p.api_keys.len().max(if p.api_key.is_empty() { 0 } else { 1 });
         println!("    {}", dim(format!("apiKey: {}｜Key 池 {} 把", masked(&p.api_key), key_count)));
@@ -168,22 +168,19 @@ pub fn run_model_add(
     name: &str,
     base_url: &str,
     api_key: &str,
-    orch_model: &str,
-    unit_model: &str,
+    model: &str,
 ) -> anyhow::Result<()> {
     use exm_core::config::LlmProfile;
     let mut cfg = (*core.config()).clone();
     let profile = LlmProfile {
         fallback: None,
-        embed_model: None,
         id: id.trim().to_string(),
         name: name.trim().to_string(),
         base_url: base_url.trim().to_string(),
         api_key: api_key.trim().to_string(),
         api_keys: Vec::new(),
         api_format: String::new(),
-        orch_model: orch_model.trim().to_string(),
-        unit_model: unit_model.trim().to_string(),
+        model: model.trim().to_string(),
     };
     if let Some(slot) = cfg.llm_profiles.iter_mut().find(|p| p.id == profile.id) {
         *slot = profile.clone();
@@ -196,8 +193,7 @@ pub fn run_model_add(
             api_key: profile.api_key,
             api_keys: Vec::new(),
             api_format: profile.api_format.clone(),
-            orch_model: profile.orch_model,
-            unit_model: profile.unit_model,
+            model: profile.model,
         };
     }
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
@@ -221,8 +217,7 @@ pub fn run_model_use(core: &Core, id: &str) -> anyhow::Result<()> {
         api_key: p.api_key,
         api_keys: keys,
         api_format: p.api_format.clone(),
-        orch_model: p.orch_model,
-        unit_model: p.unit_model,
+        model: p.model,
     };
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     let base = cfg.llm.base_url.clone();
@@ -252,8 +247,7 @@ pub fn run_model_remove(core: &Core, id: &str) -> anyhow::Result<()> {
             api_key: first.api_key.clone(),
             api_keys: keys,
             api_format: first.api_format.clone(),
-            orch_model: first.orch_model.clone(),
-            unit_model: first.unit_model.clone(),
+            model: first.model.clone(),
         };
     }
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
@@ -281,14 +275,14 @@ pub async fn run_model_test(core: &Core, id: Option<&str>) -> anyhow::Result<()>
         exm_core::provider::OpenAiCompatibleProvider::new(p.base_url.clone(), keys),
     );
     let req = exm_core::provider::ChatRequest::new(
-        p.orch_model.clone(),
+        p.model.clone(),
         vec![exm_core::provider::ChatMessage::user("ping".to_string())],
     );
     match tokio::time::timeout(std::time::Duration::from_secs(15), provider.chat(req)).await {
         Ok(Ok(resp)) => println!(
             "{} 连通正常：模型 {} 返回 {} 字符",
             ok("完成"),
-            p.orch_model,
+            p.model,
             resp.content.chars().count()
         ),
         Ok(Err(e)) => println!("{} 连通失败：{e}", err("失败")),

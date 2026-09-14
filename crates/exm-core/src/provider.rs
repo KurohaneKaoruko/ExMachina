@@ -99,17 +99,16 @@ pub struct ChatResponse {
 
 // ---------------------------------------------------------------- 模型档案运行池
 
-/// 模型档案运行池：档案ID → (Provider, 指挥体模型, 子个体模型)。
+/// 模型档案运行池：档案ID → (Provider, 模型名)。
 /// 供按个体/组解析默认模型（提示格式："档案ID" 或 "档案ID/模型名"）；
 /// 档案编辑经 apply_config 重建池，组/个体的提示则热读取。
+/// 嵌入模型不属于池的条目——它由「记忆」页的语义检索设置从既有提供商中指定。
 pub struct ModelPool {
-    entries: std::collections::HashMap<String, (std::sync::Arc<dyn LlmProvider>, String, String)>,
+    entries: std::collections::HashMap<String, (std::sync::Arc<dyn LlmProvider>, String)>,
     /// 档案失败回退链：id → 下一个档案 id
     fallbacks: std::collections::HashMap<String, String>,
     /// 全局生效档案 id（回退链的最终兜底）
     active_id: String,
-    /// 档案嵌入模型（混合记忆检索）
-    embed_models: std::collections::HashMap<String, String>,
 }
 
 impl Default for ModelPool {
@@ -124,22 +123,7 @@ impl ModelPool {
             entries: std::collections::HashMap::new(),
             fallbacks: std::collections::HashMap::new(),
             active_id: String::new(),
-            embed_models: std::collections::HashMap::new(),
         }
-    }
-
-    /// 声明档案嵌入模型
-    pub fn set_embed_model(&mut self, id: &str, model: &str) {
-        if model.trim().is_empty() {
-            self.embed_models.remove(id);
-        } else {
-            self.embed_models.insert(id.to_string(), model.trim().to_string());
-        }
-    }
-
-    /// 档案嵌入模型（未声明返回 None）
-    pub fn profile_embed_model(&self, id: &str) -> Option<String> {
-        self.embed_models.get(id).cloned()
     }
 
     /// 全局生效档案 id（build_orchestrator 注入）
@@ -175,55 +159,40 @@ impl ModelPool {
         out
     }
 
-    /// 取档案的 (Provider, 模型名)；unit=true 取子个体模型
-    pub fn entry(&self, id: &str, unit: bool) -> Option<(std::sync::Arc<dyn LlmProvider>, String)> {
-        let (provider, orch, unit_model) = self.entries.get(id)?;
-        Some((provider.clone(), if unit { unit_model.clone() } else { orch.clone() }))
+    /// 取档案的 (Provider, 模型名)
+    pub fn entry(&self, id: &str) -> Option<(std::sync::Arc<dyn LlmProvider>, String)> {
+        let (provider, model) = self.entries.get(id)?;
+        Some((provider.clone(), model.clone()))
     }
 
     pub fn insert(
         &mut self,
         id: impl Into<String>,
         provider: std::sync::Arc<dyn LlmProvider>,
-        orch_model: impl Into<String>,
-        unit_model: impl Into<String>,
+        model: impl Into<String>,
     ) {
-        self.entries.insert(id.into(), (provider, orch_model.into(), unit_model.into()));
+        self.entries.insert(id.into(), (provider, model.into()));
     }
 
     /// 解析模型提示：返回 (Provider, 生效模型名)；档案不存在返回 None（调用方回退全局）
-    pub fn resolve(
-        &self,
-        hint: &str,
-        unit: bool,
-    ) -> Option<(std::sync::Arc<dyn LlmProvider>, String)> {
-        self.resolve_full(hint, unit).map(|(_, p, m)| (p, m))
+    pub fn resolve(&self, hint: &str) -> Option<(std::sync::Arc<dyn LlmProvider>, String)> {
+        self.resolve_full(hint).map(|(_, p, m)| (p, m))
     }
 
-    /// 解析模型提示：返回 (档案ID, Provider, 生效模型名)
+    /// 解析模型提示：返回 (档案ID, Provider, 生效模型名)。
+    /// 提示格式 "档案ID" 或 "档案ID/模型名"（后者在档案默认模型上临时覆盖）。
     pub fn resolve_full(
         &self,
         hint: &str,
-        unit: bool,
     ) -> Option<(String, std::sync::Arc<dyn LlmProvider>, String)> {
         let (pid, explicit) = match hint.split_once('/') {
             Some((p, m)) if !m.trim().is_empty() => (p, Some(m.trim().to_string())),
             _ => (hint, None),
         };
         let pid = pid.trim().to_string();
-        let entry: &(std::sync::Arc<dyn LlmProvider>, String, String) =
-            self.entries.get(&pid)?;
+        let entry: &(std::sync::Arc<dyn LlmProvider>, String) = self.entries.get(&pid)?;
         let provider: std::sync::Arc<dyn LlmProvider> = entry.0.clone();
-        let model: String = match explicit {
-            Some(m) => m,
-            None => {
-                if unit {
-                    entry.2.clone()
-                } else {
-                    entry.1.clone()
-                }
-            }
-        };
+        let model: String = explicit.unwrap_or_else(|| entry.1.clone());
         Some((pid, provider, model))
     }
 }

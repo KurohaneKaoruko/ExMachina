@@ -2,7 +2,7 @@
  * 记忆视图：深层记忆（条目/检索/固定/维护）+ 个体可靠性统计
  * 数据与操作契约见 docs/08 §6
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from "antd";
 import { DeleteOutlined, PushpinOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import { api, type MemoryEntry, type MemoryStats, type RecallHit } from "../api";
+import { api, type LlmProfile, type MemoryEntry, type MemoryStats, type RecallHit } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 
@@ -76,7 +76,6 @@ function MdEditor(): React.ReactElement {
   return (
     <div className="memory-wrap">
       <PageHeader
-        no="09"
         en="MEMORY"
         title="记忆"
         desc="文件记忆模式：memory.md 是唯一记忆载体，随每轮对话全文注入——适合手工维护、完全可控的长期记忆。"
@@ -131,6 +130,35 @@ export function MemoryView(): React.ReactElement {
   const [hits, setHits] = useState<RecallHit[] | null>(null);
   const [kindFilter, setKindFilter] = useState<string | undefined>(undefined);
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined);
+  // 语义检索目标（档案ID，或 档案ID/模型名）；空 = 仅词项召回
+  const semanticCfg = useExm((s) => s.config?.memory.semanticModel ?? "");
+  const [profiles, setProfiles] = useState<LlmProfile[]>([]);
+  const [semanticDraft, setSemanticDraft] = useState(semanticCfg);
+  useEffect(() => setSemanticDraft(semanticCfg), [semanticCfg]);
+  useEffect(() => {
+    void (async () => {
+      try {
+        setProfiles((await api.llmProfiles()).profiles);
+      } catch {
+        /* 提供商未加载时保持空列表 */
+      }
+    })();
+  }, []);
+  const semanticOptions = useMemo(() => {
+    const opts = [{ value: "", label: "不使用语义检索（仅词项召回）" }];
+    for (const p of profiles) {
+      opts.push({ value: p.id, label: `${p.name}${p.model ? ` · ${p.model}` : ""}` });
+    }
+    return opts;
+  }, [profiles]);
+  const saveSemantic = async () => {
+    try {
+      await api.putConfig({ memory: { semanticModel: semanticDraft } });
+      message.success(semanticDraft ? "语义检索已启用" : "已关闭语义检索（仅词项召回）");
+    } catch (e) {
+      message.error(`保存失败：${String(e)}`);
+    }
+  };
 
   const reload = useCallback(async () => {
     const [list, st] = await Promise.all([
@@ -152,7 +180,6 @@ export function MemoryView(): React.ReactElement {
   return (
     <div className="memory-wrap">
       <PageHeader
-        no="09"
         en="MEMORY"
         title="记忆"
         desc="深层记忆模式：条目写入数据库，按词项 + 语义混合检索召回；群体记忆共享，个体记忆按智能体隔离。"
@@ -179,6 +206,32 @@ export function MemoryView(): React.ReactElement {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        size="small"
+        className="memory-card"
+        title="语义检索"
+        extra={
+          <Button size="small" type="primary" onClick={() => void saveSemantic()}>
+            保存
+          </Button>
+        }
+      >
+        <div className="model-kv">
+          <span className="k">嵌入模型</span>
+          <Select
+            size="small"
+            style={{ minWidth: 280 }}
+            value={semanticDraft}
+            onChange={setSemanticDraft}
+            options={semanticOptions}
+          />
+        </div>
+        <div className="pane-hint" style={{ marginTop: 8 }}>
+          选一个提供商的嵌入模型（如 text-embedding-3-small）后，记忆召回升级为「词项 + 语义」混合；
+          留空则仅按词项匹配。需要 Openai 兼容或 Azure 协议的提供商。
+        </div>
+      </Card>
 
       <Card
         size="small"

@@ -144,9 +144,7 @@ enum ModelAction {
         #[arg(long, default_value = "")]
         api_key: String,
         #[arg(long)]
-        orch_model: String,
-        #[arg(long)]
-        unit_model: String,
+        model: String,
     },
     /// 切换生效档案（热生效）
     Use { id: String },
@@ -547,8 +545,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             let core = build_core(&workspace)?;
             match action {
                 ModelAction::List => platform_cmd::run_model_list(&core),
-                ModelAction::Add { id, name, base_url, api_key, orch_model, unit_model } => {
-                    platform_cmd::run_model_add(&core, &id, &name, &base_url, &api_key, &orch_model, &unit_model)
+                ModelAction::Add { id, name, base_url, api_key, model } => {
+                    platform_cmd::run_model_add(&core, &id, &name, &base_url, &api_key, &model)
                 }
                 ModelAction::Use { id } => platform_cmd::run_model_use(&core, &id),
                 ModelAction::Remove { id } => platform_cmd::run_model_remove(&core, &id),

@@ -12,7 +12,6 @@ export function LedgerView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
-        no="08"
         en="LEDGER"
         title="三账"
         desc="任务的权威记录：任务账锁定目标与验收、证据账沉淀已确认结论、风险账跟踪影响面与阻断项，未闭环断言在此一目了然。"

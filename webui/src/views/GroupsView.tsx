@@ -134,10 +134,9 @@ export function GroupsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
-        no="02"
         en="GROUPS"
         title="智能体组"
-        desc="组是编成与隔离的基本单位：默认组内置受保护，自定义组可按公司 / 团队架构自由组建，主智能体可在任务中扩编组内个体。"
+        desc="组是编成与隔离的基本单位：默认组「智械集群」内置受保护，其他组可自由编成，主智能体可在任务中扩编组内个体。"
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
@@ -358,7 +357,7 @@ export function GroupsView(): React.ReactElement {
       >
         <Form form={groupForm} layout="vertical">
           <Form.Item name="name" label="组名" rules={[{ required: true }]}>
-            <Input placeholder="如：公司架构组" />
+            <Input placeholder="如：研发组" />
           </Form.Item>
           <Form.Item
             name="id"

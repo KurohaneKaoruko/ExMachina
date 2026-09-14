@@ -25,9 +25,8 @@ fn profile_json(p: &LlmProfile) -> Value {
         "apiKey": mask_key(&p.api_key),
         "apiKeys": keys,
         "apiFormat": if p.api_format.is_empty() { "openai" } else { &p.api_format },
-        "orchModel": p.orch_model, "unitModel": p.unit_model,
+        "model": p.model,
         "fallback": p.fallback,
-        "embedModel": p.embed_model,
     })
 }
 
@@ -56,15 +55,10 @@ pub struct LlmProfileBody {
     #[serde(default)]
     pub api_format: Option<String>,
     #[serde(default)]
-    pub orch_model: Option<String>,
-    #[serde(default)]
-    pub unit_model: Option<String>,
+    pub model: Option<String>,
     /// 失败回退：下一个档案 id（空串清除；缺省 = 沿用）
     #[serde(default)]
     pub fallback: Option<String>,
-    /// 嵌入模型（混合记忆检索；空 = 不提供嵌入）
-    #[serde(default)]
-    pub embed_model: Option<String>,
 }
 
 fn resolve_profile_input(
@@ -105,21 +99,17 @@ fn resolve_profile_input(
         api_key: key,
         api_keys,
         api_format: v.api_format.clone().unwrap_or_else(|| existing.map(|e| e.api_format.clone()).unwrap_or_default()),
-        orch_model: v.orch_model
-            .clone()
-            .unwrap_or_else(|| existing.map(|e| e.orch_model.clone()).unwrap_or_default()),
-        unit_model: v.unit_model
-            .clone()
-            .unwrap_or_else(|| existing.map(|e| e.unit_model.clone()).unwrap_or_default()),
+        model: v
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| existing.map(|e| e.model.clone()).unwrap_or_default()),
         fallback: match v.fallback.as_deref() {
             None => existing.and_then(|e| e.fallback.clone()),
             Some(f) if f.trim().is_empty() => None,
             Some(f) => Some(f.trim().to_string()),
-        },
-        embed_model: match v.embed_model.as_deref() {
-            None => existing.and_then(|e| e.embed_model.clone()),
-            Some(m) if m.trim().is_empty() => None,
-            Some(m) => Some(m.trim().to_string()),
         },
     }
 }
@@ -153,8 +143,7 @@ pub async fn save_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
             api_key: profile.api_key.clone(),
             api_keys: keys,
             api_format: profile.api_format.clone(),
-            orch_model: profile.orch_model.clone(),
-            unit_model: profile.unit_model.clone(),
+            model: profile.model.clone(),
         };
     }
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
@@ -185,8 +174,7 @@ pub async fn delete_profile(State(st): State<AppState>, Path(id): Path<String>) 
             api_key: first.api_key.clone(),
             api_keys: keys,
             api_format: first.api_format.clone(),
-            orch_model: first.orch_model.clone(),
-            unit_model: first.unit_model.clone(),
+            model: first.model.clone(),
         };
     }
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
@@ -216,8 +204,7 @@ pub async fn activate_profile(State(st): State<AppState>, Json(b): Json<LlmProfi
         api_key: p.api_key,
         api_keys: keys,
         api_format: p.api_format.clone(),
-        orch_model: p.orch_model,
-        unit_model: p.unit_model,
+        model: p.model,
     };
     cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
     match st.core.apply_config(cfg) {
@@ -238,10 +225,8 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
             api_key: cfg.llm.api_key.clone(),
             api_keys: cfg.llm.api_keys.clone(),
             api_format: cfg.llm.api_format.clone(),
-            orch_model: cfg.llm.orch_model.clone(),
-            unit_model: cfg.llm.unit_model.clone(),
+            model: cfg.llm.model.clone(),
             fallback: None,
-            embed_model: None,
         }),
     };
     let Some(p) = profile else {
@@ -253,7 +238,7 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
     }
     // 按档案协议构造 1-token 探针（URL / 鉴权头 / 请求体各不相同）
     let base = p.base_url.trim_end_matches('/');
-    let model = p.orch_model.as_str();
+    let model = p.model.as_str();
     let fmt = if p.api_format.is_empty() { "openai" } else { p.api_format.as_str() };
     let client = reqwest::Client::new();
     let rb = match fmt {

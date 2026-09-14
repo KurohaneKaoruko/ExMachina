@@ -472,19 +472,17 @@ fn sample_def(identifier: &str) -> AgentDefinition {
 fn 默认模型_组与个体解析与持久化() {
     // ---- ModelPool 解析语义 ----
     let mut pool = exm_core::provider::ModelPool::new();
-    pool.insert("p-a", std::sync::Arc::new(exm_core::provider::MockLlmProvider), "orch-a", "unit-a");
-    pool.insert("p-b", std::sync::Arc::new(exm_core::provider::MockLlmProvider), "orch-b", "unit-b");
-    // 档案ID：按角色取指挥体/子个体模型
-    let (prov, model) = pool.resolve("p-a", true).expect("应命中 p-a");
-    assert_eq!(model, "unit-a");
-    let (_, model) = pool.resolve("p-a", false).expect("应命中 p-a");
-    assert_eq!(model, "orch-a");
+    pool.insert("p-a", std::sync::Arc::new(exm_core::provider::MockLlmProvider), "model-a");
+    pool.insert("p-b", std::sync::Arc::new(exm_core::provider::MockLlmProvider), "model-b");
+    // 档案ID：取该档案的默认模型
+    let (prov, model) = pool.resolve("p-a").expect("应命中 p-a");
+    assert_eq!(model, "model-a");
     assert!(std::sync::Arc::strong_count(&prov) >= 1);
-    // 档案ID/模型名：显式模型优先于角色
-    let (_, model) = pool.resolve("p-b/自定义模型", false).expect("应命中 p-b");
+    // 档案ID/模型名：显式模型覆盖档案默认
+    let (_, model) = pool.resolve("p-b/自定义模型").expect("应命中 p-b");
     assert_eq!(model, "自定义模型");
     // 未知档案：回退全局（此处表现为 None）
-    assert!(pool.resolve("p-不存在", true).is_none());
+    assert!(pool.resolve("p-不存在").is_none());
 
     // ---- 组默认模型：持久化 + 清除 ----
     let reg = temp_registry("group-model");
@@ -535,9 +533,9 @@ fn 模型回退链_展开与冷却() {
     use std::sync::Arc;
 
     let mut pool = ModelPool::new();
-    pool.insert("p-a", Arc::new(exm_core::provider::MockLlmProvider), "a-orch", "a-unit");
-    pool.insert("p-b", Arc::new(exm_core::provider::MockLlmProvider), "b-orch", "b-unit");
-    pool.insert("p-c", Arc::new(exm_core::provider::MockLlmProvider), "c-orch", "c-unit");
+    pool.insert("p-a", Arc::new(exm_core::provider::MockLlmProvider), "model-a");
+    pool.insert("p-b", Arc::new(exm_core::provider::MockLlmProvider), "model-b");
+    pool.insert("p-c", Arc::new(exm_core::provider::MockLlmProvider), "model-c");
     pool.set_active("p-a");
     pool.set_fallback("p-a", "p-b");
     pool.set_fallback("p-b", "p-c");
@@ -548,11 +546,9 @@ fn 模型回退链_展开与冷却() {
     assert_eq!(chain, vec!["p-a".to_string(), "p-b".to_string(), "p-c".to_string()]);
     // 起点即全局档案时不追加重复兜底
     assert_eq!(pool.chain("p-a").len(), 3);
-    // entry 按角色取模型
-    let (_, m) = pool.entry("p-b", true).expect("p-b 应存在");
-    assert_eq!(m, "b-unit");
-    let (_, m) = pool.entry("p-b", false).expect("p-b 应存在");
-    assert_eq!(m, "b-orch");
+    // entry 取该档案的默认模型
+    let (_, m) = pool.entry("p-b").expect("p-b 应存在");
+    assert_eq!(m, "model-b");
 
     // 冷却：cool → cooling；clear → 解除
     let fo = FailoverState::default();

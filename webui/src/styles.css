@@ -198,32 +198,7 @@ body {
   line-height: 38px;
   letter-spacing: 1px;
   position: relative;
-  padding-inline-start: 52px !important;
-}
-/* 菜单项前的小块编号：01 02 03…，程序清单感 */
-.nav-index {
-  position: absolute;
-  left: 12px;
-  top: 0;
-  width: 22px;
-  text-align: left;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.5px;
-  color: var(--muted-dim);
-  transition: color 0.16s ease;
-}
-/* 编号与图标之间的分隔短刻线 */
-.app-sider .ant-menu-item::before {
-  content: "";
-  position: absolute;
-  left: 38px;
-  top: 50%;
-  width: 6px;
-  height: 1px;
-  margin-top: -0.5px;
-  background: var(--line-strong);
-  transition: background 0.16s ease;
+  padding-inline-start: 38px !important;
 }
 .app-sider .ant-menu-item .anticon {
   margin-inline-end: 8px;
@@ -234,9 +209,7 @@ body {
 .app-sider .ant-menu-item:hover {
   background: var(--accent-04) !important;
 }
-.app-sider .ant-menu-item:hover .nav-index,
 .app-sider .ant-menu-item:hover .anticon { color: var(--text); }
-.app-sider .ant-menu-item:hover::before { background: var(--accent-30); }
 .app-sider .ant-menu-item-selected {
   background: var(--accent-dim) !important;
   color: var(--accent) !important;
@@ -251,9 +224,7 @@ body {
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
 }
-.app-sider .ant-menu-item-selected .nav-index { color: var(--accent); }
 .app-sider .ant-menu-item-selected .anticon { color: var(--accent); }
-.app-sider .ant-menu-item-selected::before { background: var(--accent); }
 
 /* ============ HUD 面板（角标框） ============ */
 .hud { position: relative; }
@@ -401,17 +372,6 @@ body {
 }
 .page-head-main { min-width: 0; flex: 1 1 auto; }
 .page-title-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-/* 页面编号：§ 07 之类，纯序号不造词 */
-.page-no {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 1px;
-  color: var(--accent);
-  opacity: 0.75;
-  border: 1px solid var(--accent-30);
-  padding: 1px 6px;
-  flex: none;
-}
 .page-title {
   margin: 0;
   font-size: 17px;
@@ -436,7 +396,8 @@ body {
 .page-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
 /* ============ 通用分页骨架 ============ */
-.pane-wrap { max-width: 1180px; margin: 0 auto; }
+/* 撑满内容区：由 .app-content 统一控制内边距，不再二次居中留白 */
+.pane-wrap { width: 100%; }
 .pane-toolbar { margin-bottom: 14px; }
 .pane-hint { color: var(--muted); font-size: 12px; }
 .pane-detail { flex: 1; min-width: 0; }
@@ -850,11 +811,14 @@ body {
 .form-advanced { margin-top: 4px; }
 .form-advanced .ant-collapse-header { font-size: 12px; color: var(--muted); }
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+/* 密钥行：输入框 + 移除按钮（多把密钥共用一套样式） */
+.key-row { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+.key-row .ant-form-item { flex: 1; min-width: 0; }
 
 /* ============ 提供商 / 技能 / 智能体卡片 ============ */
 .skill-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 14px;
   align-items: start;
 }
@@ -1011,7 +975,7 @@ body {
 
 /* 组管理双栏 */
 .groups-layout { display: flex; gap: 16px; align-items: flex-start; }
-.groups-layout .list-rail { width: 300px; flex: none; }
+.groups-layout .list-rail { width: 260px; flex: none; }
 .pane-body { margin-top: 4px; }
 .list-rail { display: flex; flex-direction: column; gap: 6px; }
 .list-row {

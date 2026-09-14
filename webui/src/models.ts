@@ -6,14 +6,11 @@ export interface ModelOption {
   label: string;
 }
 
-/** 默认模型选项：空值 = 跟随全局默认（当前生效提供商）；其余 = 档案ID 或 档案ID/模型名 */
+/** 默认模型选项：空值 = 跟随全局默认（当前生效提供商）；其余 = 档案ID（可带 /模型名 覆盖） */
 export function buildModelOptions(profiles: LlmProfile[]): ModelOption[] {
   const opts: ModelOption[] = [{ value: "", label: "跟随全局默认（当前生效提供商）" }];
   for (const p of profiles) {
-    if (p.orchModel) opts.push({ value: p.id, label: `${p.name} · ${p.orchModel}（指挥体）` });
-    if (p.unitModel && p.unitModel !== p.orchModel) {
-      opts.push({ value: `${p.id}/${p.unitModel}`, label: `${p.name} · ${p.unitModel}（子个体）` });
-    }
+    opts.push({ value: p.id, label: `${p.name} · ${p.model || "未指定模型"}` });
   }
   return opts;
 }
@@ -26,5 +23,5 @@ export function modelLabel(hint: string | null | undefined, profiles: LlmProfile
   const explicit = slash > 0 ? hint.slice(slash + 1) : "";
   const p = profiles.find((x) => x.id === pid);
   if (!p) return hint;
-  return explicit ? `${p.name} · ${explicit}` : `${p.name} · ${p.orchModel || pid}`;
+  return explicit ? `${p.name} · ${explicit}` : `${p.name} · ${p.model || pid}`;
 }

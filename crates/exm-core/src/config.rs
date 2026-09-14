@@ -14,6 +14,7 @@ pub const CONFIG_VERSION: u32 = 1;
 
 /// 厂商模型档案：一条 OpenAI 兼容端点（OpenAI/DeepSeek/通义/Kimi/智谱/Ollama/vLLM …）。
 /// 多档案可并存，`active_profile` 决定当前生效者；切换即热生效（apply_config 重建运行时）。
+/// 档案只描述「端点 + 密钥 + 默认模型」；指挥体 / 子个体不在此区分——编成本身已按角色分配模型。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmProfile {
@@ -28,16 +29,12 @@ pub struct LlmProfile {
     /// API 协议：openai（默认）| anthropic
     #[serde(default)]
     pub api_format: String,
+    /// 该提供商的默认模型名
     #[serde(default)]
-    pub orch_model: String,
-    #[serde(default)]
-    pub unit_model: String,
+    pub model: String,
     /// 失败回退：下一个档案 id（请求失败且未发出内容时切换；成环自动截断）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
-    /// 嵌入模型（混合记忆检索用；空 = 该档案不提供嵌入）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embed_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -51,8 +48,7 @@ pub struct LlmConfig {
     /// 生效协议：openai（默认）| anthropic
     #[serde(default)]
     pub api_format: String,
-    pub orch_model: String,
-    pub unit_model: String,
+    pub model: String,
 }
 
 /// 安全配置：终端命令审批闸门（docs/10）
@@ -116,6 +112,8 @@ pub struct ExmConfig {
     pub memory_enabled: bool,
     pub memory_recall_limit: usize,
     pub memory_half_life_days: f64,
+    /// 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回
+    pub memory_semantic_model: String,
     /// 测试替身通道（仅 `EXM_LLM_MOCK=1` 或测试代码置位；产品运行时不生效）
     pub use_mock: bool,
     /// 执行审批（安全闸门）
@@ -137,7 +135,7 @@ struct ConfigFile {
     #[serde(default)]
     config_version: Option<u32>,
     #[serde(default)]
-    llm: Option<LlmConfig>,
+    llm: Option<LlmConfigFile>,
     #[serde(default)]
     max_concurrency: Option<usize>,
     #[serde(default)]
@@ -151,11 +149,106 @@ struct ConfigFile {
     #[serde(default)]
     automation: Option<AutomationFile>,
     #[serde(default)]
-    llm_profiles: Option<Vec<LlmProfile>>,
+    llm_profiles: Option<Vec<LlmProfileFile>>,
     #[serde(default)]
     active_profile: Option<String>,
     #[serde(default)]
     mcp_servers: Option<Vec<crate::mcp::McpServerConfig>>,
+}
+
+/// 档案的读取形态：兼容历史上区分「指挥体模型 / 子个体模型」的旧配置。
+/// 两者合并为单一 `model`（优先取指挥体模型，其次子个体模型）；旧键解析后不再回写。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LlmProfileFile {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    api_keys: Vec<String>,
+    #[serde(default)]
+    api_format: String,
+    /// 现役：该提供商的默认模型名
+    #[serde(default)]
+    model: String,
+    /// 历史遗留：指挥体模型（迁移来源）
+    #[serde(default)]
+    orch_model: Option<String>,
+    /// 历史遗留：子个体模型（迁移兜底）
+    #[serde(default)]
+    unit_model: Option<String>,
+    #[serde(default)]
+    fallback: Option<String>,
+    /// 历史遗留：档案级嵌入模型（现由「记忆」页的语义检索设置管理）
+    #[serde(default)]
+    embed_model: Option<String>,
+}
+
+impl LlmProfileFile {
+    /// 补默认值并完成历史字段迁移
+    fn into_profile(self, fallback_model: &str) -> LlmProfile {
+        let model = if !self.model.trim().is_empty() {
+            self.model.trim().to_string()
+        } else if let Some(m) = self.orch_model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            m.to_string()
+        } else if let Some(m) = self.unit_model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            m.to_string()
+        } else {
+            fallback_model.to_string()
+        };
+        LlmProfile {
+            id: self.id,
+            name: self.name,
+            base_url: self.base_url,
+            api_key: self.api_key,
+            api_keys: self.api_keys,
+            api_format: self.api_format,
+            model,
+            fallback: self.fallback,
+        }
+    }
+}
+
+/// LLM 段历史值：旧配置区分指挥体 / 子个体模型，合并为单一 `model`
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LlmConfigFile {
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    orch_model: Option<String>,
+    #[serde(default)]
+    unit_model: Option<String>,
+}
+
+impl LlmConfigFile {
+    fn into_config(self) -> LlmConfig {
+        let model = if !self.model.trim().is_empty() {
+            self.model.trim().to_string()
+        } else if let Some(m) = self.orch_model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            m.to_string()
+        } else if let Some(m) = self.unit_model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            m.to_string()
+        } else {
+            String::new()
+        };
+        LlmConfig {
+            base_url: self.base_url,
+            api_key: self.api_key,
+            api_keys: Vec::new(),
+            api_format: String::new(),
+            model,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -191,6 +284,9 @@ struct MemoryConfigFile {
     recall_limit: Option<usize>,
     #[serde(default)]
     half_life_days: Option<f64>,
+    /// 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回
+    #[serde(default)]
+    semantic_model: Option<String>,
 }
 
 /// 安装清单：记录本次安装的剖面与渠道开关（与运行配置解耦）
@@ -274,7 +370,7 @@ impl ExmConfig {
         let file = read_config_file(&config_path);
         let file = migrate_file(file, &config_path);
 
-        let file_llm = file.llm.clone().unwrap_or_default();
+        let file_llm = file.llm.clone().unwrap_or_default().into_config();
         let file_mem = file.memory.clone().unwrap_or_default();
         let file_sec = file.security.clone().unwrap_or_default();
         let file_auto = file.automation.clone().unwrap_or_default();
@@ -307,12 +403,17 @@ impl ExmConfig {
             api_key: env_or("EXM_LLM_API_KEY", &file_llm.api_key, ""),
             api_keys: Vec::new(),
             api_format: String::new(),
-            orch_model: env_or("EXM_LLM_MODEL_ORCH", &file_llm.orch_model, ""),
-            unit_model: env_or("EXM_LLM_MODEL_UNIT", &file_llm.unit_model, ""),
+            model: env_or("EXM_LLM_MODEL", &file_llm.model, ""),
         };
 
         // 模型档案：旧配置自动迁移为单一 default 档案；激活档案的值解析进 llm（env 仍最高优先）
-        let mut llm_profiles: Vec<LlmProfile> = file.llm_profiles.clone().unwrap_or_default();
+        let mut llm_profiles: Vec<LlmProfile> = file
+            .llm_profiles
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.into_profile(&llm.model))
+            .collect();
         let active_profile = file.active_profile.clone().unwrap_or_else(|| "default".into());
         if llm_profiles.is_empty() {
             llm_profiles.push(LlmProfile {
@@ -322,10 +423,8 @@ impl ExmConfig {
                 api_key: llm.api_key.clone(),
                 api_keys: Vec::new(),
                 api_format: String::new(),
-                orch_model: llm.orch_model.clone(),
-                unit_model: llm.unit_model.clone(),
+                model: llm.model.clone(),
                 fallback: None,
-                embed_model: None,
             });
         }
         if !llm_profiles.iter().any(|p| p.id == active_profile) {
@@ -335,8 +434,7 @@ impl ExmConfig {
                     api_key: env_or("EXM_LLM_API_KEY", &first.api_key, ""),
                     api_keys: Vec::new(),
                     api_format: String::new(),
-                    orch_model: env_or("EXM_LLM_MODEL_ORCH", &first.orch_model, ""),
-                    unit_model: env_or("EXM_LLM_MODEL_UNIT", &first.unit_model, ""),
+                    model: env_or("EXM_LLM_MODEL", &first.model, ""),
                 };
             }
         } else if let Some(p) = llm_profiles.iter().find(|p| p.id == active_profile) {
@@ -349,8 +447,7 @@ impl ExmConfig {
                 api_key: env_or("EXM_LLM_API_KEY", &p.api_key, ""),
                 api_keys: keys,
                 api_format: p.api_format.clone(),
-                orch_model: env_or("EXM_LLM_MODEL_ORCH", &p.orch_model, ""),
-                unit_model: env_or("EXM_LLM_MODEL_UNIT", &p.unit_model, ""),
+                model: env_or("EXM_LLM_MODEL", &p.model, ""),
             };
         }
 
@@ -383,6 +480,7 @@ impl ExmConfig {
             memory_enabled: file_mem.enabled.unwrap_or(true),
             memory_recall_limit: file_mem.recall_limit.unwrap_or(5),
             memory_half_life_days: file_mem.half_life_days.unwrap_or(30.0),
+            memory_semantic_model: file_mem.semantic_model.clone().unwrap_or_default(),
             use_mock,
             security,
             automation,
@@ -396,7 +494,13 @@ impl ExmConfig {
     pub fn save(&self) -> anyhow::Result<()> {
         let file = ConfigFile {
             config_version: Some(CONFIG_VERSION),
-            llm: Some(self.llm.clone()),
+            llm: Some(LlmConfigFile {
+                base_url: self.llm.base_url.clone(),
+                api_key: self.llm.api_key.clone(),
+                model: self.llm.model.clone(),
+                orch_model: None,
+                unit_model: None,
+            }),
             max_concurrency: Some(self.max_concurrency),
             max_session_tokens: Some(self.max_session_tokens),
             memory_md_max_chars: Some(self.memory_md_max_chars),
@@ -404,8 +508,26 @@ impl ExmConfig {
                 enabled: Some(self.memory_enabled),
                 recall_limit: Some(self.memory_recall_limit),
                 half_life_days: Some(self.memory_half_life_days),
+                semantic_model: Some(self.memory_semantic_model.clone()),
             }),
-            llm_profiles: Some(self.llm_profiles.clone()),
+            llm_profiles: Some(
+                self.llm_profiles
+                    .iter()
+                    .map(|p| LlmProfileFile {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        base_url: p.base_url.clone(),
+                        api_key: p.api_key.clone(),
+                        api_keys: p.api_keys.clone(),
+                        api_format: p.api_format.clone(),
+                        model: p.model.clone(),
+                        orch_model: None,
+                        unit_model: None,
+                        fallback: p.fallback.clone(),
+                        embed_model: None,
+                    })
+                    .collect(),
+            ),
             active_profile: Some(self.active_profile.clone()),
             mcp_servers: Some(self.mcp_servers.clone()),
             security: Some(SecurityFile {
@@ -457,13 +579,14 @@ fn migrate_file(mut file: ConfigFile, path: &Path) -> ConfigFile {
         return file;
     }
     if file.llm.is_none() {
-        file.llm = Some(LlmConfig::default());
+        file.llm = Some(LlmConfigFile::default());
     }
     if file.memory.is_none() {
         file.memory = Some(MemoryConfigFile {
             enabled: Some(true),
             recall_limit: Some(5),
             half_life_days: Some(30.0),
+            semantic_model: None,
         });
     }
     if file.max_concurrency.is_none() {
@@ -504,11 +627,9 @@ pub fn config_schema() -> serde_json::Value {
                       "default": "https://api.openai.com/v1", "required": true,
                       "help": "支持官方 OpenAI、DeepSeek、通义、vLLM、Ollama 等任意兼容端点" },
                     { "key": "llm.apiKey", "label": "API Key", "kind": "password", "default": "",
-                      "required": false, "help": "留空则以 Mock 模拟通道运行；填入后热切换为真实推理" },
-                    { "key": "llm.orchModel", "label": "指挥体模型", "kind": "string",
-                      "default": "", "required": true, "help": "主智能体（规划/裁决/收束）" },
-                    { "key": "llm.unitModel", "label": "子个体模型", "kind": "string",
-                      "default": "", "required": true, "help": "子个体执行用模型" }
+                      "required": false, "help": "未配置时不接受推理请求，请在「提供商」页或此填写" },
+                    { "key": "llm.model", "label": "默认模型", "kind": "string",
+                      "default": "", "required": true, "help": "该端点的模型名；个体与组可各自覆盖" }
                 ]
             },
             {

@@ -27,7 +27,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface GatewayConfig {
-  llm: { baseUrl: string; apiKey: string; orchModel: string; unitModel: string };
+  llm: { baseUrl: string; apiKey: string; model: string };
   maxConcurrency: number;
   /** 会话 token 预算（估算；0 = 不限） */
   maxSessionTokens: number;
@@ -35,6 +35,8 @@ export interface GatewayConfig {
     enabled: boolean;
     recallLimit: number;
     halfLifeDays: number;
+    /** 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回 */
+    semanticModel: string;
   };
   security: {
     execApproval: string;
@@ -194,12 +196,10 @@ export interface LlmProfile {
   apiKey: string;
   /** 多 Key 池（掩码行 = 沿用旧池同位键） */
   apiKeys?: string[];
-  orchModel: string;
-  unitModel: string;
+  /** 该提供商的默认模型名 */
+  model: string;
   /** 失败回退：下一个档案 id（请求失败且未发出内容时切换） */
   fallback?: string | null;
-  /** 嵌入模型（混合记忆检索；空 = 不提供嵌入） */
-  embedModel?: string | null;
 }
 
 export interface LlmProfilesInfo {
@@ -436,7 +436,7 @@ export const api = {
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 
   llmProfiles: () => req<LlmProfilesInfo>("/llm/profiles"),
-  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; orchModel?: string; unitModel?: string; fallback?: string; embedModel?: string }) =>
+  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; model?: string; fallback?: string }) =>
     req<{ ok: boolean; id: string; mock?: boolean }>("/llm/profiles", { method: "POST", body: JSON.stringify(body) }),
   deleteLlmProfile: (id: string) => req<{ ok: boolean }>(`/llm/profiles/${id}`, { method: "DELETE" }),
   activateLlmProfile: (id: string) =>

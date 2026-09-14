@@ -53,28 +53,27 @@ type ViewKey =
   | "activity"
   | "settings";
 
-/** 侧栏清单：编号仅作序号，与页头编号对应 */
+/** 侧栏清单 */
 export const NAV_ITEMS: {
   key: ViewKey;
-  no: string;
   en: string;
   labelKey: string;
   icon: React.ReactNode;
 }[] = [
-  { key: "chat", no: "01", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
-  { key: "groups", no: "02", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
-  { key: "agents", no: "03", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
-  { key: "agent", no: "04", en: "SOLO", labelKey: "nav.solo", icon: <UserOutlined /> },
-  { key: "models", no: "05", en: "PROVIDERS", labelKey: "nav.providers", icon: <ApiOutlined /> },
-  { key: "skills", no: "06", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
-  { key: "graph", no: "07", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
-  { key: "ledger", no: "08", en: "LEDGER", labelKey: "nav.ledger", icon: <FundOutlined /> },
-  { key: "memory", no: "09", en: "MEMORY", labelKey: "nav.memory", icon: <DatabaseOutlined /> },
-  { key: "automations", no: "10", en: "CRON", labelKey: "nav.cron", icon: <ClockCircleOutlined /> },
-  { key: "approvals", no: "11", en: "APPROVALS", labelKey: "nav.approvals", icon: <BellOutlined /> },
-  { key: "channels", no: "12", en: "CHANNELS", labelKey: "nav.channels", icon: <CloudUploadOutlined /> },
-  { key: "activity", no: "13", en: "EVENTS", labelKey: "nav.events", icon: <FileTextOutlined /> },
-  { key: "settings", no: "14", en: "CONFIG", labelKey: "nav.settings", icon: <SettingOutlined /> },
+  { key: "chat", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
+  { key: "agent", en: "AGENTS", labelKey: "nav.agent", icon: <UserOutlined /> },
+  { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
+  { key: "agents", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
+  { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
+  { key: "models", en: "PROVIDERS", labelKey: "nav.providers", icon: <ApiOutlined /> },
+  { key: "graph", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
+  { key: "automations", en: "CRON", labelKey: "nav.cron", icon: <ClockCircleOutlined /> },
+  { key: "approvals", en: "APPROVALS", labelKey: "nav.approvals", icon: <BellOutlined /> },
+  { key: "channels", en: "CHANNELS", labelKey: "nav.channels", icon: <CloudUploadOutlined /> },
+  { key: "ledger", en: "LEDGER", labelKey: "nav.ledger", icon: <FundOutlined /> },
+  { key: "memory", en: "MEMORY", labelKey: "nav.memory", icon: <DatabaseOutlined /> },
+  { key: "activity", en: "EVENTS", labelKey: "nav.events", icon: <FileTextOutlined /> },
+  { key: "settings", en: "CONFIG", labelKey: "nav.settings", icon: <SettingOutlined /> },
 ];
 
 export default function App(): React.ReactElement {
@@ -153,7 +152,6 @@ export default function App(): React.ReactElement {
             icon: it.icon,
             label: (
               <>
-                <span className="nav-index">{it.no}</span>
                 <span>{t(it.labelKey)}</span> <span className="label-en">[{it.en}]</span>
               </>
             ),

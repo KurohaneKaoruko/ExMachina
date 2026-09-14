@@ -345,7 +345,7 @@ async fn main() -> anyhow::Result<()> {
 
     let g: serde_json::Value = client
         .post(format!("{base}/groups"))
-        .json(&serde_json::json!({"id": "product", "name": "产品组", "description": "公司架构演示组"}))
+        .json(&serde_json::json!({"id": "product", "name": "产品组", "description": "端到端演示组"}))
         .send()
         .await?
         .json()
@@ -690,7 +690,7 @@ async fn main() -> anyhow::Result<()> {
         .json(&serde_json::json!({
             "id": "e2e-vendor", "name": "E2E 厂商",
             "baseUrl": "https://api.example.com/v1",
-            "apiKey": "sk-e2e", "orchModel": "vendor-large", "unitModel": "vendor-small"
+            "apiKey": "sk-e2e", "model": "vendor-large"
         }))
         .send()
         .await?
@@ -706,7 +706,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     c.check("切换生效档案（热生效）", activated["ok"] == true && activated["active"] == "e2e-vendor");
     let cfg_after: serde_json::Value = client.get(format!("{base}/config")).send().await?.json().await?;
-    c.check("切换后运行时模型已随档案", cfg_after["llm"]["orchModel"] == "vendor-large");
+    c.check("切换后运行时模型已随档案", cfg_after["llm"]["model"] == "vendor-large");
     let restore: serde_json::Value = client
         .put(format!("{base}/llm/active"))
         .json(&serde_json::json!({ "id": "default" }))
@@ -777,7 +777,7 @@ async fn main() -> anyhow::Result<()> {
             "id": "e2e-pool", "name": "E2E Key 池",
             "baseUrl": format!("http://127.0.0.1:{fake_port}/v1"),
             "apiKeys": ["k1", "k2"],
-            "orchModel": "fake-large", "unitModel": "fake-small"
+            "model": "fake-large"
         }))
         .send()
         .await?
@@ -897,7 +897,6 @@ async fn main() -> anyhow::Result<()> {
         .await?
         .json()
         .await?;
-    let no_key: reqwest::Response = client.get(format!("{base}/agents")).send().await?;
     let no_key: reqwest::Response = client.get(format!("{base}/agents")).send().await?;
     c.check("未带密钥访问 401", no_key.status().as_u16() == 401);
     let wrong: serde_json::Value = client

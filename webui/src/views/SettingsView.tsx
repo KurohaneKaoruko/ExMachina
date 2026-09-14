@@ -107,7 +107,6 @@ export function SettingsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
-        no="14"
         en="CONFIG"
         title="设置"
         desc="运行时容量、记忆召回、命令闸门与心跳自动化的集中配置。模型接入在「提供商」页维护；此处改动保存后热生效，无需重启。"

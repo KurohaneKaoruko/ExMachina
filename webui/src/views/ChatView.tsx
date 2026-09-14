@@ -281,7 +281,6 @@ export function ChatView(): React.ReactElement {
       {/* 右侧：消息流 + 输入 */}
       <div className="chat-wrap">
         <div className="console-bar">
-          <span className="page-no">01</span>
           <span className="console-title">对话</span>
           <span className="page-en">CHAT</span>
           <span className="console-sep" />

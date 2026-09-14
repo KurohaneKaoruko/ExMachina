@@ -86,6 +86,8 @@ pub struct Orchestrator {
     pub memory_md_path: PathBuf,
     pub events: broadcast::Sender<CoreEvent>,
     pub orch_model: String,
+    /// 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回（由记忆设置指定）
+    pub memory_semantic_model: String,
     pub max_concurrency: usize,
     /// 新教训达阈值时自动提炼经验改进要点（docs/10 §5）
     pub auto_adapt: bool,
@@ -181,7 +183,7 @@ impl Orchestrator {
     }
 
     /// 回退链展开：起始档案 → fallback 链 → 全局生效档案兜底；冷却中的档案跳过（保底留一个）
-    fn expand_chain(&self, start: &str, unit: bool) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
+    fn expand_chain(&self, start: &str) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
         let mut ids = self.model_pool.chain(start);
         let active = self.model_pool.active_id();
         if !active.is_empty() && !ids.contains(&active) {
@@ -190,7 +192,7 @@ impl Orchestrator {
         let total = ids.len();
         let mut out: Vec<(String, Arc<dyn LlmProvider>, String)> = Vec::new();
         for (n, id) in ids.into_iter().enumerate() {
-            let Some((provider, model)) = self.model_pool.entry(&id, unit) else { continue };
+            let Some((provider, model)) = self.model_pool.entry(&id) else { continue };
             if !out.is_empty() && n + 1 < total && self.failover.cooling(&id) {
                 continue; // 冷却中且后面还有候选：跳过
             }
@@ -201,9 +203,8 @@ impl Orchestrator {
 
     /// 写入路径向量回填：本轮新条目批量嵌入（标题+正文），失败静默（词项召回仍可用）
     async fn backfill_embeddings(&self, ids: &[String]) {
-        let active = self.model_pool.active_id();
-        let Some(model) = self.model_pool.profile_embed_model(&active) else { return };
-        let Some((provider, _)) = self.model_pool.entry(&active, false).map(|(p, m)| (p, m)) else { return };
+        let Some(cfg) = self.semantic_recall() else { return };
+        let (provider, model) = cfg;
         let mut pending: Vec<(String, String)> = Vec::new();
         for id in ids {
             if let Ok(Some(e)) = self.memory.get_entry_public(id) {
@@ -227,26 +228,40 @@ impl Orchestrator {
         }
     }
 
-    /// 查询嵌入（混合记忆检索）：全局生效档案声明 embedModel 时计算，否则 None（纯词项）
+    /// 查询嵌入（混合记忆检索）：语义检索指向的档案 + 模型，否则 None（纯词项）
     async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
-        let active = self.model_pool.active_id();
-        let provider = self.model_pool.entry(&active, false).map(|(p, _)| p)?;
-        let model = self
-            .model_pool
-            .profile_embed_model(&active)?;
+        let (provider, model) = self.semantic_recall()?;
         provider.embed(&model, &[text.to_string()]).await.ok()?.into_iter().next()
+    }
+
+    /// 解析语义检索目标（记忆设置指定的档案与模型）；未配置返回 None
+    fn semantic_recall(&self) -> Option<(Arc<dyn LlmProvider>, String)> {
+        let id = self.memory_semantic_model.trim().to_string();
+        if id.is_empty() {
+            return None;
+        }
+        let (pid, model) = match id.split_once('/') {
+            Some((p, m)) if !m.trim().is_empty() => (p.trim().to_string(), m.trim().to_string()),
+            _ => (id.trim().to_string(), String::new()),
+        };
+        let (provider, profile_model) = self.model_pool.entry(&pid)?;
+        let model = if model.is_empty() { profile_model } else { model };
+        if model.is_empty() {
+            return None; // 档案没给模型名：无从嵌入
+        }
+        Some((provider, model))
     }
 
     /// 指挥体候选链（目标提示 → 全局 → 回退链）
     fn orch_candidates(&self) -> Vec<(String, Arc<dyn LlmProvider>, String)> {
         let start = self
             .target_model_hint()
-            .and_then(|h| self.model_pool.resolve_full(&h, false).map(|(id, _, _)| id))
+            .and_then(|h| self.model_pool.resolve_full(&h).map(|(id, _, _)| id))
             .unwrap_or_else(|| self.model_pool.active_id());
         if start.is_empty() {
             return Vec::new();
         }
-        self.expand_chain(&start, false)
+        self.expand_chain(&start)
     }
 
     /// 子个体候选链（个体 → 组 → 全局 → 回退链）
@@ -255,12 +270,12 @@ impl Orchestrator {
             .model_hint
             .clone()
             .or_else(|| self.registry.active_group_meta().and_then(|m| m.model))
-            .and_then(|h| self.model_pool.resolve_full(&h, true).map(|(id, _, _)| id))
+            .and_then(|h| self.model_pool.resolve_full(&h).map(|(id, _, _)| id))
             .unwrap_or_else(|| self.model_pool.active_id());
         if start.is_empty() {
             return Vec::new();
         }
-        self.expand_chain(&start, true)
+        self.expand_chain(&start)
     }
 
     /// 子个体回退链（run_node → AgentRuntime）
