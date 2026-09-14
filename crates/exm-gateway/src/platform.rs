@@ -482,6 +482,9 @@ pub struct Channel {
     /// 账号绑定组：该账号的入站消息在此组上下文执行；缺省 = 激活组
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// 会话白名单：允许交互的 chat id（Telegram 等平台；空 = 不限）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_chats: Vec<String>,
     /// 账号备注（同平台多账号时区分用途）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
@@ -536,6 +539,9 @@ pub struct ChannelBody {
     /// 账号绑定组
     #[serde(default)]
     pub group: Option<String>,
+    /// 会话白名单（Telegram chat id；空 = 不限）
+    #[serde(default)]
+    pub allowed_chats: Option<Vec<String>>,
     #[serde(default)]
     pub account: Option<String>,
     #[serde(default)]
@@ -575,6 +581,7 @@ pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBod
         kind: platform,
         enabled: b.enabled.unwrap_or(true),
         group: b.group.clone().filter(|s| !s.trim().is_empty()),
+        allowed_chats: b.allowed_chats.clone().unwrap_or_default(),
         account: b.account.clone().filter(|s| !s.trim().is_empty()),
         secret: b.secret.filter(|s| !s.trim().is_empty()),
         reply_webhook: b.reply_webhook.filter(|s| !s.trim().is_empty()),
@@ -603,6 +610,9 @@ pub async fn update_channel(
     }
     if let Some(v) = &b.group {
         ch.group = if v.trim().is_empty() { None } else { Some(v.clone()) };
+    }
+    if let Some(v) = &b.allowed_chats {
+        ch.allowed_chats = v.iter().filter(|s| !s.trim().is_empty()).cloned().collect();
     }
     if let Some(v) = &b.account {
         ch.account = if v.trim().is_empty() { None } else { Some(v.clone()) };

@@ -44,6 +44,7 @@ export function ChannelsView(): React.ReactElement {
       secret: c.secret,
       replyWebhook: c.replyWebhook,
       token: c.token,
+      allowedChats: (c.allowedChats ?? []).join(", "),
     });
     setModal(true);
   };
@@ -57,6 +58,10 @@ export function ChannelsView(): React.ReactElement {
       secret: v.secret || undefined,
       replyWebhook: v.replyWebhook || undefined,
       token: v.token || undefined,
+      allowedChats: (v.allowedChats ?? "")
+        .split(/[,,\s]+/)
+        .map((s: string) => s.trim())
+        .filter(Boolean),
     };
     try {
       if (editing) {
@@ -247,7 +252,14 @@ Content-Type: application/json
               )
             }
           </Form.Item>
-          <Form.Item name="replyWebhook" label="出站回调 URL（可选，webhook 平台）">
+          <Form.Item
+          name="allowedChats"
+          label="会话白名单（可选，Telegram）"
+          extra="允许交互的 chat id，逗号分隔；留空 = 不限。防陌生人滥用机器人"
+        >
+          <Input placeholder="如 123456789, 987654321" />
+        </Form.Item>
+        <Form.Item name="replyWebhook" label="出站回调 URL（可选，webhook 平台）">
             <Input placeholder="运行结束后 POST 结果" />
           </Form.Item>
         </Form>

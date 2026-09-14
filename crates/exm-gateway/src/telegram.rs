@@ -140,12 +140,41 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
             .unwrap_or_default();
         for u in updates {
             offset = u["update_id"].as_i64().unwrap_or(offset) + 1;
-            let text = u
-                .pointer("/message/text")
-                .and_then(|v| v.as_str())
-                .map(String::from);
             let chat_id = u.pointer("/message/chat/id").and_then(|v| v.as_i64());
-            if let (Some(text), Some(chat_id)) = (text, chat_id) {
+            let Some(chat_id) = chat_id else { continue };
+            // 会话白名单：非空时仅放行清单内的 chat
+            if !ch.allowed_chats.is_empty()
+                && !ch.allowed_chats.iter().any(|a| a == &chat_id.to_string())
+            {
+                eprintln!("[telegram:{}] chat {chat_id} 不在白名单，已忽略", ch.id);
+                continue;
+            }
+            let text = match u.pointer("/message/text").and_then(|v| v.as_str()) {
+                Some(t) => Some(t.to_string()),
+                None => {
+                    // 语音消息：getFile 下载 ogg → 转写为文本
+                    match u.pointer("/message/voice/file_id").and_then(|v| v.as_str()) {
+                        Some(file_id) => {
+                            let api = format!("https://api.telegram.org/bot{}", ch.token.as_deref().unwrap_or_default());
+                            match download_voice(&api, file_id).await {
+                                Ok(bytes) if !bytes.is_empty() => {
+                                    match core.transcribe(&bytes, "voice.ogg").await {
+                                        Ok(t) if !t.trim().is_empty() => Some(t),
+                                        Ok(_) => None,
+                                        Err(e) => {
+                                            eprintln!("[telegram:{}] 语音转写失败：{e}", ch.id);
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            }
+                        }
+                        None => None,
+                    }
+                }
+            };
+            if let Some(text) = text {
                 if text.trim().is_empty() {
                     continue;
                 }
@@ -230,6 +259,30 @@ fn flatten_statements(payload: &serde_json::Value) -> String {
         text = "（本轮无收束输出）".into();
     }
     text.chars().take(3800).collect()
+}
+
+/// 下载语音文件（getFile → download，ogg/opus 字节）
+async fn download_voice(api: &str, file_id: &str) -> anyhow::Result<Vec<u8>> {
+    let client = reqwest::Client::new();
+    let meta: serde_json::Value = client
+        .get(format!("{api}/getFile"))
+        .query(&[("file_id", file_id)])
+        .send()
+        .await?
+        .json()
+        .await?;
+    let path = meta
+        .pointer("/result/file_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("getFile 缺少 file_path"))?;
+    let bytes = client
+        .get(format!("https://api.telegram.org/file/bot{}/{path}", path.trim_start_matches('/')))
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await?
+        .bytes()
+        .await?;
+    Ok(bytes.to_vec())
 }
 
 async fn send_message(token: &str, chat_id: i64, text: &str) {

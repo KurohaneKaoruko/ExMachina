@@ -164,6 +164,8 @@ export interface Channel {
   secret?: string;
   replyWebhook?: string;
   token?: string;
+  /** 会话白名单（Telegram chat id；空 = 不限） */
+  allowedChats?: string[];
   createdAt: string;
 }
 
@@ -408,8 +410,9 @@ export const api = {
     replyWebhook?: string;
     token?: string;
     enabled?: boolean;
+    allowedChats?: string[];
   }) => req<Channel>("/channels", { method: "POST", body: JSON.stringify(body) }),
-  updateChannel: (id: string, body: { enabled?: boolean; group?: string; token?: string; secret?: string; replyWebhook?: string; account?: string }) =>
+  updateChannel: (id: string, body: { enabled?: boolean; group?: string; token?: string; secret?: string; replyWebhook?: string; account?: string; allowedChats?: string[] }) =>
     req<Channel>(`/channels/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 
