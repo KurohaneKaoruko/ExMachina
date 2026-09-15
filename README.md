@@ -1,11 +1,8 @@
+# EX·MACHINA 智械体集群
+
 <div align="center">
 
-<img src="docs/exmachina-logo.svg" width="640" alt="EXMACHINA">
-
-**以集体智能为核心的多智能体集群系统**
-
-一个指挥体，一支可自由组建的智能体集群：目标进来，任务 DAG 出去，
-契约回流、冲突裁决、结论收束——全程结构化陈述、零情绪、证据分级。
+<img src="docs/exmachina-logo.svg" width="100%" alt="EXMACHINA · 智械体集群">
 
 ![阶段](https://img.shields.io/badge/%E9%98%B6%E6%AE%B5-%E5%BC%80%E5%8F%91%E4%B8%AD%20%7C%20pre--alpha-orange)
 ![Rust](https://img.shields.io/badge/Rust-stable-dea584?logo=rust&logoColor=white)
