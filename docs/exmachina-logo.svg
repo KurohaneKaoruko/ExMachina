@@ -1,70 +1,87 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="280" viewBox="0 0 960 280">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="EX·MACHINA · 智械体集群">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#080c10"/>
-      <stop offset="100%" stop-color="#0d1420"/>
+    <linearGradient id="wordGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#dfe9f4"/>
     </linearGradient>
-    <linearGradient id="textGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#f0f6fc"/>
-      <stop offset="100%" stop-color="#a0b4c8"/>
+    <linearGradient id="ruleGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4cc9f0" stop-opacity="0"/>
+      <stop offset="18%" stop-color="#4cc9f0" stop-opacity="0.9"/>
+      <stop offset="52%" stop-color="#7ee787" stop-opacity="0.65"/>
+      <stop offset="82%" stop-color="#4cc9f0" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#4cc9f0" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="underline" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#4cc9f0"/>
-      <stop offset="100%" stop-color="#7ee787" stop-opacity="0.3"/>
-    </linearGradient>
-    <filter id="glowText">
-      <feGaussianBlur stdDeviation="0.8" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    <filter id="glowSoft" x="-40%" y="-70%" width="180%" height="280%">
+      <feGaussianBlur stdDeviation="8"/>
     </filter>
   </defs>
 
-  <rect width="960" height="280" fill="url(#bg)"/>
+  <!-- 纯色背景 -->
+  <rect width="1200" height="300" fill="#0b1118"/>
 
-  <!-- 微弱网格 -->
-  <g stroke="#10161f" stroke-width="0.4" opacity="0.2">
-    <line x1="0" y1="70" x2="960" y2="70"/>
-    <line x1="0" y1="140" x2="960" y2="140"/>
-    <line x1="0" y1="210" x2="960" y2="210"/>
-    <line x1="240" y1="0" x2="240" y2="280"/>
-    <line x1="480" y1="0" x2="480" y2="280"/>
-    <line x1="720" y1="0" x2="720" y2="280"/>
+  <!-- 顶部与底部刻度尺 -->
+  <g stroke="#4cc9f0" stroke-width="1.6" opacity="0.32">
+    <line x1="80"  y1="0" x2="80"  y2="9"/>
+    <line x1="200" y1="0" x2="200" y2="9"/>
+    <line x1="320" y1="0" x2="320" y2="6"/>
+    <line x1="440" y1="0" x2="440" y2="9"/>
+    <line x1="560" y1="0" x2="560" y2="6"/>
+    <line x1="680" y1="0" x2="680" y2="9"/>
+    <line x1="800" y1="0" x2="800" y2="6"/>
+    <line x1="920" y1="0" x2="920" y2="9"/>
+    <line x1="1040" y1="0" x2="1040" y2="6"/>
+    <line x1="80"  y1="300" x2="80"  y2="291"/>
+    <line x1="200" y1="300" x2="200" y2="291"/>
+    <line x1="320" y1="300" x2="320" y2="294"/>
+    <line x1="440" y1="300" x2="440" y2="291"/>
+    <line x1="560" y1="300" x2="560" y2="294"/>
+    <line x1="680" y1="300" x2="680" y2="291"/>
+    <line x1="800" y1="300" x2="800" y2="294"/>
+    <line x1="920" y1="300" x2="920" y2="291"/>
+    <line x1="1040" y1="300" x2="1040" y2="294"/>
   </g>
 
-  <!-- 主标题：100px，上方间距 y=110 -->
-  <text x="480" y="110"
-        font-family="'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace"
-        font-size="100" font-weight="800" fill="url(#textGrad)"
-        text-anchor="middle" filter="url(#glowText)">
-    EX·MACHINA
-  </text>
+  <!-- 主标题背后的横向光带 -->
+  <rect x="180" y="96" width="840" height="76" fill="url(#ruleGrad)" opacity="0.16" filter="url(#glowSoft)"/>
 
-  <!-- 副标题：22px，亮色 -->
-  <text x="480" y="152" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="22" font-weight="600" fill="#a8b8c8" letter-spacing="2" text-anchor="middle">
-    智械体集群 // AGENT CLUSTER
-  </text>
+  <!-- 主标题 -->
+  <text x="600" y="158"
+        font-family="ui-monospace,'SF Mono','Cascadia Mono','Cascadia Code','Segoe UI Mono','DejaVu Sans Mono',Menlo,Consolas,monospace"
+        font-size="88" font-weight="700" fill="url(#wordGrad)" stroke="url(#wordGrad)"
+        stroke-width="1.6" paint-order="stroke" letter-spacing="3.4" text-anchor="middle">EX·MACHINA</text>
 
-  <!-- 渐变下划线 -->
-  <rect x="120" y="170" width="720" height="3" fill="url(#underline)"/>
+  <!-- 分隔线 -->
+  <rect x="180" y="196" width="840" height="2.4" fill="url(#ruleGrad)"/>
+  <circle cx="600" cy="197.2" r="3.4" fill="#4cc9f0" opacity="0.6"/>
 
-  <!-- 介绍文字：18px，亮色 -->
-  <text x="480" y="204" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="18" fill="#8a9aae" letter-spacing="1" text-anchor="middle">
-    一个指挥体 · 一支可自由组建的智能体集群 · 目标进来，任务 DAG 出去
-  </text>
-  <text x="480" y="234" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="18" fill="#8a9aae" letter-spacing="1" text-anchor="middle">
-    契约回流 · 冲突裁决 · 结论收束 · 零情绪 · 证据分级
-  </text>
-
-  <!-- 直角边框 -->
-  <rect x="0.5" y="0.5" width="959" height="279" fill="none" stroke="#1a2433" stroke-width="1"/>
-
-  <!-- 四角铆钉 -->
-  <g fill="#1f2937">
-    <rect x="8" y="8" width="12" height="12"/>
-    <rect x="940" y="8" width="12" height="12"/>
-    <rect x="8" y="260" width="12" height="12"/>
-    <rect x="940" y="260" width="12" height="12"/>
+  <!-- 能力标签 -->
+  <g font-family="ui-monospace,'SF Mono','Cascadia Mono','Cascadia Code','Segoe UI Mono','DejaVu Sans Mono',Menlo,Consolas,monospace"
+     font-size="23" font-weight="500" fill="#c2d2e0" letter-spacing="1.1" text-anchor="middle">
+    <text x="352" y="245">契约回流</text>
+    <text x="545" y="245">冲突裁决</text>
+    <text x="738" y="245">证据分级</text>
+    <text x="931" y="245">结论收束</text>
   </g>
+  <g fill="#4cc9f0" opacity="0.42">
+    <rect x="452.5" y="237" width="5" height="5" transform="rotate(45 455 239.5)"/>
+    <rect x="645.5" y="237" width="5" height="5" transform="rotate(45 648 239.5)"/>
+    <rect x="838.5" y="237" width="5" height="5" transform="rotate(45 841 239.5)"/>
+  </g>
+
+  <!-- 边角 HUD 刻线 -->
+  <g stroke="#2c4256" stroke-width="1.6" fill="none">
+    <path d="M16 38 L16 16 L38 16"/>
+    <path d="M1162 16 L1184 16 L1184 38"/>
+    <path d="M16 262 L16 284 L38 284"/>
+    <path d="M1184 262 L1184 284 L1162 284"/>
+  </g>
+  <g fill="#4cc9f0" opacity="0.45">
+    <rect x="26" y="26" width="4" height="4"/>
+    <rect x="1170" y="26" width="4" height="4"/>
+    <rect x="26" y="270" width="4" height="4"/>
+    <rect x="1170" y="270" width="4" height="4"/>
+  </g>
+
+  <!-- 边框 -->
+  <rect x="0.8" y="0.8" width="1198.4" height="298.4" fill="none" stroke="#20303f" stroke-width="1.6"/>
 </svg>
