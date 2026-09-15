@@ -95,8 +95,7 @@ export function GraphView(): React.ReactElement {
         desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色。"
         actions={
           <>
-          <Select size="small" style={{ minWidth: 180 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder="选择会话" />
-          <span className="readout" style={{ marginLeft: 12 }}>
+          <span className="readout">
             <span className="k">NODES</span>
             <span className="v">{graph!.nodes.length}</span>
             <span className="k" style={{ marginLeft: 10 }}>EDGES</span>
@@ -104,6 +103,7 @@ export function GraphView(): React.ReactElement {
             <span className="k" style={{ marginLeft: 10 }}>DEPTH</span>
             <span className="v">{layout.depth}</span>
           </span>
+          <Select size="small" style={{ minWidth: 180, marginLeft: 12 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder="选择会话" />
           </>
         }
       />
