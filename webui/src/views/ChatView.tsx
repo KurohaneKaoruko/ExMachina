@@ -313,8 +313,12 @@ export function ChatView(): React.ReactElement {
       <div className="chat-wrap">
         <div className="console-bar">
           <span className="console-title">对话</span>
+          <span className="page-en">CHAT</span>
+          <span className="console-sep" />
+          <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
+          <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
+          {usage && <span className="readout"><span className="k">TOKENS</span> <span className="v">~{usage.estimate}</span></span>}
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
-          <span className="dim" style={{ fontSize: 11 }}>{running ? "运行中…" : "就绪"}</span>
         </div>
         {!wsConnected && <Alert type="warning" message="与网关的实时通道断开，重连中…" showIcon className="ws-alert" />}
         <div className="chat-scroll">

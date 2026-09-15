@@ -1407,3 +1407,7 @@ body {
 .rail-toggle:hover {
   color: #4cc9f0;
 }
+/* 侧栏放右侧 */
+.chat-shell {
+  flex-direction: row-reverse;
+}
