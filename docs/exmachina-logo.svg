@@ -31,28 +31,28 @@
   </g>
 
   <!-- 主标题 -->
-  <text x="480" y="80"
+  <text x="480" y="78"
         font-family="'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace"
-        font-size="64" font-weight="800" fill="url(#textGrad)"
+        font-size="110" font-weight="800" fill="url(#textGrad)"
         text-anchor="middle" filter="url(#glowText)">
     EX·MACHINA
   </text>
 
   <!-- 副标题 -->
-  <text x="480" y="112" font-family="'SF Mono','Cascadia Code',monospace"
+  <text x="480" y="118" font-family="'SF Mono','Cascadia Code',monospace"
         font-size="16" fill="#8b949e" letter-spacing="2" text-anchor="middle">
     ExMachina — 一个群体协作的智能集群
   </text>
 
   <!-- 渐变下划线 -->
-  <rect x="280" y="128" width="400" height="2.5" fill="url(#underline)"/>
+  <rect x="160" y="132" width="640" height="2.5" fill="url(#underline)"/>
 
   <!-- 介绍文字 -->
-  <text x="480" y="154" font-family="'SF Mono','Cascadia Code',monospace"
+  <text x="480" y="158" font-family="'SF Mono','Cascadia Code',monospace"
         font-size="12" fill="#5a6a7e" letter-spacing="0.5" text-anchor="middle">
     一个指挥体 · 一支可自由组建的智能体集群 · 目标进来，任务 DAG 出去
   </text>
-  <text x="480" y="174" font-family="'SF Mono','Cascadia Code',monospace"
+  <text x="480" y="178" font-family="'SF Mono','Cascadia Code',monospace"
         font-size="12" fill="#5a6a7e" letter-spacing="0.5" text-anchor="middle">
     契约回流 · 冲突裁决 · 结论收束 · 零情绪 · 证据分级
   </text>
