@@ -1,6 +1,6 @@
 /** 任务图视图：DAG 实时渲染（自绘 SVG，按拓扑深度分层） */
 import React, { useMemo, useState } from "react";
-import { Drawer, Empty, Tag, Typography } from "antd";
+import { Drawer, Empty, Select, Tag, Typography } from "antd";
 import { useExm } from "../store";
 import { PageHeader } from "../components/PageHeader";
 import type { TaskNode, TaskStatus } from "../types";
@@ -40,8 +40,9 @@ function depthOf(n: TaskNode, byId: Map<string, TaskNode>, memo: Map<string, num
 }
 
 export function GraphView(): React.ReactElement {
-  const { graph } = useExm();
+  const { graph, sessions, sessionId, selectSession } = useExm();
   const [selected, setSelected] = useState<TaskNode | null>(null);
+  const sessionLabel = sessions.find((s) => s.id === sessionId)?.title ?? "未选会话";
 
   const layout = useMemo(() => {
     if (!graph?.nodes?.length) return null;
@@ -75,10 +76,13 @@ export function GraphView(): React.ReactElement {
       <div className="pane-wrap">
         <PageHeader
           en="DAG"
-          title="任务图"
-          desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色，点开可查看目标、验收断言与依赖。"
+          title={"任务图 — " + sessionLabel}
+          desc="切换到有任务的会话查看 DAG。"
+          actions={
+            <Select size="small" style={{ minWidth: 180 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder="选择会话" />
+          }
         />
-        <Empty description="暂无任务图：发送一条任务后此处实时渲染 DAG" className="graph-empty" />
+        <Empty description="当前会话暂无任务图：在对话页发送任务后此处实时渲染 DAG" className="graph-empty" />
       </div>
     );
   }
@@ -87,10 +91,12 @@ export function GraphView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="DAG"
-        title="任务图"
-        desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色，点开可查看目标、验收断言与依赖。"
+        title={"任务图 — " + sessionLabel}
+        desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色。"
         actions={
-          <span className="readout">
+          <>
+          <Select size="small" style={{ minWidth: 180 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder="选择会话" />
+          <span className="readout" style={{ marginLeft: 12 }}>
             <span className="k">NODES</span>
             <span className="v">{graph!.nodes.length}</span>
             <span className="k" style={{ marginLeft: 10 }}>EDGES</span>
@@ -98,6 +104,7 @@ export function GraphView(): React.ReactElement {
             <span className="k" style={{ marginLeft: 10 }}>DEPTH</span>
             <span className="v">{layout.depth}</span>
           </span>
+          </>
         }
       />
       <div className="graph-wrap hud">
