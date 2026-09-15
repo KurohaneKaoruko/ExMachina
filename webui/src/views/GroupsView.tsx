@@ -20,6 +20,9 @@ export function GroupsView(): React.ReactElement {
   const [modelDraft, setModelDraft] = useState<string>("");
   const [groupModal, setGroupModal] = useState(false);
   const [agentModal, setAgentModal] = useState(false);
+  const [settingsModal, setSettingsModal] = useState(false);
+  const [wsDraft, setWsDraft] = useState("");
+  const [descDraft, setDescDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [groupForm] = Form.useForm();
   const [agentForm] = Form.useForm();
@@ -119,6 +122,27 @@ export function GroupsView(): React.ReactElement {
 
   const isBuiltin = meta?.builtin ?? true;
 
+  // 打开设置弹窗时从 meta 同步草稿
+  const openSettings = () => {
+    setWsDraft(meta?.workspace ?? "");
+    setDescDraft(meta?.description ?? "");
+    setModelDraft(meta?.model ?? "");
+    setSettingsOpen(true);
+  };
+
+  const saveSettings = async () => {
+    if (!meta) return;
+    try {
+      await api.setGroupWorkspace(meta.id, wsDraft.trim());
+      await api.setGroupModel(meta.id, modelDraft);
+      message.success("组设置已保存（热生效）");
+      setSettingsOpen(false);
+      await loadMembers(meta.id);
+    } catch (e) {
+      message.error(`保存失败：${String(e)}`);
+    }
+  };
+
   return (
     <div className="pane-wrap">
       <PageHeader
@@ -178,6 +202,9 @@ export function GroupsView(): React.ReactElement {
               }
               extra={
                 <Space>
+                  <Button size="small" icon={<SettingOutlined />} onClick={() => { openSettings(); }}>
+                    组设置
+                  </Button>
                   {!isBuiltin && (
                     <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setAgentModal(true)}>
                       新建子个体
@@ -284,6 +311,33 @@ export function GroupsView(): React.ReactElement {
           </Form.Item>
           <Form.Item name="tier" label="层级" initialValue="unit">
             <Select options={[{ value: "unit", label: "unit（子个体）" }, { value: "orchestrator", label: "orchestrator（主智能体）" }]} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 组设置弹窗 */}
+      <Modal
+        open={settingsOpen}
+        title={`组设置 · ${meta?.name ?? ""}`}
+        onCancel={() => setSettingsOpen(false)}
+        onOk={() => void saveSettings()}
+        okText="保存"
+        width={520}
+      >
+        <Form layout="vertical">
+          <Form.Item label="工作区" help="该组个体的文件与命令操作根目录；留空 = 全局工作区">
+            <Input
+              value={wsDraft}
+              onChange={(e) => setWsDraft(e.target.value)}
+              placeholder="如 projects/demo"
+            />
+          </Form.Item>
+          <Form.Item label="默认模型" help="组内未单独设置模型的个体跟随此模型">
+            <Select
+              value={modelDraft}
+              onChange={setModelDraft}
+              options={buildModelOptions(profiles)}
+            />
           </Form.Item>
         </Form>
       </Modal>
