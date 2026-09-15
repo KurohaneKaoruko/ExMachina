@@ -164,12 +164,12 @@ flowchart LR
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/quickstart.sh | bash
+curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/quickstart.sh | bash
 ```
 
 ```batch
 :: Windows
-curl -fsSL -o quickstart.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/quickstart.bat
+curl -fsSL -o quickstart.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/quickstart.bat
 quickstart.bat
 ```
 
@@ -179,12 +179,12 @@ quickstart.bat
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/install.sh | bash
 ```
 
 ```batch
 :: Windows（下载后运行）
-curl -fsSL -o install.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/install.bat
+curl -fsSL -o install.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/install.bat
 install.bat
 ```
 
