@@ -1,8 +1,3 @@
-<div align="right">
-
-[简体中文](./README.md) | [English](./README_EN.md)
-
-</div>
 
 # ExMachina — A Collaborative Agent Cluster
 
@@ -17,6 +12,10 @@
 ![WebUI](https://img.shields.io/badge/WebUI-React%2019%20%C2%B7%20Vite%20%C2%B7%20antd%206-61dafb?logo=react&logoColor=white)
 
 </div>
+
+<p align="center">
+  <a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a>
+</p>
 
 > [!WARNING]
 > This project is in pre-alpha. Interfaces and data formats may break without notice. Do not use in production.
