@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="200" viewBox="0 0 960 200">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="220" viewBox="0 0 960 220">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#080c10"/>
@@ -18,53 +18,53 @@
     </filter>
   </defs>
 
-  <rect width="960" height="200" fill="url(#bg)"/>
+  <rect width="960" height="220" fill="url(#bg)"/>
 
   <!-- 微弱网格 -->
   <g stroke="#10161f" stroke-width="0.4" opacity="0.25">
-    <line x1="0" y1="50" x2="960" y2="50"/>
-    <line x1="0" y1="100" x2="960" y2="100"/>
-    <line x1="0" y1="150" x2="960" y2="150"/>
-    <line x1="240" y1="0" x2="240" y2="200"/>
-    <line x1="480" y1="0" x2="480" y2="200"/>
-    <line x1="720" y1="0" x2="720" y2="200"/>
+    <line x1="0" y1="55" x2="960" y2="55"/>
+    <line x1="0" y1="110" x2="960" y2="110"/>
+    <line x1="0" y1="165" x2="960" y2="165"/>
+    <line x1="240" y1="0" x2="240" y2="220"/>
+    <line x1="480" y1="0" x2="480" y2="220"/>
+    <line x1="720" y1="0" x2="720" y2="220"/>
   </g>
 
-  <!-- 主标题 -->
-  <text x="480" y="78"
+  <!-- 主标题：留出上方间距，基线在 y=95 -->
+  <text x="480" y="95"
         font-family="'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace"
-        font-size="110" font-weight="800" fill="url(#textGrad)"
+        font-size="100" font-weight="800" fill="url(#textGrad)"
         text-anchor="middle" filter="url(#glowText)">
     EX·MACHINA
   </text>
 
-  <!-- 副标题 -->
-  <text x="480" y="118" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="16" fill="#8b949e" letter-spacing="2" text-anchor="middle">
+  <!-- 副标题：加大到 18px -->
+  <text x="480" y="130" font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="18" fill="#8b949e" letter-spacing="2" text-anchor="middle">
     ExMachina — 一个群体协作的智能集群
   </text>
 
   <!-- 渐变下划线 -->
-  <rect x="160" y="132" width="640" height="2.5" fill="url(#underline)"/>
+  <rect x="140" y="144" width="680" height="2.5" fill="url(#underline)"/>
 
-  <!-- 介绍文字 -->
-  <text x="480" y="158" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="12" fill="#5a6a7e" letter-spacing="0.5" text-anchor="middle">
+  <!-- 介绍文字：加大到 14px -->
+  <text x="480" y="172" font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="14" fill="#7a8a9e" letter-spacing="0.5" text-anchor="middle">
     一个指挥体 · 一支可自由组建的智能体集群 · 目标进来，任务 DAG 出去
   </text>
-  <text x="480" y="178" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="12" fill="#5a6a7e" letter-spacing="0.5" text-anchor="middle">
+  <text x="480" y="196" font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="14" fill="#7a8a9e" letter-spacing="0.5" text-anchor="middle">
     契约回流 · 冲突裁决 · 结论收束 · 零情绪 · 证据分级
   </text>
 
   <!-- 直角边框 -->
-  <rect x="0.5" y="0.5" width="959" height="199" fill="none" stroke="#1a2433" stroke-width="1"/>
+  <rect x="0.5" y="0.5" width="959" height="219" fill="none" stroke="#1a2433" stroke-width="1"/>
 
   <!-- 四角铆钉 -->
   <g fill="#1f2937">
     <rect x="8" y="8" width="10" height="10"/>
     <rect x="942" y="8" width="10" height="10"/>
-    <rect x="8" y="182" width="10" height="10"/>
-    <rect x="942" y="182" width="10" height="10"/>
+    <rect x="8" y="202" width="10" height="10"/>
+    <rect x="942" y="202" width="10" height="10"/>
   </g>
 </svg>
