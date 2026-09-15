@@ -7,6 +7,7 @@ import { useExm } from "../store";
 
 interface TargetInfo { mode: "group" | "single"; id: string; name?: string }
 import { StatementList } from "../components/Statements";
+import { Markdown } from "../components/Markdown";
 import type { ChatMessage } from "../types";
 
 function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
@@ -43,8 +44,19 @@ function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
             onClick={() => void readAloud()}
           />
         )}
+        {!isUser && (
+          <Button
+            size="small"
+            type="text"
+            className="speak-btn"
+            title="朗读本条"
+            loading={speaking}
+            icon={<SoundOutlined />}
+            onClick={() => void readAloud()}
+          />
+        )}
       </div>
-      <StatementList statements={m.statements} />
+      <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
   );
 }
