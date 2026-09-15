@@ -1,3 +1,9 @@
+<div align="right">
+
+[简体中文](./README.md) | [English](./README_EN.md)
+
+</div>
+
 # ExMachina — 一个群体协作的智能集群
 
 <div align="center">
