@@ -1,4 +1,4 @@
-# ExMachina — 一个群体协作的智能集群
+# EX·MACHINA 智械体集群
 
 <div align="center">
 
