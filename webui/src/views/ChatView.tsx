@@ -44,17 +44,6 @@ function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
             onClick={() => void readAloud()}
           />
         )}
-        {!isUser && (
-          <Button
-            size="small"
-            type="text"
-            className="speak-btn"
-            title="朗读本条"
-            loading={speaking}
-            icon={<SoundOutlined />}
-            onClick={() => void readAloud()}
-          />
-        )}
       </div>
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
@@ -229,25 +218,13 @@ export function ChatView(): React.ReactElement {
             ]}
           />
           {target.mode === "single" ? (
-            <div className="rail-hint">
-              智能体模式：<span className="mono">{target.id}</span> 独立为你工作
-            </div>
+            <div className="rail-hint">智能体模式 · <span className="mono">{target.id}</span></div>
           ) : (
             activeMeta && (
-              <div className="rail-hint">
-                主智能体：<span className="mono">{activeMeta.primary ?? "未设"}</span>
-                {activeMeta.builtin ? " · 内置组编成受保护" : ""}
-                <br />
-                切换目标即切换会话上下文；默认模型在各智能体/组设置中选择。
-              </div>
+              <div className="rail-hint">主智能体：<span className="mono">{activeMeta.primary ?? "未设"}</span></div>
             )
           )}
         </div>
-        {usage && (
-          <div className="rail-hint">
-            用量 ~{usage.estimate} tok{usage.unlimited ? "" : ` / 预算 ${usage.budget}`}
-          </div>
-        )}
         <div className="rail-section grow">
           <div className="rail-label">
             <span className="rail-no">02</span> 会话 [SESSIONS]
@@ -280,7 +257,7 @@ export function ChatView(): React.ReactElement {
                 <MessageOutlined className="session-row-icon" />
                 <span className="session-title">{s.title}</span>
                 {s.id === sessionId && running && <span className="session-live-dot" />}
-                <Space style={{ marginLeft: "auto" }}>
+                <span className="session-ops" onClick={(e) => e.stopPropagation()}>
                   <Button
                     size="small"
                     type="text"
@@ -307,7 +284,7 @@ export function ChatView(): React.ReactElement {
                       onClick={(e) => e.stopPropagation()}
                     />
                   </Popconfirm>
-                </Space>
+                </span>
               </div>
             ))}
             {sessions.filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase())).length === 0 && (
@@ -323,21 +300,8 @@ export function ChatView(): React.ReactElement {
       <div className="chat-wrap">
         <div className="console-bar">
           <span className="console-title">对话</span>
-          <span className="page-en">CHAT</span>
-          <span className="console-sep" />
-          <span className="readout">
-            <span className="k">TARGET</span>
-            <span className="v">{target.mode === "single" ? target.id : target.id}</span>
-          </span>
-          <span className="readout">
-            <span className="k">MODE</span>
-            <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span>
-          </span>
-          <span className="readout">
-            <span className="k">STATE</span>
-            <span className="v">{running ? "RUNNING" : "IDLE"}</span>
-          </span>
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
+          <span className="dim" style={{ fontSize: 11 }}>{running ? "运行中…" : "就绪"}</span>
         </div>
         {!wsConnected && <Alert type="warning" message="与网关的实时通道断开，重连中…" showIcon className="ws-alert" />}
         <div className="chat-scroll">

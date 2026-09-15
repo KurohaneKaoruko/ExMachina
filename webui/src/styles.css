@@ -1363,3 +1363,23 @@ body {
   padding-left: 12px;
   color: #8b949e;
 }
+/* 会话行操作按钮：hover 时显示 */
+.session-ops {
+  margin-left: auto;
+  display: none;
+  flex: none;
+}
+.session-row:hover .session-ops {
+  display: flex;
+  gap: 0;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+}
+.session-row .session-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
