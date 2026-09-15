@@ -423,7 +423,7 @@ body {
 .readout .v { color: var(--accent); }
 
 /* ============ 对话 ============ */
-.chat-shell { display: flex; height: calc(100vh - 32px); max-width: 1240px; margin: 0 auto; }
+.chat-shell { display: flex; flex-direction: row-reverse; height: calc(100vh - 32px); max-width: 1240px; margin: 0 auto; }
 .chat-rail {
   width: 268px;
   flex: none;
