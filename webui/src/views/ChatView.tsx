@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Input, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { AudioOutlined, CloseOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, SoundOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { AudioOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, SoundOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { useExm } from "../store";
 
@@ -94,6 +94,8 @@ export function ChatView(): React.ReactElement {
   };
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
+  const [sessionFilter, setSessionFilter] = useState("");
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [recording, setRecording] = useState(false);
   const [usage, setUsage] = useState<{ estimate: number; budget: number; unlimited: boolean } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -258,8 +260,18 @@ export function ChatView(): React.ReactElement {
           >
             新会话
           </Button>
+          <Input
+            size="small"
+            allowClear
+            placeholder="搜索会话…"
+            className="session-search"
+            value={sessionFilter}
+            onChange={(e) => setSessionFilter(e.target.value)}
+          />
           <div className="session-list">
-            {sessions.map((s) => (
+            {sessions
+              .filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase()))
+              .map((s) => (
               <div
                 key={s.id}
                 className={`session-row ${s.id === sessionId ? "active" : ""}`}
@@ -268,24 +280,41 @@ export function ChatView(): React.ReactElement {
                 <MessageOutlined className="session-row-icon" />
                 <span className="session-title">{s.title}</span>
                 {s.id === sessionId && running && <span className="session-live-dot" />}
-                <Popconfirm
-                  title="删除该会话及其全部记录？"
-                  onConfirm={(e) => {
-                    e?.stopPropagation();
-                    void removeSession(s.id);
-                  }}
-                  onCancel={(e) => e?.stopPropagation()}
-                >
+                <Space style={{ marginLeft: "auto" }}>
                   <Button
                     size="small"
                     type="text"
-                    className="session-del"
-                    icon={<CloseOutlined />}
-                    onClick={(e) => e.stopPropagation()}
+                    className="session-edit"
+                    icon={<EditOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRenaming({ id: s.id, title: s.title });
+                    }}
                   />
-                </Popconfirm>
+                  <Popconfirm
+                    title="删除该会话及其全部记录？"
+                    onConfirm={(e) => {
+                      e?.stopPropagation();
+                      void removeSession(s.id);
+                    }}
+                    onCancel={(e) => e?.stopPropagation()}
+                  >
+                    <Button
+                      size="small"
+                      type="text"
+                      className="session-del"
+                      icon={<CloseOutlined />}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </Popconfirm>
+                </Space>
               </div>
             ))}
+            {sessions.filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase())).length === 0 && (
+              <div className="dim" style={{ padding: "12px 8px", fontSize: 12 }}>
+                {sessionFilter ? "无匹配会话" : "尚无会话"}
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -415,6 +444,27 @@ export function ChatView(): React.ReactElement {
           >
             发送
           </Button>
+          {renaming && (
+            <Modal
+              open
+              title="重命名会话"
+              onCancel={() => setRenaming(null)}
+              onOk={async () => {
+                if (!renaming.title.trim()) return;
+                await api.renameSession(renaming.id, renaming.title);
+                const store = useExm.getState();
+                useExm.setState({ sessions: store.sessions.map((s) => s.id === renaming.id ? { ...s, title: renaming.title } : s) });
+                setRenaming(null);
+              }}
+              okText="重命名"
+            >
+              <Input
+                value={renaming.title}
+                onChange={(e) => setRenaming({ ...renaming, title: e.target.value })}
+                placeholder="新标题"
+              />
+            </Modal>
+          )}
         </div>
       </div>
     </div>

@@ -97,6 +97,19 @@ impl Store {
     }
 
     /// 更新会话滚动摘要（上下文压缩，docs/架构与设计.md）
+    /// 更新会话标题（重命名）
+    pub fn update_session_title(&self, session_id: &str, title: &str) -> Result<()> {
+        let _guard = self.ledger_lock.lock().unwrap();
+        let mut session = match self.get_session(session_id)? {
+            Some(s) => s,
+            None => anyhow::bail!("会话不存在: {session_id}"),
+        };
+        session.title = title.trim().to_string();
+        session.updated_at = now_iso();
+        self.db.put("sessions", session_id, &session)
+    }
+
+    /// 更新会话滚动摘要（上下文压缩，docs/架构与设计.md）
     pub fn update_compaction(&self, session_id: &str, summary: &str, upto: usize) -> Result<()> {
         let _guard = self.ledger_lock.lock().unwrap();
         let mut session = match self.get_session(session_id)? {

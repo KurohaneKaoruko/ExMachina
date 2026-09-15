@@ -281,6 +281,11 @@ export const api = {
   createSession: (title: string) =>
     req<Session>("/sessions", { method: "POST", body: JSON.stringify({ title }) }),
   getSession: (id: string) => req<Session>(`/sessions/${id}`),
+  renameSession: (id: string, title: string) =>
+    req<{ ok: boolean; title: string }>(`/sessions/${id}/title`, {
+      method: "PUT",
+      body: JSON.stringify({ title }),
+    }),
   deleteSession: (id: string) => req<{ ok: boolean }>(`/sessions/${id}`, { method: "DELETE" }),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
   chat: (id: string, text: string, images?: string[]) =>

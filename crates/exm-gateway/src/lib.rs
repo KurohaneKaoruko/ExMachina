@@ -80,6 +80,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/sessions/:id/chat", post(chat))
         .route("/api/sessions/:id/graph", get(get_graph))
         .route("/api/sessions/:id/evidence", get(get_evidence))
+        .route("/api/sessions/:id/title", axum::routing::put(rename_session))
         .route("/api/agents", get(list_agents).post(create_agent))
         .route("/api/agents/:identifier", get(get_agent).delete(remove_agent))
         .route("/api/agents/:identifier/model", axum::routing::put(set_agent_model))
@@ -409,6 +410,26 @@ async fn get_graph(State(st): State<AppState>, Path(id): Path<String>) -> impl I
     match st.core.store.latest_graph(&id) {
         Ok(Some(g)) => Json(serde_json::to_value(g).unwrap_or(Value::Null)).into_response(),
         Ok(None) => Json(json!({ "nodes": [] })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RenameSessionBody {
+    title: String,
+}
+
+async fn rename_session(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<RenameSessionBody>,
+) -> impl IntoResponse {
+    let title = b.title.trim().to_string();
+    if title.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "标题不能为空" }))).into_response();
+    }
+    match st.core.store.update_session_title(&id, &title) {
+        Ok(_) => Json(json!({ "ok": true, "title": title })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
