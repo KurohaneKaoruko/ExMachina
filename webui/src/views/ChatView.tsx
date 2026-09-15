@@ -85,6 +85,7 @@ export function ChatView(): React.ReactElement {
   const [images, setImages] = useState<string[]>([]);
   const [sessionFilter, setSessionFilter] = useState("");
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
+  const [railOpen, setRailOpen] = useState(true);
   const [recording, setRecording] = useState(false);
   const [usage, setUsage] = useState<{ estimate: number; budget: number; unlimited: boolean } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -194,7 +195,9 @@ export function ChatView(): React.ReactElement {
   return (
     <div className="chat-shell">
       {/* 左栏：目标切换 + 会话列表 */}
-      <aside className="chat-rail">
+      <aside className={`chat-rail ${railOpen ? "" : "collapsed"}`}>
+        {railOpen && (
+        <>
         <div className="rail-section">
           <div className="rail-label">
             <span className="rail-no">01</span> 交互目标 [TARGET]
@@ -294,7 +297,17 @@ export function ChatView(): React.ReactElement {
             )}
           </div>
         </div>
+        </>
+        )}
       </aside>
+      <button
+        className="rail-toggle"
+        title={railOpen ? "收起侧栏" : "展开侧栏"}
+        style={{ position: "absolute", left: railOpen ? "calc(260px - 1px)" : "0px", top: "50%", transform: "translateY(-50%)", zIndex: 10 }}
+        onClick={() => setRailOpen(!railOpen)}
+      >
+        {railOpen ? "◀" : "▶"}
+      </button>
 
       {/* 右侧：消息流 + 输入 */}
       <div className="chat-wrap">
