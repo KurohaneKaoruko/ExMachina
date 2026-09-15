@@ -160,16 +160,21 @@ flowchart LR
 
 前置：[Rust](https://rustup.rs)（stable）与 Node.js ≥ 22（仅构建 WebUI 需要）。
 
+**一键启动**（自动完成编译 + 构建 + 启动）：
+
 ```bash
 git clone https://github.com/KurohaneKaoruko/ExMachina.git && cd ExMachina
+./quickstart.sh       # Linux / macOS
+# 或 quickstart.bat   # Windows
+```
 
-# 1) 构建 WebUI（网关直接托管其产物）
+浏览器打开 http://127.0.0.1:4173 即可使用。首次建议到「模型提供商」页配置 API 密钥。
+
+**手动构建**：
+
+```bash
+git clone https://github.com/KurohaneKaoruko/ExMachina.git && cd ExMachina
 npm install && npm run build:webui
-
-# 2) 接入模型：安装向导会引导填写端点与密钥
-cargo run -p exm-cli --release --bin exmachina -- install
-
-# 3) 起网关（REST + WebSocket + WebUI 单进程）
 cargo run -p exm-gateway --release        # http://127.0.0.1:4173
 ```
 
