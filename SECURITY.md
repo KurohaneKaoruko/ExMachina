@@ -1,29 +1,29 @@
-# 安全策略
+# Security Policy | 安全策略
 
-## 报告漏洞
+## Reporting a Vulnerability | 报告漏洞
 
-如果你发现安全漏洞，请**不要**在公开 Issue 中提交。
+**English**: If you discover a security vulnerability, please **do not** file a public Issue. Report it privately via [GitHub Security Advisories](https://github.com/KurohaneKaoruko/ExMachina/security/advisories/new). We will respond within 48 hours.
 
-通过 [GitHub Security Advisories](https://github.com/KurohaneKaoruko/ExMachina/security/advisories/new) 私密报告，或在邮件中联系仓库所有者。
+**中文**：如果你发现安全漏洞，请**不要**在公开 Issue 中提交。通过 [GitHub Security Advisories](https://github.com/KurohaneKaoruko/ExMachina/security/advisories/new) 私密报告。我们会在 48 小时内响应。
 
-我们会在收到报告后 48 小时内响应。
+## Supported Versions | 支持版本
 
-## 支持版本
+| Version | Supported |
+|---------|-----------|
+| dev | ✅ Active development | 活跃开发 |
+| other | ❌ Not supported | 不支持 |
 
-| 版本 | 支持状态 |
-|------|---------|
-| dev  | ✅ 活跃开发 |
-| 其他  | ❌ 不支持 |
+## Security Features | 安全特性
 
-## 安全特性
+| Feature | Description |
+|---------|-------------|
+| Terminal command approval | 可配置 off / risky / always 三档闸门 + 前缀白名单 |
+| Backend auth | `authKey` 非空时 REST/WS 全量要求 X-Auth-Key |
+| Chat allowlist | 通道可声明 allowedChats 限制交互来源 |
+| Audit logging | 全部工具调用落库可查 |
+| Key safety | API Key 不回显（掩码）、不进 git、存储在本地 `.exmachina/config.json` |
 
-- **终端命令审批**：可配置 off / risky / always 三档闸门 + 前缀白名单
-- **后台鉴权**：`authKey` 非空时 REST/WS 全量要求 X-Auth-Key
-- **会话白名单**：通道可声明 allowedChats 限制交互来源
-- **审计日志**：全部工具调用落库可查
-- **密钥安全**：API Key 不回显（掩码）、不进 git、存储在本地 `.exmachina/config.json`
+## Known Limitations | 已知限制
 
-## 已知限制
-
-- 分布式执行节点（exm worker）当前使用纯 WebSocket（无 TLS），仅适合可信局域网
-- WebUI 默认无 TLS，建议部署在反向代理（nginx/caddy）后启用 HTTPS
+- Distributed worker nodes (`exm worker`) currently use plain WebSocket (no TLS) — suitable for trusted LAN only | 分布式执行节点当前使用纯 WebSocket（无 TLS），仅适合可信局域网
+- WebUI has no built-in TLS — deploy behind a reverse proxy (nginx/caddy) with HTTPS | WebUI 默认无 TLS，建议部署在反向代理后启用 HTTPS
