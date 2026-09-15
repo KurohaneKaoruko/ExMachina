@@ -1,19 +1,38 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="200" viewBox="0 0 640 200">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#090d12"/>
-      <stop offset="100%" stop-color="#0d1420"/>
+      <stop offset="0%" stop-color="#080c10"/>
+      <stop offset="50%" stop-color="#0b1118"/>
+      <stop offset="100%" stop-color="#0a0f16"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="coreGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5dd8ff"/>
+      <stop offset="50%" stop-color="#3aa0d8"/>
+      <stop offset="100%" stop-color="#2a7cb0"/>
+    </linearGradient>
+    <linearGradient id="subGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8ff0a4"/>
+      <stop offset="100%" stop-color="#50c878"/>
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0f6fc"/>
+      <stop offset="100%" stop-color="#a0b4c8"/>
+    </linearGradient>
+    <linearGradient id="underline" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#4cc9f0"/>
-      <stop offset="100%" stop-color="#7ee787"/>
+      <stop offset="50%" stop-color="#7ee787"/>
+      <stop offset="100%" stop-color="#4cc9f0" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="nodeGlow" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#4cc9f0"/>
-      <stop offset="100%" stop-color="#2a8ccf"/>
-    </linearGradient>
-    <filter id="softGlow">
-      <feGaussianBlur stdDeviation="2" result="b"/>
+    <filter id="glowBig">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowSm">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowText">
+      <feGaussianBlur stdDeviation="1" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
@@ -21,58 +40,110 @@
   <!-- 背景 -->
   <rect width="640" height="200" fill="url(#bg)"/>
 
+  <!-- 微弱十字准线 -->
+  <g stroke="#131a28" stroke-width="0.5" opacity="0.3">
+    <line x1="320" y1="0" x2="320" y2="200"/>
+    <line x1="0" y1="100" x2="640" y2="100"/>
+  </g>
   <!-- 微弱网格 -->
-  <g stroke="#141a26" stroke-width="0.4" opacity="0.4">
-    <line x1="0" y1="40" x2="640" y2="40"/>
-    <line x1="0" y1="80" x2="640" y2="80"/>
-    <line x1="0" y1="120" x2="640" y2="120"/>
-    <line x1="0" y1="160" x2="640" y2="160"/>
-    <line x1="128" y1="0" x2="128" y2="200"/>
-    <line x1="256" y1="0" x2="256" y2="200"/>
-    <line x1="384" y1="0" x2="384" y2="200"/>
-    <line x1="512" y1="0" x2="512" y2="200"/>
+  <g stroke="#10161f" stroke-width="0.4" opacity="0.3">
+    <line x1="0" y1="50" x2="640" y2="50"/>
+    <line x1="0" y1="150" x2="640" y2="150"/>
+    <line x1="160" y1="0" x2="160" y2="200"/>
+    <line x1="480" y1="0" x2="480" y2="200"/>
   </g>
 
-  <!-- 左侧产品图标：六边形晶格 + 中心菱形 -->
-  <g transform="translate(90,100)">
-    <!-- 外六边形 -->
-    <polygon points="0,-52 45,-26 45,26 0,52 -45,26 -45,-26"
-             fill="none" stroke="#1f2733" stroke-width="2"/>
-    <!-- 内六边形（旋转30°） -->
-    <polygon points="0,-38 33,-19 33,19 0,38 -33,19 -33,-19"
-             fill="none" stroke="#2a3240" stroke-width="1" opacity="0.6"/>
-    <!-- 三个辐射菱形（指挥体 → 子个体） -->
-    <g filter="url(#softGlow)">
-      <polygon points="0,-14 14,0 0,14 -14,0" fill="url(#nodeGlow)"/>
-      <polygon points="0,-32 8,-24 0,-16 -8,-24" fill="#7ee787" opacity="0.9"/>
-      <polygon points="28,0 36,8 28,16 20,8" fill="#7ee787" opacity="0.7"/>
-      <polygon points="-28,0 -20,8 -28,16 -36,8" fill="#7ee787" opacity="0.7"/>
+  <!-- ============ 产品图标区 ============ -->
+  <g transform="translate(85,100)">
+    <!-- 外层六边形（双层描边） -->
+    <polygon points="0,-58 50,-29 50,29 0,58 -50,29 -50,-29"
+             fill="none" stroke="#1a2433" stroke-width="2.5"/>
+    <polygon points="0,-53 46,-27 46,27 0,53 -46,27 -46,-53"
+             fill="none" stroke="#141c28" stroke-width="1" opacity="0.6"/>
+
+    <!-- 六条刻度线（工程仪表感） -->
+    <g stroke="#2a3a4e" stroke-width="1">
+      <line x1="0" y1="-58" x2="0" y2="-50"/>
+      <line x1="43" y1="-25" x2="37" y2="-21"/>
+      <line x1="43" y1="25" x2="37" y2="21"/>
+      <line x1="0" y1="58" x2="0" y2="50"/>
+      <line x1="-43" y1="25" x2="-37" y2="21"/>
+      <line x1="-43" y1="-25" x2="-37" y2="-21"/>
     </g>
-    <!-- 辐射线 -->
-    <g stroke="#3a4a5c" stroke-width="1" opacity="0.5">
-      <line x1="0" y1="-12" x2="0" y2="-20"/>
-      <line x1="12" y1="0" x2="24" y2="0"/>
-      <line x1="-12" y1="0" x2="-24" y2="0"/>
+
+    <!-- 中层：旋转 30° 的六边形 -->
+    <polygon points="0,-42 36,-21 36,21 0,42 -36,21 -36,-21"
+             fill="none" stroke="#223044" stroke-width="1.2" opacity="0.7"
+             transform="rotate(30)"/>
+
+    <!-- 中心菱形核（指挥体）：大、发光、带内核 -->
+    <g filter="url(#glowBig)">
+      <polygon points="0,-20 20,0 0,20 -20,0" fill="url(#coreGrad)"/>
+    </g>
+    <!-- 内核（更亮的小菱形） -->
+    <polygon points="0,-10 10,0 0,10 -10,0" fill="#a8eaff" opacity="0.8"/>
+
+    <!-- 三个子节点菱形（子个体） -->
+    <g filter="url(#glowSm)">
+      <polygon points="0,-40 9,-31 0,-22 -9,-31" fill="url(#subGrad)"/>
+      <polygon points="38,-6 47,3 38,12 29,3" fill="url(#subGrad)" opacity="0.85"/>
+      <polygon points="-38,-6 -29,3 -38,12 -47,3" fill="url(#subGrad)" opacity="0.85"/>
+    </g>
+
+    <!-- 辐射连接线（从核到子节点） -->
+    <g stroke="#3a5a78" stroke-width="1.5" opacity="0.7">
+      <line x1="0" y1="-16" x2="0" y2="-26"/>
+      <line x1="16" y1="0" x2="33" y2="0"/>
+      <line x1="-16" y1="0" x2="-33" y2="0"/>
+    </g>
+
+    <!-- 角标（四角小刻度，HUD 感） -->
+    <g fill="#2a4a60" opacity="0.6">
+      <rect x="-54" y="-54" width="6" height="2"/>
+      <rect x="-54" y="-54" width="2" height="6"/>
+      <rect x="48" y="-54" width="6" height="2"/>
+      <rect x="52" y="-54" width="2" height="6"/>
+      <rect x="-54" y="52" width="6" height="2"/>
+      <rect x="-54" y="46" width="2" height="6"/>
+      <rect x="48" y="52" width="6" height="2"/>
+      <rect x="52" y="46" width="2" height="6"/>
     </g>
   </g>
 
-  <!-- 品牌名：大字标 -->
-  <text x="180" y="105"
-        font-family="'SF Mono','Cascadia Code','Fira Code',monospace"
-        font-size="68" font-weight="800" fill="#e6edf3"
-        letter-spacing="1" text-anchor="start">
+  <!-- ============ 品牌字标区 ============ -->
+  <!-- 主字标 -->
+  <text x="168" y="98"
+        font-family="'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace"
+        font-size="72" font-weight="800" fill="url(#textGrad)"
+        letter-spacing="0" text-anchor="start" filter="url(#glowText)">
     EXMACHINA
   </text>
 
-  <!-- 品牌名下划线 -->
-  <rect x="182" y="120" width="420" height="2" fill="url(#accent)"/>
+  <!-- 渐变下划线 -->
+  <rect x="170" y="112" width="400" height="3" fill="url(#underline)"/>
 
   <!-- 副标题 -->
-  <text x="182" y="148" font-family="'SF Mono','Cascadia Code','Fira Code',monospace"
-        font-size="12" fill="#8b949e" letter-spacing="4">
-    智械体集群 · AGENT CLUSTER
+  <text x="170" y="142"
+        font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="13" fill="#6a7a8e" letter-spacing="5">
+    智械体集群 · MULTI-AGENT CLUSTER
   </text>
 
+  <!-- 底部微弱装饰线 -->
+  <g stroke="#0f1520" stroke-width="1">
+    <line x1="170" y1="162" x2="570" y2="162" opacity="0.4"/>
+    <line x1="170" y1="168" x2="400" y2="168" opacity="0.25"/>
+    <line x1="170" y1="174" x2="280" y2="174" opacity="0.15"/>
+  </g>
+
   <!-- 直角边框 -->
-  <rect x="0.5" y="0.5" width="639" height="199" fill="none" stroke="#1f2733" stroke-width="1"/>
+  <rect x="0.5" y="0.5" width="639" height="199" fill="none" stroke="#1a2433" stroke-width="1"/>
+
+  <!-- 四角铆钉装饰 -->
+  <g fill="#1f2937">
+    <rect x="8" y="8" width="8" height="8"/>
+    <rect x="624" y="8" width="8" height="8"/>
+    <rect x="8" y="184" width="8" height="8"/>
+    <rect x="624" y="184" width="8" height="8"/>
+  </g>
 </svg>
