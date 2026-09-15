@@ -7,7 +7,6 @@
     </linearGradient>
     <linearGradient id="coreGrad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#5dd8ff"/>
-      <stop offset="50%" stop-color="#3aa0d8"/>
       <stop offset="100%" stop-color="#2a7cb0"/>
     </linearGradient>
     <linearGradient id="subGrad" x1="0" y1="0" x2="1" y2="1">
@@ -23,11 +22,11 @@
       <stop offset="100%" stop-color="#7ee787" stop-opacity="0.3"/>
     </linearGradient>
     <filter id="glowBig">
-      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feGaussianBlur stdDeviation="5" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
     <filter id="glowSm">
-      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feGaussianBlur stdDeviation="2" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
     <filter id="glowText">
@@ -36,11 +35,10 @@
     </filter>
   </defs>
 
-  <!-- 背景 -->
   <rect width="960" height="240" fill="url(#bg)"/>
 
   <!-- 微弱网格 -->
-  <g stroke="#10161f" stroke-width="0.4" opacity="0.3">
+  <g stroke="#10161f" stroke-width="0.4" opacity="0.25">
     <line x1="0" y1="60" x2="960" y2="60"/>
     <line x1="0" y1="120" x2="960" y2="120"/>
     <line x1="0" y1="180" x2="960" y2="180"/>
@@ -49,85 +47,86 @@
     <line x1="720" y1="0" x2="720" y2="240"/>
   </g>
 
-  <!-- ============ 左侧：产品图标 ============ -->
-  <g transform="translate(110,120)">
-    <!-- 外六边形（双层） -->
-    <polygon points="0,-66 57,-33 57,33 0,66 -57,33 -57,-33"
+  <!-- ============ 产品图标：精确六边形 ============ -->
+  <!-- 六边形参数：flat-top，半径 r，中心 (cx,cy) -->
+  <!-- 顶点：(cx-r, cy), (cx-r/2, cy-r√3/2), (cx+r/2, cy-r√3/2), (cx+r, cy), (cx+r/2, cy+r√3/2), (cx-r/2, cy+r√3/2) -->
+  <g transform="translate(120,120)">
+    <!-- 外六边形 r=68 -->
+    <polygon points="-68,0 -34,-58.9 34,-58.9 68,0 34,58.9 -34,58.9"
              fill="none" stroke="#1a2433" stroke-width="2.5"/>
-    <polygon points="0,-60 52,-30 52,30 0,60 -52,30 -52,-60"
-             fill="none" stroke="#141c28" stroke-width="1" opacity="0.6"/>
+    <!-- 内描边六边形 r=63 -->
+    <polygon points="-63,0 -31.5,-54.6 31.5,-54.6 63,0 31.5,54.6 -31.5,54.6"
+             fill="none" stroke="#141c28" stroke-width="1" opacity="0.5"/>
 
-    <!-- 六条刻度线 -->
-    <g stroke="#2a3a4e" stroke-width="1">
-      <line x1="0" y1="-66" x2="0" y2="-57"/>
-      <line x1="50" y1="-29" x2="43" y2="-24"/>
-      <line x1="50" y1="29" x2="43" y2="24"/>
-      <line x1="0" y1="66" x2="0" y2="57"/>
-      <line x1="-50" y1="29" x2="-43" y2="24"/>
-      <line x1="-50" y1="-29" x2="-43" y2="-24"/>
+    <!-- 刻度线：精确从外六边形顶点向内 -->
+    <g stroke="#2a3a4e" stroke-width="1.2">
+      <line x1="-68" y1="0" x2="-58" y2="0"/>
+      <line x1="-34" y1="-58.9" x2="-29" y2="-50.2"/>
+      <line x1="34" y1="-58.9" x2="29" y2="-50.2"/>
+      <line x1="68" y1="0" x2="58" y2="0"/>
+      <line x1="34" y1="58.9" x2="29" y2="50.2"/>
+      <line x1="-34" y1="58.9" x2="-29" y2="50.2"/>
     </g>
-
-    <!-- 中层六边形（旋转） -->
-    <polygon points="0,-48 42,-24 42,24 0,48 -42,24 -42,-48"
-             fill="none" stroke="#223044" stroke-width="1" opacity="0.5"
-             transform="rotate(30)"/>
 
     <!-- 中心菱形核 -->
     <g filter="url(#glowBig)">
       <polygon points="0,-22 22,0 0,22 -22,0" fill="url(#coreGrad)"/>
     </g>
-    <polygon points="0,-11 11,0 0,11 -11,0" fill="#a8eaff" opacity="0.8"/>
+    <polygon points="0,-10 10,0 0,10 -10,0" fill="#a8eaff" opacity="0.85"/>
 
-    <!-- 三个子菱形 -->
-    <g filter="url(#glowSm)">
-      <polygon points="0,-44 10,-34 0,-24 -10,-34" fill="url(#subGrad)"/>
-      <polygon points="42,-7 52,3 42,13 32,3" fill="url(#subGrad)" opacity="0.85"/>
-      <polygon points="-42,-7 -32,3 -42,13 -52,3" fill="url(#subGrad)" opacity="0.85"/>
+    <!-- 三个子菱形：精确放在核的三个辐射方向 -->
+    <!-- 上方子菱形：中心 (0,-36)，半径 8 -->
+    <polygon points="0,-44 8,-36 0,-28 -8,-36" fill="url(#subGrad)" filter="url(#glowSm)"/>
+    <!-- 右方子菱形：中心 (36,0)，半径 8 -->
+    <polygon points="44,-8 52,0 44,8 36,0" fill="url(#subGrad)" filter="url(#glowSm)"/>
+    <!-- 左方子菱形：中心 (-36,0)，半径 8 -->
+    <polygon points="-36,-8 -28,0 -36,8 -44,0" fill="url(#subGrad)" filter="url(#glowSm)"/>
+
+    <!-- 连接线：核顶点到子菱形底顶点 -->
+    <g stroke="#3a5a78" stroke-width="1.5" opacity="0.7">
+      <line x1="0" y1="-22" x2="0" y2="-28"/>
+      <line x1="22" y1="0" x2="36" y2="0"/>
+      <line x1="-22" y1="0" x2="-36" y2="0"/>
     </g>
 
-    <!-- 连接线（核顶点到子菱形顶点） -->
-    <g stroke="#3a5a78" stroke-width="1.2" opacity="0.7">
-      <line x1="0" y1="-22" x2="0" y2="-24"/>
-      <line x1="22" y1="0" x2="32" y2="3"/>
-      <line x1="-22" y1="0" x2="-32" y2="3"/>
-    </g>
-
-    <!-- 四角刻度 -->
-    <g fill="#2a4a60" opacity="0.5">
-      <rect x="-62" y="-62" width="8" height="2"/>
-      <rect x="-62" y="-62" width="2" height="8"/>
-      <rect x="54" y="-62" width="8" height="2"/>
-      <rect x="60" y="-62" width="2" height="8"/>
-      <rect x="-62" y="60" width="8" height="2"/>
-      <rect x="-62" y="52" width="2" height="8"/>
-      <rect x="54" y="60" width="8" height="2"/>
-      <rect x="60" y="52" width="2" height="8"/>
+    <!-- 四角 HUD 刻度 -->
+    <g fill="#2a4a60" opacity="0.4">
+      <rect x="-72" y="-72" width="10" height="2"/>
+      <rect x="-72" y="-72" width="2" height="10"/>
+      <rect x="62" y="-72" width="10" height="2"/>
+      <rect x="70" y="-72" width="2" height="10"/>
+      <rect x="-72" y="70" width="10" height="2"/>
+      <rect x="-72" y="60" width="2" height="10"/>
+      <rect x="62" y="70" width="10" height="2"/>
+      <rect x="70" y="60" width="2" height="10"/>
     </g>
   </g>
 
-  <!-- ============ 右侧：标题 + 介绍 ============ -->
+  <!-- ============ 右侧：标题与介绍（居中） ============ -->
   <!-- 主标题 -->
-  <text x="210" y="100"
+  <text x="570" y="88"
         font-family="'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace"
-        font-size="56" font-weight="800" fill="url(#textGrad)"
-        text-anchor="start" filter="url(#glowText)">
+        font-size="58" font-weight="800" fill="url(#textGrad)"
+        text-anchor="middle" filter="url(#glowText)">
     EX·MACHINA
   </text>
 
-  <!-- 渐变下划线 -->
-  <rect x="212" y="114" width="480" height="3" fill="url(#underline)"/>
-
-  <!-- 介绍文字（原 README 的两行） -->
-  <text x="212" y="144" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="14" fill="#8b949e" letter-spacing="1">
-    以集体智能为核心的多智能体集群系统
+  <!-- 副标题 -->
+  <text x="570" y="122" font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="15" fill="#8b949e" letter-spacing="2" text-anchor="middle">
+    ExMachina — 一个群体协作的智能集群
   </text>
-  <text x="212" y="166" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="13" fill="#5a6a7e" letter-spacing="0.5">
+
+  <!-- 渐变下划线 -->
+  <rect x="330" y="138" width="480" height="2.5" fill="url(#underline)"/>
+
+  <!-- 介绍文字 -->
+  <text x="570" y="164" font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="12" fill="#5a6a7e" letter-spacing="0.5" text-anchor="middle">
     一个指挥体 · 一支可自由组建的智能体集群 · 目标进来，任务 DAG 出去
   </text>
-  <text x="212" y="186" font-family="'SF Mono','Cascadia Code',monospace"
-        font-size="13" fill="#5a6a7e" letter-spacing="0.5">
+  <text x="570" y="184" font-family="'SF Mono','Cascadia Code',monospace"
+        font-size="12" fill="#5a6a7e" letter-spacing="0.5" text-anchor="middle">
     契约回流 · 冲突裁决 · 结论收束 · 零情绪 · 证据分级
   </text>
 
