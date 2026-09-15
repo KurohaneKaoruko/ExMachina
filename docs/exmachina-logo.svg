@@ -41,7 +41,7 @@
   <!-- 副标题：加大到 18px -->
   <text x="480" y="130" font-family="'SF Mono','Cascadia Code',monospace"
         font-size="18" fill="#8b949e" letter-spacing="2" text-anchor="middle">
-    ExMachina — 一个群体协作的智能集群
+    智械体集群 · MULTI-AGENT CLUSTER
   </text>
 
   <!-- 渐变下划线 -->
