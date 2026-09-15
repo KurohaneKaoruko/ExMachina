@@ -3,63 +3,45 @@ chcp 65001 >nul 2>&1
 title EXMACHINA Quickstart
 
 echo ================================================================
-echo   EXMACHINA 智械体集群 · 一键启动
+echo   EXMACHINA 快速启动（预编译发行版）
 echo ================================================================
 
-echo.
-echo [1/4] 环境检查...
+set REPO=KurohaneKaoruko/ExMachina
+set DIR=exmachina
+set FILE=exmachina-windows-x64.zip
 
-where cargo >nul 2>&1
+:: ── 1. 获取最新版本 ────────────────────────────────────────
+echo [1/3] 获取最新版本...
+curl -fsSL "https://api.github.com/repos/%REPO%/releases/latest" -o "%TEMP%\exm_ver.json"
+for /f "tokens=4 delims=:, " %%a in ('findstr "tag_name" "%TEMP%\exm_ver.json"') do set TAG=%%a
+set TAG=%TAG:"=%
+if "%TAG%"=="" (
+  echo   [X] 无法获取版本号
+  pause
+  exit /b 1
+)
+echo   [OK] 版本 %TAG%
+
+:: ── 2. 下载并解压 ─────────────────────────────────────────
+echo [2/3] 下载 %FILE%...
+if not exist %DIR% mkdir %DIR%
+curl -fsSL "https://github.com/%REPO%/releases/download/%TAG%/%FILE%" -o "%TEMP%\exm_pkg.zip"
 if %errorlevel% neq 0 (
-  echo   [X] 缺少 cargo — 请安装 Rust: https://rustup.rs
-  pause & exit /b 1
+  echo   [X] 下载失败，请检查网络
+  pause
+  exit /b 1
 )
-echo   [OK] cargo
+powershell -Command "Expand-Archive -Path '%TEMP%\exm_pkg.zip' -DestinationPath '%DIR%' -Force"
+echo   [OK] 解压完成
 
-where node >nul 2>&1
-if %errorlevel% neq 0 (
-  echo   [X] 缺少 Node.js — https://nodejs.org
-  pause & exit /b 1
-)
-echo   [OK] node
-
-where npm >nul 2>&1
-if %errorlevel% neq 0 (
-  echo   [X] 缺少 npm — https://nodejs.org
-  pause & exit /b 1
-)
-echo   [OK] npm
-
-echo.
-echo [2/4] 编译 Rust（首次约 3-5 分钟）...
-cargo build --release -p exm-gateway -p exm-cli
-if %errorlevel% neq 0 (
-  echo   [X] 编译失败
-  pause & exit /b 1
-)
-echo   [OK] 编译完成
-
-echo.
-echo [3/4] 构建 WebUI...
-if not exist "webui\node_modules" (
-  npm install
-)
-call npm run build:webui
-if %errorlevel% neq 0 (
-  echo   [X] WebUI 构建失败
-  pause & exit /b 1
-)
-echo   [OK] WebUI 构建完成
-
-echo.
-echo [4/4] 启动网关...
+:: ── 3. 启动 ────────────────────────────────────────────────
+echo [3/3] 启动网关...
 echo.
 echo ================================================================
 echo   浏览器打开  http://127.0.0.1:4173
-echo   首次使用建议到「模型提供商」页配置 API 密钥
-echo   按 Ctrl+C 停止
+echo   首次使用到「模型提供商」页配置 API 密钥
+echo   停止：Ctrl+C
 echo ================================================================
-echo.
-
-cargo run --release -p exm-gateway
+cd %DIR%
+exm-gateway.exe
 pause

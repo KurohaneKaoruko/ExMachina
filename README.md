@@ -160,7 +160,22 @@ flowchart LR
 
 前置：[Rust](https://rustup.rs)（stable）与 Node.js ≥ 22（仅构建 WebUI 需要）。
 
-**全自动安装**（含 Rust/Node 安装 + 克隆 + 编译 + 构建 + 启动）：
+**快速启动**（下载预编译发行版，无需 Rust / Node）：
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/quickstart.sh | bash
+```
+
+```batch
+:: Windows
+curl -fsSL -o quickstart.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/quickstart.bat
+quickstart.bat
+```
+
+从 [Releases](https://github.com/KurohaneKaoruko/ExMachina/releases) 下载预编译包，解压即用，免编译。
+
+**从源码安装**（含 Rust/Node 安装 + 克隆 + 编译 + 构建 + 启动）：
 
 ```bash
 # Linux / macOS
