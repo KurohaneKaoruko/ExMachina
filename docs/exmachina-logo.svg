@@ -90,11 +90,11 @@
       <polygon points="-38,-6 -29,3 -38,12 -47,3" fill="url(#subGrad)" opacity="0.85"/>
     </g>
 
-    <!-- 辐射连接线（从核到子节点） -->
-    <g stroke="#3a5a78" stroke-width="1.5" opacity="0.7">
-      <line x1="0" y1="-16" x2="0" y2="-26"/>
-      <line x1="16" y1="0" x2="33" y2="0"/>
-      <line x1="-16" y1="0" x2="-33" y2="0"/>
+    <!-- 辐射连接线（从核顶点到子菱形顶点） -->
+    <g stroke="#3a5a78" stroke-width="1.2" opacity="0.7">
+      <line x1="0" y1="-20" x2="0" y2="-22"/>
+      <line x1="20" y1="0" x2="29" y2="3"/>
+      <line x1="-20" y1="0" x2="-29" y2="3"/>
     </g>
 
     <!-- 角标（四角小刻度，HUD 感） -->
@@ -114,9 +114,9 @@
   <!-- 主字标 -->
   <text x="168" y="98"
         font-family="'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace"
-        font-size="72" font-weight="800" fill="url(#textGrad)"
+        font-size="64" font-weight="800" fill="url(#textGrad)"
         letter-spacing="0" text-anchor="start" filter="url(#glowText)">
-    EXMACHINA
+    EX·MACHINA
   </text>
 
   <!-- 渐变下划线 -->
