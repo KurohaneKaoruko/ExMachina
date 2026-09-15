@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Input, type InputRef } from "antd";
 import { KeyOutlined } from "@ant-design/icons";
 import { api } from "../api";
+import { useT } from "../i18n/core";
 
 /** 等高线智械体：多层轮廓缩放 + 上移偏移 = 伪 3D 浮雕；外加坐标轴与刻度环 */
 function ContourMachina(): React.ReactElement {
@@ -113,6 +114,7 @@ export function LoginView({ onUnlock }: { onUnlock: () => void }): React.ReactEl
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const inputRef = useRef<InputRef>(null);
+  const t = useT();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -128,7 +130,7 @@ export function LoginView({ onUnlock }: { onUnlock: () => void }): React.ReactEl
         localStorage.setItem("exm.key", key.trim());
         onUnlock();
       } else {
-        setError(r.error ?? "密钥错误");
+        setError(r.error ?? t("login.badKey"));
       }
     } catch (e) {
       setError(String(e).slice(0, 120));
@@ -152,26 +154,26 @@ export function LoginView({ onUnlock }: { onUnlock: () => void }): React.ReactEl
         </h1>
         <div className="title-rule" />
         <div className="login-sub">
-          智械体集群 <span className="mono">[SECURE ACCESS]</span>
+          {t("login.sub")} <span className="mono">[SECURE ACCESS]</span>
         </div>
         <div className="login-box hud">
           <div className="login-label">
-            <KeyOutlined /> 访问密钥 <span className="label-en">[ACCESS KEY]</span>
+            <KeyOutlined /> {t("login.keyLabel")} <span className="label-en">[ACCESS KEY]</span>
           </div>
           <Input.Password
             ref={inputRef}
             value={key}
             onChange={(e) => setKey(e.target.value)}
-            placeholder="> 输入访问密钥"
+            placeholder={`> ${t("login.keyPlaceholder")}`}
             onPressEnter={() => void unlock()}
             status={error ? "error" : undefined}
           />
           <Button type="primary" block loading={loading} onClick={() => void unlock()} className="login-btn">
-            解锁进入 <span className="label-en">[UNLOCK]</span>
+            {t("login.unlock")} <span className="label-en">[UNLOCK]</span>
           </Button>
           {error && <div className="login-error">{error}</div>}
         </div>
-        <div className="login-foot mono">DEUS EX MACHINA · 全连结指挥就绪</div>      </div>
+        <div className="login-foot mono">{t("login.foot")}</div>      </div>
     </div>
   );
 }

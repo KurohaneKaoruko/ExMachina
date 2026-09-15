@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
         let ch_path = root.join(".exmachina").join("data").join("channels.json");
         if let Ok(raw) = std::fs::read_to_string(&ch_path) {
             if let Ok(mut list) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
-                list.retain(|c| c["id"] != "e2e-hook" && c["id"] != "e2e-bound");
+                list.retain(|c| c["id"] != "e2e-hook" && c["id"] != "e2e-bound" && c["id"] != "e2e-qq" && c["id"] != "e2e-tg");
                 let _ = std::fs::write(&ch_path, serde_json::to_string_pretty(&list).unwrap_or_default());
             }
         }
@@ -64,7 +64,10 @@ async fn main() -> anyhow::Result<()> {
     let mut cfg = ExmConfig::load(&root);
     cfg.data_dir = std::env::temp_dir().join(format!("exm-gw-e2e-{}", uuid::Uuid::new_v4()));
     cfg.use_mock = true;
+    // e2e 环境自持：不随开发者本地配置漂移（本机 config 曾关掉深层记忆导致记忆断言全挂）
+    cfg.memory_enabled = true;
     cfg.agents_dir = root.join("agents");
+    let data_dir = cfg.data_dir.clone();
     let core = Arc::new(Core::with_config(cfg)?);
 
     // 事件订阅（等价于 WS 扇出源；WS 只是把同一事件推给浏览器）
@@ -578,6 +581,106 @@ async fn main() -> anyhow::Result<()> {
         "通道会话按 key 复用创建",
         sessions.as_array().map(|a| a.iter().any(|s| s["title"] == "channel:e2e-hook:user-a")).unwrap_or(false),
     );
+
+    // 通道平台校验 + 掩码回显语义（supervisor 只在 serve() 拉起，e2e 内无适配器连接行为，全部确定性）
+    let bad_plat: reqwest::Response = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-bad", "platform": "discord" }))
+        .send()
+        .await?;
+    c.check("非法平台被拒 400", bad_plat.status().as_u16() == 400);
+
+    let qq_missing: reqwest::Response = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-qq", "platform": "qqbot" }))
+        .send()
+        .await?;
+    c.check("qqbot 缺 appId/appSecret 被拒 400", qq_missing.status().as_u16() == 400);
+
+    let nap_missing: reqwest::Response = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-nap", "platform": "napcat", "config": { "token": "x" } }))
+        .send()
+        .await?;
+    c.check("napcat 缺 WS 地址被拒 400", nap_missing.status().as_u16() == 400);
+
+    let qq: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-qq", "platform": "qqbot", "config": { "appId": "1024", "appSecret": "qq-secret", "sandbox": "false" } }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "qqbot 创建成功且 appSecret 掩码回显",
+        qq["config"]["appId"] == "1024" && qq["config"]["appSecret"] == "***已配置***",
+    );
+
+    let qq_upd: serde_json::Value = client
+        .put(format!("{base}/channels/e2e-qq"))
+        .json(&json!({ "config": { "appId": "2048", "appSecret": "***已配置***", "sandbox": "false" } }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "掩码回传沿用旧 appSecret（appId 可改）",
+        qq_upd["config"]["appId"] == "2048" && qq_upd["config"]["appSecret"] == "***已配置***",
+    );
+
+    // 掩码语义的落盘验证：直接读本次运行的数据目录（e2e 自己的 channels.json）
+    let ch_raw = std::fs::read_to_string(data_dir.join("channels.json")).unwrap_or_default();
+    let secret_kept = serde_json::from_str::<serde_json::Value>(&ch_raw)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .map(|list| list.iter().any(|ch| ch["id"] == "e2e-qq" && ch["config"]["appSecret"] == "qq-secret"))
+        .unwrap_or(false);
+    c.check("落盘 appSecret 仍是明文旧值（掩码未污染存储）", secret_kept);
+
+    let qq_clr: serde_json::Value = client
+        .put(format!("{base}/channels/e2e-qq"))
+        .json(&json!({ "config": { "appId": "2048", "appSecret": "", "sandbox": "" } }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("空值清除 appSecret", qq_clr["config"]["appSecret"].is_null());
+
+    let tg: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-tg", "platform": "telegram", "token": "123456:abc" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("telegram token 掩码回显", tg["token"] == "***已配置***");
+
+    let tg_upd: serde_json::Value = client
+        .put(format!("{base}/channels/e2e-tg"))
+        .json(&json!({ "account": "备注一下" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "非敏感字段更新不动 token",
+        tg_upd["token"] == "***已配置***" && tg_upd["account"] == "备注一下",
+    );
+
+    let ch_list: serde_json::Value = client.get(format!("{base}/channels")).send().await?.json().await?;
+    let no_plaintext = ch_list.as_array().map(|a| {
+        a.iter().all(|ch| {
+            ch["secret"].as_str().map(|s| s != "s3cret").unwrap_or(true)
+                && ch["token"].as_str().map(|s| s != "123456:abc").unwrap_or(true)
+        })
+    }).unwrap_or(false);
+    c.check("列表接口无任何明文密钥", no_plaintext && ch_list.as_array().map(|a| a.len() >= 3).unwrap_or(false));
+
+    let chan_status: serde_json::Value = client.get(format!("{base}/channels/status")).send().await?.json().await?;
+    c.check("通道状态接口可查（对象）", chan_status.is_object());
+
+    let _ = client.delete(format!("{base}/channels/e2e-qq")).send().await?;
+    let _ = client.delete(format!("{base}/channels/e2e-tg")).send().await?;
 
     let _ = client.delete(format!("{base}/channels/e2e-hook")).send().await?;
 

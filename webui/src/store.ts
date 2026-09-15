@@ -9,6 +9,7 @@ import type {
   TaskGraph,
 } from "./types";
 import { api, type GatewayConfig, type GroupMeta, type RecallHit } from "./api";
+import { tr } from "./i18n/core";
 
 export interface TimelineItem {
   kind: "dispatch" | "sync" | "arbitration" | "memory" | "error";
@@ -190,7 +191,7 @@ export const useExm = create<ExmState>((set, get) => ({
   },
 
   newSession: async () => {
-    const s = await api.createSession("新会话");
+    const s = await api.createSession(tr("session.new"));
     set({ sessions: [s, ...get().sessions] });
     await get().selectSession(s.id);
   },
@@ -198,7 +199,7 @@ export const useExm = create<ExmState>((set, get) => ({
   send: async (text, images) => {
     const id = get().sessionId;
     if (!id || !text.trim()) return;
-    const label = images?.length ? `${text}（附图 ${images.length} 张）` : text;
+    const label = images?.length ? tr("store.withImages", { text, n: images.length }) : text;
     set({
       running: true,
       liveOrch: "",
@@ -255,7 +256,7 @@ export const useExm = create<ExmState>((set, get) => ({
               kind: "dispatch",
               agentId: String(p.agentIdentifier),
               nodeId: String(p.nodeId),
-              text: `指挥体派发 → ${p.agentIdentifier}（${p.nodeId}）`,
+              text: tr("store.tl.dispatch", { agent: String(p.agentIdentifier), node: String(p.nodeId) }),
             },
           ],
         });
@@ -277,7 +278,7 @@ export const useExm = create<ExmState>((set, get) => ({
               kind: "sync",
               agentId: report.sourceAgent,
               nodeId: report.taskNodeId,
-              text: `${report.sourceAgent} 回流：${report.summary.slice(0, 80)}（置信度 ${report.confidence}）`,
+              text: tr("store.tl.sync", { agent: report.sourceAgent, summary: report.summary.slice(0, 80), conf: report.confidence }),
             },
           ],
         });
@@ -287,7 +288,7 @@ export const useExm = create<ExmState>((set, get) => ({
         const hits = (p.hits ?? []) as RecallHit[];
         set({
           lastRecall: hits,
-          timeline: [...get().timeline, { kind: "memory", text: `记忆召回 ${hits.length} 条` }],
+          timeline: [...get().timeline, { kind: "memory", text: tr("store.tl.memory", { n: hits.length }) }],
         });
         break;
       }
@@ -298,7 +299,7 @@ export const useExm = create<ExmState>((set, get) => ({
             ...get().timeline,
             {
               kind: "memory",
-              text: `记忆写入 ${entries.length} 条（固定记忆 ${p.pinned ?? 0} 条，基础记忆已更新）`,
+              text: tr("store.tl.memoryWrite", { n: entries.length, pinned: Number(p.pinned ?? 0) }),
             },
           ],
         });
@@ -309,7 +310,7 @@ export const useExm = create<ExmState>((set, get) => ({
         set({
           timeline: [
             ...get().timeline,
-            { kind: "arbitration", text: "冲突待裁决，已追加裁决节点" },
+            { kind: "arbitration", text: tr("store.tl.arbitration") },
           ],
         });
         break;
@@ -340,7 +341,7 @@ export const useExm = create<ExmState>((set, get) => ({
       case "run.error":
         set({
           running: false,
-          timeline: [...get().timeline, { kind: "error", text: `运行失败：${String(p.message)}` }],
+          timeline: [...get().timeline, { kind: "error", text: tr("store.tl.error", { msg: String(p.message) }) }],
         });
         break;
     }

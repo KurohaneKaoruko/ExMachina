@@ -9,8 +9,10 @@ import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
 import { buildModelOptions } from "../models";
 import { useExm } from "../store";
+import { useT } from "../i18n/core";
 
 export function GroupsView(): React.ReactElement {
+  const t = useT();
   const { groups, activeGroup, refreshAgents } = useExm();
   const [selected, setSelected] = useState<string>("");
   const [members, setMembers] = useState<AgentDefinition[]>([]);
@@ -55,12 +57,12 @@ export function GroupsView(): React.ReactElement {
     const v = await groupForm.validateFields();
     try {
       await api.createGroup({ name: v.name, id: v.id || undefined, description: v.description ?? "" });
-      message.success(`组已创建：${v.name}`);
+      message.success(t("groups.created", { name: v.name }));
       setGroupModal(false);
       groupForm.resetFields();
       setSelected(v.id);
     } catch (e) {
-      message.error(`创建失败：${String(e)}`);
+      message.error(t("groups.createFailed", { err: String(e) }));
     }
   };
 
@@ -74,23 +76,23 @@ export function GroupsView(): React.ReactElement {
         tier: v.tier || undefined,
         group: meta?.id,
       });
-      message.success(`个体已创建：${v.identifier}`);
+      message.success(t("groups.agentCreated", { id: v.identifier }));
       setAgentModal(false);
       agentForm.resetFields();
       await loadMembers(meta!.id);
       await refreshAgents();
     } catch (e) {
-      message.error(`创建失败：${String(e)}`);
+      message.error(t("groups.createFailed", { err: String(e) }));
     }
   };
 
   const doDeleteGroup = async (gid: string) => {
     try {
       await api.deleteGroup(gid);
-      message.success(`组已删除：${gid}`);
+      message.success(t("groups.groupDeleted", { id: gid }));
       if (selected === gid) setSelected("");
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("groups.deleteFailed", { err: String(e) }));
     }
   };
 
@@ -99,9 +101,9 @@ export function GroupsView(): React.ReactElement {
       await fetch(`/api/agents/${identifier}`, { method: "DELETE" });
       await loadMembers(meta!.id);
       await refreshAgents();
-      message.success(`个体已删除：${identifier}`);
+      message.success(t("groups.agentDeleted", { id: identifier }));
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("groups.deleteFailed", { err: String(e) }));
     }
   };
 
@@ -114,9 +116,9 @@ export function GroupsView(): React.ReactElement {
       });
       if (!resp.ok) throw new Error(await resp.text());
       await loadMembers(meta!.id);
-      message.success(`主智能体已设置：${identifier}`);
+      message.success(t("groups.primarySet", { id: identifier }));
     } catch (e) {
-      message.error(`设置失败：${String(e)}`);
+      message.error(t("groups.setFailed", { err: String(e) }));
     }
   };
 
@@ -135,11 +137,11 @@ export function GroupsView(): React.ReactElement {
     try {
       await api.setGroupWorkspace(meta.id, wsDraft.trim());
       await api.setGroupModel(meta.id, modelDraft);
-      message.success("组设置已保存（热生效）");
+      message.success(t("groups.settingsSaved"));
       setSettingsOpen(false);
       await loadMembers(meta.id);
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
 
@@ -147,12 +149,12 @@ export function GroupsView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="GROUPS"
-        title="智能体组"
-        desc="组是编成与隔离的基本单位：默认组「智械集群」内置受保护，其他组可自由编成，主智能体可在任务中扩编组内个体。"
+        title={t("nav.groups")}
+        desc={t("groups.desc")}
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
-              新建组
+              {t("groups.new")}
             </Button>
             <Button
               danger
@@ -160,7 +162,7 @@ export function GroupsView(): React.ReactElement {
               disabled={!meta || meta.builtin || meta.id === activeGroup}
               onClick={() => meta && void doDeleteGroup(meta.id)}
             >
-              删除组
+              {t("groups.del")}
             </Button>
           </>
         }
@@ -177,7 +179,7 @@ export function GroupsView(): React.ReactElement {
             >
               <div className="list-row-head">
                 <b>{g.name}</b>
-                {g.builtin ? <Tag>内置</Tag> : <Tag color="purple">自定义</Tag>}
+                {g.builtin ? <Tag>{t("groups.builtin")}</Tag> : <Tag color="purple">{t("groups.custom")}</Tag>}
               </div>
               <div className="list-row-sub mono">{g.id}</div>
               {g.description && <div className="list-row-sub">{g.description}</div>}
@@ -188,7 +190,7 @@ export function GroupsView(): React.ReactElement {
         {/* 组详情与成员 */}
         <div className="pane-detail">
           {!meta ? (
-            <Empty description="选择或创建一个智能体组" className="graph-empty" />
+            <Empty description={t("groups.emptyPick")} className="graph-empty" />
           ) : (
             <Card
               size="small"
@@ -197,17 +199,17 @@ export function GroupsView(): React.ReactElement {
                 <Space>
                   <span>{meta.name}</span>
                   <span className="mono dim">{meta.id}</span>
-                  {meta.builtin ? <Tag>内置 · 编成受保护</Tag> : <Tag color="purple">自定义组</Tag>}
+                  {meta.builtin ? <Tag>{t("groups.builtinProtected")}</Tag> : <Tag color="purple">{t("groups.customGroup")}</Tag>}
                 </Space>
               }
               extra={
                 <Space>
                   <Button size="small" icon={<SettingOutlined />} onClick={() => { openSettings(); }}>
-                    组设置
+                    {t("groups.settings")}
                   </Button>
                   {!isBuiltin && (
                     <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setAgentModal(true)}>
-                      新建子个体
+                      {t("groups.newAgent")}
                     </Button>
                   )}
                 </Space>
@@ -215,21 +217,21 @@ export function GroupsView(): React.ReactElement {
             >
               {overview && (
                 <div className="overview-chips">
-                  <div className="chip"><span className="chip-num">{overview.agents}</span><span className="chip-label">个体</span></div>
-                  <div className="chip"><span className="chip-num">{overview.playbooks}</span><span className="chip-label">链路</span></div>
-                  <div className="chip"><span className="chip-num">{overview.sessions}</span><span className="chip-label">会话</span></div>
-                  <div className="chip"><span className="chip-num">{overview.memory.group}</span><span className="chip-label">组记忆</span></div>
-                  <div className="chip"><span className="chip-num">{overview.memory.shared}</span><span className="chip-label">全局</span></div>
+                  <div className="chip"><span className="chip-num">{overview.agents}</span><span className="chip-label">{t("groups.chipAgents")}</span></div>
+                  <div className="chip"><span className="chip-num">{overview.playbooks}</span><span className="chip-label">{t("groups.chipPlaybooks")}</span></div>
+                  <div className="chip"><span className="chip-num">{overview.sessions}</span><span className="chip-label">{t("groups.chipSessions")}</span></div>
+                  <div className="chip"><span className="chip-num">{overview.memory.group}</span><span className="chip-label">{t("groups.chipGroupMem")}</span></div>
+                  <div className="chip"><span className="chip-num">{overview.memory.shared}</span><span className="chip-label">{t("groups.chipShared")}</span></div>
                 </div>
               )}
               {overview && overview.agentStats.length > 0 && (
                 <div className="member-stats">
-                  <div className="rail-label">成员可靠性</div>
+                  <div className="rail-label">{t("groups.reliability")}</div>
                   {overview.agentStats.slice(0, 6).map((s) => (
                     <div key={s.agentId} className="member-stat-row">
                       <span className="mono">{s.agentId}</span>
                       <span className="dim">
-                        执行 {s.runs} · 完成 {s.done} · 受阻 {s.blocked} · 置信度 {s.avgConfidence.toFixed(2)}
+                        {t("groups.stat", { runs: s.runs, done: s.done, blocked: s.blocked, conf: s.avgConfidence.toFixed(2) })}
                       </span>
                     </div>
                   ))}
@@ -238,7 +240,7 @@ export function GroupsView(): React.ReactElement {
               <Spin spinning={loading}>
                 <table className="plain-table">
                   <thead>
-                    <tr><th>子个体</th><th>职责</th><th>角色</th><th>操作</th></tr>
+                    <tr><th>{t("groups.unit")}</th><th>{t("groups.duty")}</th><th>{t("groups.role")}</th><th>{t("groups.actions")}</th></tr>
                   </thead>
                   <tbody>
                     {[...members]
@@ -254,16 +256,16 @@ export function GroupsView(): React.ReactElement {
                         </td>
                         <td className="dim">{a.description}</td>
                         <td>
-                          {meta.primary === a.identifier ? <Tag color="cyan">主智能体</Tag> : <Tag>子个体</Tag>}
+                          {meta.primary === a.identifier ? <Tag color="cyan">{t("groups.primary")}</Tag> : <Tag>{t("groups.unit")}</Tag>}
                         </td>
                         <td>
                           {!isBuiltin && meta.primary !== a.identifier && (
                             <Space>
                               <Button size="small" onClick={() => void doSetPrimary(a.identifier)}>
-                                设为主智能体
+                                {t("groups.setPrimary")}
                               </Button>
-                              <Popconfirm title="确认删除该个体？" onConfirm={() => void doRemoveAgent(a.identifier)}>
-                                <Button size="small" danger>删除</Button>
+                              <Popconfirm title={t("groups.agentDeleteConfirm")} onConfirm={() => void doRemoveAgent(a.identifier)}>
+                                <Button size="small" danger>{t("common.delete")}</Button>
                               </Popconfirm>
                             </Space>
                           )}
@@ -273,7 +275,7 @@ export function GroupsView(): React.ReactElement {
                   </tbody>
                 </table>
                 {members.length === 0 && (
-                  <Empty description="组内暂无个体：创建首个个体将自动成为主智能体" className="pane-empty" />
+                  <Empty description={t("groups.emptyMembers")} className="pane-empty" />
                 )}
               </Spin>
             </Card>
@@ -281,36 +283,36 @@ export function GroupsView(): React.ReactElement {
         </div>
       </div>
 
-      <Modal open={groupModal} title="新建智能体组" onCancel={() => setGroupModal(false)} onOk={() => void submitGroup()} okText="创建">
+      <Modal open={groupModal} title={t("groups.modalNew")} onCancel={() => setGroupModal(false)} onOk={() => void submitGroup()} okText={t("groups.create")}>
         <Form form={groupForm} layout="vertical">
-          <Form.Item name="name" label="组名" rules={[{ required: true }]}>
-            <Input placeholder="如：研发组" />
+          <Form.Item name="name" label={t("groups.f.name")} rules={[{ required: true }]}>
+            <Input placeholder={t("groups.f.namePh")} />
           </Form.Item>
-          <Form.Item name="id" label="组 ID（可选）" rules={[{ pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}>
-            <Input placeholder="留空自动生成" />
+          <Form.Item name="id" label={t("groups.f.id")} rules={[{ pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
+            <Input placeholder={t("groups.idAuto")} />
           </Form.Item>
-          <Form.Item name="description" label="描述">
-            <Input.TextArea rows={2} placeholder="该组的用途与架构（如：经理 → 员工）" />
+          <Form.Item name="description" label={t("groups.f.desc")}>
+            <Input.TextArea rows={2} placeholder={t("groups.f.descPh")} />
           </Form.Item>
           <div className="persona-hint">
-            新组为空组：创建第一个个体时它将自动成为主智能体，之后可由它或你继续扩编。
+            {t("groups.newHint")}
           </div>
         </Form>
       </Modal>
 
-      <Modal open={agentModal} title={`在组「${meta?.name ?? ""}」中新建个体`} onCancel={() => setAgentModal(false)} onOk={() => void submitAgent()} okText="创建">
+      <Modal open={agentModal} title={t("groups.modalNewAgent", { name: meta?.name ?? "" })} onCancel={() => setAgentModal(false)} onOk={() => void submitAgent()} okText={t("groups.create")}>
         <Form form={agentForm} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="如：主笔体" />
+          <Form.Item name="name" label={t("groups.f.agentName")} rules={[{ required: true }]}>
+            <Input placeholder={t("groups.f.agentNamePh")} />
           </Form.Item>
-          <Form.Item name="identifier" label="标识（identifier）" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}>
-            <Input placeholder="如：chief-writer" />
+          <Form.Item name="identifier" label={t("groups.f.identifier")} rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
+            <Input placeholder={t("groups.f.identifierPh")} />
           </Form.Item>
-          <Form.Item name="description" label="职责" rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder="该个体的职责一句话描述" />
+          <Form.Item name="description" label={t("groups.duty")} rules={[{ required: true }]}>
+            <Input.TextArea rows={2} placeholder={t("groups.f.dutyPh")} />
           </Form.Item>
-          <Form.Item name="tier" label="层级" initialValue="unit">
-            <Select options={[{ value: "unit", label: "unit（子个体）" }, { value: "orchestrator", label: "orchestrator（主智能体）" }]} />
+          <Form.Item name="tier" label={t("groups.f.tier")} initialValue="unit">
+            <Select options={[{ value: "unit", label: t("groups.tier.unit") }, { value: "orchestrator", label: t("groups.tier.orch") }]} />
           </Form.Item>
         </Form>
       </Modal>
@@ -318,21 +320,21 @@ export function GroupsView(): React.ReactElement {
       {/* 组设置弹窗 */}
       <Modal
         open={settingsOpen}
-        title={`组设置 · ${meta?.name ?? ""}`}
+        title={t("groups.modalSettings", { name: meta?.name ?? "" })}
         onCancel={() => setSettingsOpen(false)}
         onOk={() => void saveSettings()}
-        okText="保存"
+        okText={t("common.save")}
         width={520}
       >
         <Form layout="vertical">
-          <Form.Item label="工作区" help="该组个体的文件与命令操作根目录；留空 = 全局工作区">
+          <Form.Item label={t("groups.f.workspace")} help={t("groups.f.workspaceHelp")}>
             <Input
               value={wsDraft}
               onChange={(e) => setWsDraft(e.target.value)}
-              placeholder="如 projects/demo"
+              placeholder={t("groups.f.wsPh")}
             />
           </Form.Item>
-          <Form.Item label="默认模型" help="组内未单独设置模型的个体跟随此模型">
+          <Form.Item label={t("groups.f.model")} help={t("groups.f.modelHelp")}>
             <Select
               value={modelDraft}
               onChange={setModelDraft}

@@ -12,7 +12,8 @@ use exm_core::config::LlmProfile;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const KEY_MASK: &str = "***已配置***";
+/// 密钥掩码哨兵（前后端契约：更新时收到此值 = 沿用服务端旧值，不得当明文入库）
+pub(crate) const KEY_MASK: &str = "***已配置***";
 
 fn mask_key(k: &str) -> String {
     if k.trim().is_empty() { String::new() } else { KEY_MASK.to_string() }

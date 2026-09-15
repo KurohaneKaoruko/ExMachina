@@ -4,8 +4,10 @@ import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Space, Spin, Tag, 
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type SkillDef } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { useT } from "../i18n/core";
 
 export function SkillsView(): React.ReactElement {
+  const t = useT();
   const [skills, setSkills] = useState<SkillDef[]>([]);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(false);
@@ -35,22 +37,22 @@ export function SkillsView(): React.ReactElement {
         instructions: v.instructions,
         agents: (v.agents ?? "").split(/[,，]/).map((s: string) => s.trim()).filter(Boolean),
       });
-      message.success(`技能已创建：${v.id}（热装载，下一次派发即生效）`);
+      message.success(t("skills.created", { id: v.id }));
       setModal(false);
       form.resetFields();
       await load();
     } catch (e) {
-      message.error(`创建失败：${String(e)}`);
+      message.error(t("skills.createFailed", { err: String(e) }));
     }
   };
 
   const remove = async (id: string) => {
     try {
       await api.deleteSkill(id);
-      message.success(`技能已删除：${id}`);
+      message.success(t("skills.deleted", { id }));
       await load();
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("skills.deleteFailed", { err: String(e) }));
     }
   };
 
@@ -58,15 +60,15 @@ export function SkillsView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="SKILLS"
-        title="技能"
-        desc="技能由全体智能体共用，新增即生效：任务目标命中触发词时，对应指令自动注入被派发个体的上下文。"
+        title={t("nav.skills")}
+        desc={t("skills.desc")}
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
-              新建技能
+              {t("skills.new")}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
@@ -85,20 +87,20 @@ export function SkillsView(): React.ReactElement {
                 </Space>
               }
               extra={
-                <Popconfirm title="确认删除该技能？" onConfirm={() => void remove(s.id)}>
+                <Popconfirm title={t("skills.deleteConfirm")} onConfirm={() => void remove(s.id)}>
                   <Button size="small" danger>
-                    删除
+                    {t("common.delete")}
                   </Button>
                 </Popconfirm>
               }
             >
               {s.description && <div className="dim">{s.description}</div>}
               <div className="skill-line">
-                触发：
+                {t("skills.triggerLabel")}
                 {s.triggers.length ? (
-                  s.triggers.map((t) => (
-                    <Tag key={t} color="cyan">
-                      {t}
+                  s.triggers.map((tl) => (
+                    <Tag key={tl} color="cyan">
+                      {tl}
                     </Tag>
                   ))
                 ) : (
@@ -106,36 +108,36 @@ export function SkillsView(): React.ReactElement {
                 )}
               </div>
               <div className="skill-line">
-                适用：{s.agents.length ? s.agents.map((a) => <Tag key={a}>{a}</Tag>) : <Tag color="purple">全体</Tag>}
+                {t("skills.applyLabel")}{s.agents.length ? s.agents.map((a) => <Tag key={a}>{a}</Tag>) : <Tag color="purple">{t("skills.allAgents")}</Tag>}
               </div>
               <div className="skill-instructions">{s.instructions}</div>
             </Card>
           ))}
         </div>
         {!loading && skills.length === 0 && (
-          <Empty description="当前组无技能包" className="graph-empty" />
+          <Empty description={t("skills.empty")} className="graph-empty" />
         )}
       </Spin>
 
-      <Modal open={modal} title="新建技能" onCancel={() => setModal(false)} onOk={() => void submit()} okText="创建">
+      <Modal open={modal} title={t("skills.new")} onCancel={() => setModal(false)} onOk={() => void submit()} okText={t("skills.create")}>
         <Form form={form} layout="vertical">
-          <Form.Item name="id" label="ID" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}>
-            <Input placeholder="如：git-safety" />
+          <Form.Item name="id" label="ID" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("skills.idPattern") }]}>
+            <Input placeholder={t("skills.f.idPh")} />
           </Form.Item>
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="如：Git 安全作业" />
+          <Form.Item name="name" label={t("skills.f.name")} rules={[{ required: true }]}>
+            <Input placeholder={t("skills.f.namePh")} />
           </Form.Item>
-          <Form.Item name="description" label="描述（可选）">
+          <Form.Item name="description" label={t("skills.f.desc")}>
             <Input />
           </Form.Item>
-          <Form.Item name="triggers" label="触发词（逗号分隔）">
+          <Form.Item name="triggers" label={t("skills.f.triggers")}>
             <Input placeholder="git push, git reset, git clean" />
           </Form.Item>
-          <Form.Item name="agents" label="适用个体（逗号分隔，留空 = 全体）">
+          <Form.Item name="agents" label={t("skills.f.agents")}>
             <Input placeholder="coding-agent, ops-agent" />
           </Form.Item>
-          <Form.Item name="instructions" label="指令内容（派发时注入）" rules={[{ required: true }]}>
-            <Input.TextArea rows={4} placeholder="行为约束与作业知识，逐条列出" />
+          <Form.Item name="instructions" label={t("skills.f.instructions")} rules={[{ required: true }]}>
+            <Input.TextArea rows={4} placeholder={t("skills.f.instructionsPh")} />
           </Form.Item>
         </Form>
       </Modal>

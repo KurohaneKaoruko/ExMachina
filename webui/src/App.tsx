@@ -19,8 +19,10 @@ import {
 } from "@ant-design/icons";
 import { api } from "./api";
 import { useExm } from "./store";
-import { useLang, useT } from "./i18n";
+import { LANGS, useLang, useT, type TKey } from "./i18n/core";
 import { ACCENTS, accentOf, useTheme } from "./theme";
+import { CharStream } from "./components/CharStream";
+import { AsciiDivider } from "./components/Ascii";
 import { LoginView } from "./views/LoginView";
 import { ChatView } from "./views/ChatView";
 import { ModelsView } from "./views/ModelsView";
@@ -116,7 +118,7 @@ export default function App(): React.ReactElement {
           </div>
           <div className="title-rule" style={{ marginTop: 12 }} />
           <div className="login-sub" style={{ textAlign: "center" }}>
-            连结中 <span className="mono">[CONNECTING]</span>
+            {t("status.connecting")} <span className="mono">[CONNECTING]</span>
           </div>
         </div>
       </div>
@@ -136,6 +138,8 @@ export default function App(): React.ReactElement {
   return (
     <div className="app-shell">
       <aside className="app-sider">
+        {/* 字符流放在侧栏背景里（见 styles.css 的层级说明） */}
+        <CharStream />
         <div className="brand">
           <div className="brand-row">
             <span className="brand-led" />
@@ -160,12 +164,12 @@ export default function App(): React.ReactElement {
           }))}
           onClick={({ key }) => setView(key as ViewKey)}
         />
-        <div className="sider-stream" />
+        <AsciiDivider label="CHANNEL" className="sider-divider" />
         <div className={`theme-switcher ${themeOpen ? "open" : ""}`}>
           <button className="theme-toggle" onClick={() => setThemeOpen(!themeOpen)}>
-            <span className="theme-label">主题 [THEME]</span>
+            <span className="theme-label">{t("theme.label")}</span>
             <span className="theme-current" style={{ color: accentOf(accent).color }}>
-              {accentOf(accent).name}
+              {t(`theme.accent.${accent}` as TKey)}
             </span>
             <span className={`theme-caret ${themeOpen ? "up" : ""}`}>▸</span>
           </button>
@@ -180,7 +184,7 @@ export default function App(): React.ReactElement {
                 }}
               >
                 <span className="theme-swatch" style={{ background: a.color }} />
-                <span>{a.name}</span>
+                <span>{t(`theme.accent.${a.key}` as TKey)}</span>
                 <span className="label-en">[{a.key.toUpperCase()}]</span>
               </button>
             ))}
@@ -189,19 +193,16 @@ export default function App(): React.ReactElement {
         <div className={`theme-switcher ${langOpen ? "open" : ""}`}>
           <button className="theme-toggle" onClick={() => setLangOpen(!langOpen)}>
             <span className="theme-label">{t("lang.label")}</span>
-            <span className="theme-current">{lang === "zh" ? "中文" : "English"}</span>
+            <span className="theme-current">{LANGS.find((l) => l.code === lang)?.name ?? lang}</span>
             <span className={`theme-caret ${langOpen ? "up" : ""}`}>▸</span>
           </button>
           <div className="theme-panel">
-            {([
-              { key: "zh" as const, name: "中文" },
-              { key: "en" as const, name: "English" },
-            ]).map((l) => (
+            {LANGS.map((l) => (
               <button
-                key={l.key}
-                className={`theme-option ${lang === l.key ? "active" : ""}`}
+                key={l.code}
+                className={`theme-option ${lang === l.code ? "active" : ""}`}
                 onClick={() => {
-                  setLang(l.key);
+                  setLang(l.code);
                   setLangOpen(false);
                 }}
               >
@@ -210,6 +211,7 @@ export default function App(): React.ReactElement {
             ))}
           </div>
         </div>
+        {/* 界面偏好（数据流等）在「设置」页维护，侧栏只留主题与语言 */}
         <div className="nav-footer">
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} />
           <span className="status-text">{wsConnected ? t("status.connected") : t("status.reconnecting")}</span>

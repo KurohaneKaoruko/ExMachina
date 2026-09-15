@@ -2,6 +2,7 @@
 import React from "react";
 import { Tag } from "antd";
 import type { SpeechTag, Statement } from "../types";
+import { useT } from "../i18n/core";
 
 const TAG_COLORS: Record<SpeechTag, string> = {
   肯定: "green",
@@ -17,6 +18,7 @@ const TAG_COLORS: Record<SpeechTag, string> = {
 const LEVEL_COLORS: Record<string, string> = { A: "red", B: "orange", C: "blue", D: "default" };
 
 export function StatementLine({ s }: { s: Statement }): React.ReactElement {
+  const t = useT();
   return (
     <div className="stmt-line">
       <Tag color={TAG_COLORS[s.tag]} className="stmt-tag">
@@ -25,7 +27,7 @@ export function StatementLine({ s }: { s: Statement }): React.ReactElement {
       <span>{s.text}</span>
       {s.evidenceLevel && (
         <Tag color={LEVEL_COLORS[s.evidenceLevel]} className="stmt-level">
-          证据{s.evidenceLevel}
+          {t("statements.evidence", { s: s.evidenceLevel })}
         </Tag>
       )}
     </div>

@@ -18,7 +18,9 @@ use std::sync::Arc;
 
 pub mod llm_admin;
 pub mod singles;
+pub mod napcat;
 pub mod platform;
+pub mod qqbot;
 pub mod telegram;
 pub mod worker_hub;
 
@@ -992,6 +994,8 @@ async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<
 pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
     platform::spawn_cron_scheduler(core.clone());
     telegram::spawn_supervisor(core.clone());
+    napcat::spawn_supervisor(core.clone());
+    qqbot::spawn_supervisor(core.clone());
     // 分布式执行：工作者池注入（有工作者在线即自动路由远程，失败回落本地）
     {
         let st = AppState { core: core.clone() };

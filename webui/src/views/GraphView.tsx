@@ -3,6 +3,7 @@ import React, { useMemo, useState } from "react";
 import { Drawer, Empty, Select, Tag, Typography } from "antd";
 import { useExm } from "../store";
 import { PageHeader } from "../components/PageHeader";
+import { useT } from "../i18n/core";
 import type { TaskNode, TaskStatus } from "../types";
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
@@ -40,9 +41,10 @@ function depthOf(n: TaskNode, byId: Map<string, TaskNode>, memo: Map<string, num
 }
 
 export function GraphView(): React.ReactElement {
+  const t = useT();
   const { graph, sessions, sessionId, selectSession } = useExm();
   const [selected, setSelected] = useState<TaskNode | null>(null);
-  const sessionLabel = sessions.find((s) => s.id === sessionId)?.title ?? "未选会话";
+  const sessionLabel = sessions.find((s) => s.id === sessionId)?.title ?? t("graph.noSession");
 
   const layout = useMemo(() => {
     if (!graph?.nodes?.length) return null;
@@ -76,13 +78,13 @@ export function GraphView(): React.ReactElement {
       <div className="pane-wrap">
         <PageHeader
           en="DAG"
-          title={"任务图 — " + sessionLabel}
-          desc="切换到有任务的会话查看 DAG。"
+          title={t("graph.title", { session: sessionLabel })}
+          desc={t("graph.descEmpty")}
           actions={
-            <Select size="small" style={{ minWidth: 180 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder="选择会话" />
+            <Select size="small" style={{ minWidth: 180 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder={t("graph.pickSession")} />
           }
         />
-        <Empty description="当前会话暂无任务图：在对话页发送任务后此处实时渲染 DAG" className="graph-empty" />
+        <Empty description={t("graph.empty")} className="graph-empty" />
       </div>
     );
   }
@@ -91,8 +93,8 @@ export function GraphView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="DAG"
-        title={"任务图 — " + sessionLabel}
-        desc="指挥体拆解出的任务依赖图：按拓扑深度分层，节点随执行推进变色。"
+        title={t("graph.title", { session: sessionLabel })}
+        desc={t("graph.desc")}
         actions={
           <>
           <span className="readout">
@@ -103,7 +105,7 @@ export function GraphView(): React.ReactElement {
             <span className="k" style={{ marginLeft: 10 }}>DEPTH</span>
             <span className="v">{layout.depth}</span>
           </span>
-          <Select size="small" style={{ minWidth: 180, marginLeft: 12 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder="选择会话" />
+          <Select size="small" style={{ minWidth: 180, marginLeft: 12 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder={t("graph.pickSession")} />
           </>
         }
       />
@@ -166,13 +168,13 @@ export function GraphView(): React.ReactElement {
         {selected && (
           <div>
             <p><Tag color={STATUS_COLORS[selected.status]}>{selected.status}</Tag> <b>{selected.agentIdentifier}</b> <Tag>{selected.priority}</Tag></p>
-            <Typography.Title level={5}>目标</Typography.Title>
+            <Typography.Title level={5}>{t("graph.objective")}</Typography.Title>
             <p>{selected.objective}</p>
-            <Typography.Title level={5}>验收断言</Typography.Title>
+            <Typography.Title level={5}>{t("graph.acceptance")}</Typography.Title>
             <ul>{selected.acceptance.map((a, i) => <li key={i}>{a}</li>)}</ul>
-            <Typography.Title level={5}>依赖</Typography.Title>
-            <p>{selected.dependsOn.join("、") || "（根节点）"}</p>
-            {selected.syncReportId && <p>回流 ID：{selected.syncReportId}</p>}
+            <Typography.Title level={5}>{t("graph.depends")}</Typography.Title>
+            <p>{selected.dependsOn.join("、") || t("graph.root")}</p>
+            {selected.syncReportId && <p>{t("graph.syncId", { id: selected.syncReportId })}</p>}
           </div>
         )}
       </Drawer>

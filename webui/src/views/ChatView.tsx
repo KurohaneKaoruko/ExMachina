@@ -4,15 +4,18 @@ import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag
 import { AudioOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { useExm } from "../store";
+import { useT } from "../i18n/core";
 
 interface TargetInfo { mode: "group" | "single"; id: string; name?: string }
 import { StatementList } from "../components/Statements";
 import { Markdown } from "../components/Markdown";
+import { AsciiMeter } from "../components/Ascii";
 import type { ChatMessage } from "../types";
 
 function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
+  const tb = useT();
   const isUser = m.role === "user";
-  const title = isUser ? "用户" : m.role === "orchestrator" ? "指挥体" : (m.agentId ?? "系统");
+  const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? tb("chat.role.orchestrator") : (m.agentId ?? tb("chat.role.system"));
   return (
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
@@ -24,6 +27,7 @@ function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
 }
 
 export function ChatView(): React.ReactElement {
+  const t = useT();
   const {
     messages, liveOrch, liveUnits, timeline, running, send, wsConnected,
     sessions, sessionId, selectSession, newSession,
@@ -51,7 +55,7 @@ export function ChatView(): React.ReactElement {
   const changeTarget = async (value: string) => {
     const [mode, id] = value.startsWith("single:") ? (["single", value.slice(7)] as const) : (["group", value.slice(6)] as const);
     await setTarget(mode, id);
-    message.success(mode === "single" ? `已切换到智能体：${id}` : `已切换到组：${id}`);
+    message.success(mode === "single" ? t("chat.switchedSingle", { id }) : t("chat.switchedGroup", { id }));
     await loadTarget();
   };
   const [text, setText] = useState("");
@@ -84,11 +88,11 @@ export function ChatView(): React.ReactElement {
         chunksRef.current = [];
         if (blob.size === 0) return;
         try {
-          const t = await api.transcribe(blob);
-          if (t) setText((prev) => (prev ? `${prev} ${t}` : t));
-          message.success("语音已转写");
+          const tr = await api.transcribe(blob);
+          if (tr) setText((prev) => (prev ? `${prev} ${tr}` : tr));
+          message.success(t("chat.transcribed"));
         } catch (e) {
-          message.error(`转写失败：${String(e)}`);
+          message.error(t("chat.transcribeFailed", { err: String(e) }));
         }
       };
       chunksRef.current = [];
@@ -96,7 +100,7 @@ export function ChatView(): React.ReactElement {
       recorderRef.current = rec;
       setRecording(true);
     } catch {
-      message.error("无法访问麦克风");
+      message.error(t("chat.micDenied"));
     }
   };
 
@@ -170,7 +174,7 @@ export function ChatView(): React.ReactElement {
       <aside className="chat-rail">
         <div className="rail-section">
           <div className="rail-label">
-            <span className="rail-no">01</span> 交互目标 [TARGET]
+            <span className="rail-no">01</span> {t("chat.target")} [TARGET]
           </div>
           <Select
             value={target.mode === "single" ? `single:${target.id}` : `group:${target.id}`}
@@ -178,29 +182,29 @@ export function ChatView(): React.ReactElement {
             onChange={(v) => void changeTarget(v)}
             options={[
               {
-                label: "智能体组",
+                label: t("chat.groupLabel"),
                 options: groups.map((g) => ({
                   value: `group:${g.id}`,
-                  label: `${g.name}（${g.id}${g.builtin ? " · 内置" : ""}）`,
+                  label: `${g.name}（${g.id}${g.builtin ? ` · ${t("chat.builtin")}` : ""}）`,
                 })),
               },
               {
-                label: "智能体",
+                label: t("chat.singlesLabel"),
                 options: singles.map((s) => ({ value: `single:${s.identifier}`, label: s.name })),
               },
             ]}
           />
           {target.mode === "single" ? (
-            <div className="rail-hint">智能体模式 · <span className="mono">{target.id}</span></div>
+            <div className="rail-hint">{t("chat.soloMode")} · <span className="mono">{target.id}</span></div>
           ) : (
             activeMeta && (
-              <div className="rail-hint">主智能体：<span className="mono">{activeMeta.primary ?? "未设"}</span></div>
+              <div className="rail-hint">{t("chat.primary")}：<span className="mono">{activeMeta.primary ?? t("chat.unset")}</span></div>
             )
           )}
         </div>
         <div className="rail-section grow">
           <div className="rail-label">
-            <span className="rail-no">02</span> 会话 [SESSIONS]
+            <span className="rail-no">02</span> {t("chat.sessions")} [SESSIONS]
           </div>
           <Button
             block
@@ -208,12 +212,12 @@ export function ChatView(): React.ReactElement {
             className="new-session-btn"
             onClick={() => void newSession()}
           >
-            新会话
+            {t("session.new")}
           </Button>
           <Input
             size="small"
             allowClear
-            placeholder="搜索会话…"
+            placeholder={t("chat.searchSessions")}
             className="session-search"
             value={sessionFilter}
             onChange={(e) => setSessionFilter(e.target.value)}
@@ -242,7 +246,7 @@ export function ChatView(): React.ReactElement {
                     }}
                   />
                   <Popconfirm
-                    title="删除该会话及其全部记录？"
+                    title={t("chat.deleteConfirm")}
                     onConfirm={(e) => {
                       e?.stopPropagation();
                       void removeSession(s.id);
@@ -262,7 +266,7 @@ export function ChatView(): React.ReactElement {
             ))}
             {sessions.filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase())).length === 0 && (
               <div className="dim" style={{ padding: "12px 8px", fontSize: 12 }}>
-                {sessionFilter ? "无匹配会话" : "尚无会话"}
+                {sessionFilter ? t("chat.noMatch") : t("chat.noSessions")}
               </div>
             )}
           </div>
@@ -272,15 +276,22 @@ export function ChatView(): React.ReactElement {
       {/* 右侧：消息流 + 输入 */}
       <div className="chat-wrap">
         <div className="console-bar">
-          <span className="console-title">对话</span>
+          <span className="console-title">{t("nav.chat")}</span>
           <span className="page-en">CHAT</span>
           <span className="console-sep" />
           <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
           <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
-          {usage && <span className="readout"><span className="k">TOKENS</span> <span className="v">~{usage.estimate}</span></span>}
+          {usage && (
+            <span className="readout console-usage">
+              <span className="k">TOKENS</span>
+              {/* 字符进度条：比数字更直观地表达「还剩多少预算」 */}
+              <AsciiMeter value={usage.estimate} total={usage.unlimited ? 0 : usage.budget} cells={14} />
+              <span className="v">~{usage.estimate}</span>
+            </span>
+          )}
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
         </div>
-        {!wsConnected && <Alert type="warning" message="与网关的实时通道断开，重连中…" showIcon className="ws-alert" />}
+        {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert" />}
         <div className="chat-scroll">
           {messages.map((m) => (
             <MessageBubble key={m.id} m={m} />
@@ -290,14 +301,14 @@ export function ChatView(): React.ReactElement {
             <Card size="small" className="msg-bubble msg-agent">
               <Space direction="vertical" className="full-width">
                 <div>
-                  <Spin size="small" /> <b>指挥体运行中</b>
+                  <Spin size="small" /> <b>{t("chat.orchRunning")}</b>
                 </div>
-                {timeline.map((t, i) => (
-                  <div key={i} className={`timeline-item tl-${t.kind}`}>
-                    <Tag color={t.kind === "dispatch" ? "blue" : t.kind === "sync" ? "green" : t.kind === "arbitration" ? "volcano" : "red"}>
-                      {t.kind === "dispatch" ? "派发" : t.kind === "sync" ? "回流" : t.kind === "arbitration" ? "裁决" : "错误"}
+                {timeline.map((tl, i) => (
+                  <div key={i} className={`timeline-item tl-${tl.kind}`}>
+                    <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                      {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
                     </Tag>
-                    <span className="tl-text">{t.text}</span>
+                    <span className="tl-text">{tl.text}</span>
                   </div>
                 ))}
               </Space>
@@ -307,7 +318,7 @@ export function ChatView(): React.ReactElement {
           {liveUnitEntries.map(([agent, content]) => (
             <Card key={agent} size="small" className="msg-bubble msg-agent live-card">
               <div className="msg-head">
-                <RobotOutlined /> <b>{agent}</b> <Tag color="processing">执行中</Tag>
+                <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
               </div>
               <pre className="live-pre">{content}</pre>
             </Card>
@@ -316,7 +327,7 @@ export function ChatView(): React.ReactElement {
           {liveOrch && (
             <Card size="small" className="msg-bubble msg-agent live-card">
               <div className="msg-head">
-                <RobotOutlined /> <b>指挥体</b> <Tag color="processing">输出中</Tag>
+                <RobotOutlined /> <b>{t("chat.role.orchestrator")}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
               </div>
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
@@ -344,7 +355,7 @@ export function ChatView(): React.ReactElement {
           <Input.TextArea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="> 向指挥体下达任务…（Enter 发送，Shift+Enter 换行）"
+            placeholder={`> ${t("chat.inputPlaceholder")}`}
             autoSize={{ minRows: 1, maxRows: 6 }}
             onPressEnter={(e) => {
               if (!e.shiftKey) {
@@ -360,11 +371,11 @@ export function ChatView(): React.ReactElement {
             type={recording ? "primary" : "text"}
             className="mic-btn"
             danger={recording}
-            title={recording ? "停止录音并转写" : "语音输入（转写为文字）"}
+            title={recording ? t("chat.stopRecord") : t("chat.startRecord")}
             icon={recording ? <PauseCircleOutlined /> : <AudioOutlined />}
             onClick={() => void toggleRecord()}
           />
-          <label className="attach-btn" title="附加图片（多模态输入，最多 4 张）">
+          <label className="attach-btn" title={t("chat.attachTip")}>
             <PaperClipOutlined />
             <input
               type="file"
@@ -383,12 +394,12 @@ export function ChatView(): React.ReactElement {
             loading={running}
             onClick={doSend}
           >
-            发送
+            {t("chat.send")}
           </Button>
           {renaming && (
             <Modal
               open
-              title="重命名会话"
+              title={t("chat.renameTitle")}
               onCancel={() => setRenaming(null)}
               onOk={async () => {
                 if (!renaming.title.trim()) return;
@@ -397,12 +408,12 @@ export function ChatView(): React.ReactElement {
                 useExm.setState({ sessions: store.sessions.map((s) => s.id === renaming.id ? { ...s, title: renaming.title } : s) });
                 setRenaming(null);
               }}
-              okText="重命名"
+              okText={t("common.rename")}
             >
               <Input
                 value={renaming.title}
                 onChange={(e) => setRenaming({ ...renaming, title: e.target.value })}
-                placeholder="新标题"
+                placeholder={t("chat.newTitle")}
               />
             </Modal>
           )}

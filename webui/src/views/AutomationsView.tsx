@@ -5,8 +5,10 @@ import { CaretRightOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/ic
 import { api, type CronJob, type CronRun } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
+import { useT } from "../i18n/core";
 
 export function AutomationsView(): React.ReactElement {
+  const t = useT();
   const { groups, activeGroup } = useExm();
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [loading, setLoading] = useState(false);
@@ -40,12 +42,12 @@ export function AutomationsView(): React.ReactElement {
         group: v.group || undefined,
         sessionTitle: v.sessionTitle || undefined,
       });
-      message.success("定时任务已创建（exm serve 常驻时自动调度）");
+      message.success(t("cron.created"));
       setModal(false);
       form.resetFields();
       await load();
     } catch (e) {
-      message.error(`创建失败：${String(e)}`);
+      message.error(t("cron.createFailed", { err: String(e) }));
     }
   };
 
@@ -57,9 +59,9 @@ export function AutomationsView(): React.ReactElement {
   const runNow = async (job: CronJob) => {
     try {
       const run = await api.runCron(job.id);
-      message.success(`已执行：${run.status}（会话 ${run.sessionId.slice(0, 8)}…）`);
+      message.success(t("cron.ran", { status: run.status, id: run.sessionId.slice(0, 8) }));
     } catch (e) {
-      message.error(`执行失败：${String(e)}`);
+      message.error(t("cron.runFailed", { err: String(e) }));
     }
   };
 
@@ -72,15 +74,15 @@ export function AutomationsView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="CRON"
-        title="自动化"
-        desc="定时任务：网关（exm serve）常驻时每 20 秒扫描到期任务并唤醒对应智能体组执行；一次性任务触发后自动停用。"
+        title={t("nav.cron")}
+        desc={t("cron.desc")}
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
-              新建任务
+              {t("cron.new")}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
@@ -91,10 +93,10 @@ export function AutomationsView(): React.ReactElement {
           rowKey="id"
           pagination={false}
           dataSource={jobs}
-          locale={{ emptyText: <Empty description="无定时任务" className="pane-empty" /> }}
+          locale={{ emptyText: <Empty description={t("cron.empty")} className="pane-empty" /> }}
           columns={[
             {
-              title: "任务",
+              title: t("cron.colJob"),
               render: (_, j) => (
                 <Space direction="vertical" size={0}>
                   <b>{j.name}</b>
@@ -103,37 +105,37 @@ export function AutomationsView(): React.ReactElement {
               ),
             },
             {
-              title: "调度",
+              title: t("cron.colSchedule"),
               render: (_, j) =>
-                j.cron ? <Tag color="cyan">cron[{j.cron}]</Tag> : <Tag color="purple">一次性 {j.at}</Tag>,
+                j.cron ? <Tag color="cyan">cron[{j.cron}]</Tag> : <Tag color="purple">{t("cron.oneOff", { at: j.at ?? "" })}</Tag>,
             },
-            { title: "组", render: (_, j) => <span className="mono">{j.group ?? "(当前组)"}</span> },
+            { title: t("cron.colGroup"), render: (_, j) => <span className="mono">{j.group ?? t("cron.currentGroup")}</span> },
             {
-              title: "启用",
+              title: t("cron.colEnabled"),
               render: (_, j) => <Switch size="small" checked={j.enabled} onChange={(v) => void toggle(j, v)} />,
             },
             {
-              title: "上次运行",
+              title: t("cron.colLastRun"),
               render: (_, j) => (
                 <span className="mono dim">
-                  {j.lastRunAt ?? "未运行"}
+                  {j.lastRunAt ?? t("cron.notRun")}
                   {j.lastStatus ? ` · ${j.lastStatus}` : ""}
                 </span>
               ),
             },
             {
-              title: "操作",
+              title: t("cron.colOps"),
               render: (_, j) => (
                 <Space>
                   <Button size="small" icon={<CaretRightOutlined />} onClick={() => void runNow(j)}>
-                    执行
+                    {t("cron.run")}
                   </Button>
                   <Button size="small" onClick={() => void openRuns(j)}>
-                    记录
+                    {t("cron.runs")}
                   </Button>
-                  <Popconfirm title="确认删除该任务？" onConfirm={() => void api.deleteCron(j.id).then(load)}>
+                  <Popconfirm title={t("cron.deleteConfirm")} onConfirm={() => void api.deleteCron(j.id).then(load)}>
                     <Button size="small" danger>
-                      删除
+                      {t("common.delete")}
                     </Button>
                   </Popconfirm>
                 </Space>
@@ -143,8 +145,8 @@ export function AutomationsView(): React.ReactElement {
         />
       </Spin>
 
-      <Drawer title={`运行记录 · ${runsFor?.name ?? ""}`} open={runsFor !== null} onClose={() => setRunsFor(null)} width={520}>
-        {runs.length === 0 && <Empty description="无运行记录" />}
+      <Drawer title={t("cron.runsTitle", { name: runsFor?.name ?? "" })} open={runsFor !== null} onClose={() => setRunsFor(null)} width={520}>
+        {runs.length === 0 && <Empty description={t("cron.noRuns")} />}
         {runs.map((r) => (
           <div key={r.id} className="run-row">
             <div>
@@ -152,49 +154,49 @@ export function AutomationsView(): React.ReactElement {
               <span className="mono dim">{r.startedAt}</span>
             </div>
             <div className="dim">
-              会话 <span className="mono">{r.sessionId.slice(0, 8)}</span> · {r.summary}
+              {t("cron.sessionLabel")} <span className="mono">{r.sessionId.slice(0, 8)}</span> · {r.summary}
             </div>
           </div>
         ))}
       </Drawer>
 
-      <Modal open={modal} title="新建定时任务" onCancel={() => setModal(false)} onOk={() => void submit()} okText="创建">
+      <Modal open={modal} title={t("cron.modalNew")} onCancel={() => setModal(false)} onOk={() => void submit()} okText={t("cron.create")}>
         <Form form={form} layout="vertical" initialValues={{ mode: "cron" }}>
-          <Form.Item name="name" label="任务名" rules={[{ required: true }]}>
-            <Input placeholder="如：每日巡检" />
+          <Form.Item name="name" label={t("cron.f.name")} rules={[{ required: true }]}>
+            <Input placeholder={t("cron.f.namePh")} />
           </Form.Item>
-          <Form.Item name="prompt" label="提示词（到期注入指挥体）" rules={[{ required: true }]}>
-            <Input.TextArea rows={3} placeholder="巡检任务账与风险账并给出摘要" />
+          <Form.Item name="prompt" label={t("cron.f.prompt")} rules={[{ required: true }]}>
+            <Input.TextArea rows={3} placeholder={t("cron.f.promptPh")} />
           </Form.Item>
-          <Form.Item name="mode" label="触发方式">
+          <Form.Item name="mode" label={t("cron.f.mode")}>
             <Segmented
               options={[
-                { value: "cron", label: "周期（Cron）" },
-                { value: "at", label: "一次性时间" },
+                { value: "cron", label: t("cron.mode.cron") },
+                { value: "at", label: t("cron.mode.at") },
               ]}
             />
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(a, b) => a.mode !== b.mode}>
             {({ getFieldValue }) =>
               getFieldValue("mode") === "at" ? (
-                <Form.Item name="at" label="执行时间（ISO8601）" rules={[{ required: true }]}>
+                <Form.Item name="at" label={t("cron.f.at")} rules={[{ required: true }]}>
                   <Input placeholder="2026-09-13T09:00:00Z" />
                 </Form.Item>
               ) : (
                 <Form.Item
                   name="cron"
-                  label="Cron（五段：分 时 日 月 周）"
-                  rules={[{ required: true }, { pattern: /^(\S+\s+){4}\S+$/, message: "须为五段表达式" }]}
+                  label={t("cron.f.cron")}
+                  rules={[{ required: true }, { pattern: /^(\S+\s+){4}\S+$/, message: t("cron.cronPattern") }]}
                 >
                   <Input placeholder="0 9 * * *" />
                 </Form.Item>
               )
             }
           </Form.Item>
-          <Form.Item name="group" label="执行组" initialValue={activeGroup}>
+          <Form.Item name="group" label={t("cron.f.group")} initialValue={activeGroup}>
             <Select
               allowClear
-              placeholder="缺省 = 对话页当前选中的组"
+              placeholder={t("cron.f.groupPh")}
               options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
             />
           </Form.Item>
@@ -205,14 +207,14 @@ export function AutomationsView(): React.ReactElement {
             items={[
               {
                 key: "adv",
-                label: "高级设置（会话标题）",
+                label: t("cron.adv"),
                 children: (
                   <Form.Item
                     name="sessionTitle"
-                    label="会话标题"
-                    extra="复用同名会话持续累积上下文；留空则每次新建 job-<id> 会话"
+                    label={t("cron.f.sessionTitle")}
+                    extra={t("cron.f.sessionTitleExtra")}
                   >
-                    <Input placeholder="如 每日巡检" />
+                    <Input placeholder={t("cron.f.sessionTitlePh")} />
                   </Form.Item>
                 ),
               },

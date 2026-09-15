@@ -25,6 +25,8 @@ futures-util.workspace = true
 chrono.workspace = true
 # webhook 通道出站回调
 reqwest.workspace = true
+# 平台适配器 WS 客户端（napcat 正向 WS / qqbot 官方网关 wss）
+tokio-tungstenite.workspace = true
 async-trait.workspace = true
 parking_lot = "0.12"
 

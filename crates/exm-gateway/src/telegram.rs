@@ -2,7 +2,7 @@
 //! 每个启用的 telegram 通道 = 一个账号 = 一个独立轮询任务；账号绑定组后消息在该组上下文执行。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::Channel;
+use crate::platform::{report_status, Channel};
 use exm_core::Core;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -92,15 +92,26 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
         }
     };
     // 自检：拿到机器人身份（失败只记日志，通道保留待用户修正 token）
+    let mut bot_name = String::new();
     match client.get(format!("{api}/getMe")).send().await {
         Ok(r) if r.status().is_success() => {
             if let Ok(v) = r.json::<serde_json::Value>().await {
                 let name = v.pointer("/result/username").and_then(|x| x.as_str()).unwrap_or("?");
+                bot_name = name.to_string();
                 println!("[telegram:{}] 机器人已连结：@{name}", ch.id);
+                report_status(&ch.id, "ok", format!("@{name}"));
             }
         }
-        Ok(r) => eprintln!("[telegram:{}] token 校验失败：HTTP {}", ch.id, r.status()),
-        Err(e) => eprintln!("[telegram:{}] token 校验网络错误：{e}", ch.id),
+        Ok(r) => {
+            let msg = format!("token 校验失败：HTTP {}", r.status());
+            eprintln!("[telegram:{}] {msg}", ch.id);
+            report_status(&ch.id, "error", msg);
+        }
+        Err(e) => {
+            let msg = format!("网络错误：{e}");
+            eprintln!("[telegram:{}] token 校验{msg}", ch.id);
+            report_status(&ch.id, "error", msg);
+        }
     }
 
     let mut offset: i64 = 0;
@@ -118,21 +129,29 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
             Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[telegram:{}] 响应解析失败：{e}", ch.id);
+                    let msg = format!("响应解析失败：{e}");
+                    eprintln!("[telegram:{}] {msg}", ch.id);
+                    report_status(&ch.id, "error", msg);
                     continue;
                 }
             },
             Ok(r) => {
-                eprintln!("[telegram:{}] getUpdates HTTP {}", ch.id, r.status());
+                let msg = format!("getUpdates HTTP {}", r.status());
+                eprintln!("[telegram:{}] {msg}", ch.id);
+                report_status(&ch.id, "error", msg);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
             Err(e) => {
-                eprintln!("[telegram:{}] getUpdates 网络错误：{e}", ch.id);
+                let msg = format!("getUpdates 网络错误：{e}");
+                eprintln!("[telegram:{}] {msg}", ch.id);
+                report_status(&ch.id, "error", msg);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
         };
+        // 轮询正常即报 ok（长轮询期间连接活着）
+        report_status(&ch.id, "ok", if bot_name.is_empty() { "轮询中".into() } else { format!("@{bot_name}") });
         let updates = body
             .pointer("/result")
             .and_then(|v| v.as_array())
@@ -218,7 +237,8 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, text: &str
                 continue;
             }
             if evt.kind == "run.finished" {
-                send_message(&token, chat_id, &flatten_statements(&evt.payload)).await;
+                let text = crate::platform::flatten_statements(&evt.payload, 3800);
+                send_message(&token, chat_id, &text).await;
                 break;
             }
             if evt.kind == "run.error" {
@@ -240,25 +260,6 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, text: &str
         let _ = core.registry().set_active_group(&prev_group);
     }
     let _ = reply.await;
-}
-
-fn flatten_statements(payload: &serde_json::Value) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    if let Some(list) = payload.get("statements").and_then(|v| v.as_array()) {
-        for s in list {
-            let tag = s.get("tag").and_then(|v| v.as_str()).unwrap_or("报告");
-            let text = s.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            if text.trim().is_empty() {
-                continue;
-            }
-            lines.push(format!("【{tag}】{text}"));
-        }
-    }
-    let mut text = lines.join("\n");
-    if text.trim().is_empty() {
-        text = "（本轮无收束输出）".into();
-    }
-    text.chars().take(3800).collect()
 }
 
 /// 下载语音文件（getFile → download，ogg/opus 字节）

@@ -5,22 +5,26 @@ import { ReloadOutlined } from "@ant-design/icons";
 import { api, type StoredEvent } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
+import { useT } from "../i18n/core";
 
-function describe(e: StoredEvent): { tag: string; color: string; text: string } {
+function describe(e: StoredEvent, t: ReturnType<typeof useT>): { tag: string; color: string; text: string } {
   const kind = e.type ?? e.kind ?? "event";
   const p = (e.payload ?? {}) as Record<string, unknown>;
   let text = "";
   switch (kind) {
     case "dispatch":
-      text = `派发 → ${String(p.agentIdentifier ?? "")}（${String(p.taskNodeId ?? p.nodeId ?? "")}）`;
+      text = t("activity.dispatch", {
+        agent: String(p.agentIdentifier ?? ""),
+        node: String(p.taskNodeId ?? p.nodeId ?? ""),
+      });
       break;
     case "event": {
       const inner = (p as { kind?: string }).kind ?? "";
-      text = `内部事件 ${inner}`;
+      text = t("activity.innerEvent", { kind: inner });
       break;
     }
     case "session.created":
-      text = `会话创建`;
+      text = t("activity.sessionCreated");
       break;
     default:
       text = JSON.stringify(p).slice(0, 120);
@@ -30,6 +34,7 @@ function describe(e: StoredEvent): { tag: string; color: string; text: string } 
 }
 
 export function ActivityView(): React.ReactElement {
+  const t = useT();
   const { sessions, timeline } = useExm();
   const [sid, setSid] = useState<string>("");
   const [events, setEvents] = useState<StoredEvent[]>([]);
@@ -59,38 +64,38 @@ export function ActivityView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="EVENTS"
-        title="活动"
-        desc="实时调度流与历史事件回放：对话执行时，这里按时间顺序滚动显示派发、回流、裁决与错误。"
+        title={t("activity.title")}
+        desc={t("activity.desc")}
         actions={
           <>
             <Select
               showSearch
               value={sid || undefined}
-              placeholder="选择会话"
+              placeholder={t("activity.pickSession")}
               style={{ minWidth: 280 }}
               onChange={(v) => setSid(v)}
               options={sessions.map((s) => ({ value: s.id, label: `${s.title}（${s.id.slice(0, 8)}…）` }))}
             />
             <Button icon={<ReloadOutlined />} onClick={() => void load(sid)}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
       />
 
-      <Card size="small" className="hud activity-live" title="实时调度 [LIVE · WS]">
+      <Card size="small" className="hud activity-live" title={t("activity.liveTitle")}>
         {timeline.length === 0 ? (
-          <span className="dim">暂无实时事件；对话运行时此处滚动显示派发 / 回流 / 裁决。</span>
+          <span className="dim">{t("activity.liveEmpty")}</span>
         ) : (
           timeline
             .slice(-12)
             .reverse()
-            .map((t, i) => (
-              <div key={i} className={`timeline-item tl-${t.kind}`}>
-                <Tag color={t.kind === "dispatch" ? "blue" : t.kind === "sync" ? "green" : t.kind === "arbitration" ? "volcano" : "red"}>
-                  {t.kind === "dispatch" ? "派发" : t.kind === "sync" ? "回流" : t.kind === "arbitration" ? "裁决" : "错误"}
+            .map((tl, i) => (
+              <div key={i} className={`timeline-item tl-${tl.kind}`}>
+                <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                  {tl.kind === "dispatch" ? t("activity.tl.dispatch") : tl.kind === "sync" ? t("activity.tl.sync") : tl.kind === "arbitration" ? t("activity.tl.arbitration") : t("activity.tl.error")}
                 </Tag>
-                <span className="tl-text">{t.text}</span>
+                <span className="tl-text">{tl.text}</span>
               </div>
             ))
         )}
@@ -98,12 +103,12 @@ export function ActivityView(): React.ReactElement {
 
       <Spin spinning={loading}>
         <div className="event-stream">
-          {events.length === 0 && !loading && <Empty description="该会话无事件记录" className="pane-empty" />}
+          {events.length === 0 && !loading && <Empty description={t("activity.empty")} className="pane-empty" />}
           {events
             .slice()
             .reverse()
             .map((e, i) => {
-              const d = describe(e);
+              const d = describe(e, t);
               return (
                 <div key={i} className="event-row">
                   <Tag color={d.color} className="mono">

@@ -92,7 +92,9 @@ body {
   display: flex;
   flex-direction: column;
   overflow: auto;
-  background: linear-gradient(180deg, #0c1218 0%, #0a0e13 100%) !important;
+  /* 半透明底：让挂在其后的字符流透出来一点点（字符流是 .app-sider 的子元素，
+     用 z-index 分层，这里只需保证底色不完全遮盖） */
+  background: linear-gradient(180deg, rgba(12, 18, 24, 0.86) 0%, rgba(10, 14, 19, 0.9) 100%) !important;
   border-right: 1px solid var(--line);
   position: relative;
 }
@@ -423,7 +425,8 @@ body {
 .readout .v { color: var(--accent); }
 
 /* ============ 对话 ============ */
-.chat-shell { display: flex; flex-direction: row-reverse; height: calc(100vh - 32px); max-width: 1240px; margin: 0 auto; }
+/* gap：主对话区与会话栏的呼吸间距（row-reverse 下 gap 同样生效） */
+.chat-shell { display: flex; flex-direction: row-reverse; gap: 18px; height: calc(100vh - 32px); max-width: 1258px; margin: 0 auto; }
 .chat-rail {
   width: 268px;
   flex: none;
@@ -1382,10 +1385,163 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
 .rail-toggle:hover {
-  color: #4cc9f0;
+  color: var(--accent);
 }
 /* 侧栏放右侧 */
 .chat-shell {
   flex-direction: row-reverse;
 }
+
+/* ============================================================
+   字符画层（ASCII LAYER）
+   ------------------------------------------------------------
+   与既有的「工程图」语汇（hud 角标 / scale 刻度 / grid 剖面）并列的第四类：
+   字符本身就是图形。三类元素：
+   1) char-stream —— 侧栏背景的字符数据流，极低频低对比
+   2) ascii-bar / ascii-divider —— 用 ═ 与 ├─┤ 画的通栏线与分节线
+   3) ascii-meter —— ░▒█ 字符进度条
+   全部走 CSS 变量，随 5 套强调色联动。
+   ============================================================ */
+
+/* ---------- 字符数据流（放进界面留白区） ---------- */
+/* 层级约定（重要，踩过的坑）：
+   最初把 canvas 做成 position:fixed 的全屏底层 —— 要么透到正文底下与文字打架，
+   要么给 .app-shell 铺不透明底之后被完全遮住，两头不讨好。
+   正确做法：把它挂进**界面自己的留白区**（当前=侧栏背景），用 absolute + inset:0
+   填满该容器，成为「纸张的纹理」而非「桌面壁纸」。 */
+.char-stream {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0.9;
+  /* 侧栏内的字符：左侧淡入、底部淡出，避免在边缘被生硬切断 */
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+}
+.char-stream canvas { display: block; }
+
+/* 侧栏内的内容必须浮在字符流之上 */
+.app-sider > *:not(.char-stream) { position: relative; z-index: 1; }
+
+:root[data-stream="off"] .char-stream { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .char-stream { display: none; }
+}
+
+/* ---------- 字符通栏线 ---------- */
+.ascii-bar {
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1;
+  color: var(--line-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+  letter-spacing: 0;
+}
+.ascii-bar::after {
+  /* 用渐变把尾巴擦掉，字符数量不必精确匹配宽度 */
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 60px;
+  background: linear-gradient(90deg, transparent, var(--bg));
+  pointer-events: none;
+}
+
+/* ---------- 字符分节线 ---------- */
+.ascii-divider {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--line-strong);
+  user-select: none;
+  margin: 10px 0;
+}
+.ascii-divider .ad-label {
+  color: var(--accent);
+  letter-spacing: 1.6px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  opacity: 0.85;
+  margin: 0 2px;
+}
+.ascii-divider .ad-fill {
+  flex: 1;
+  height: 9px;
+  /* 用重复的 ─ 字符做填充；低透明度避免抢视线 */
+  background-image: linear-gradient(90deg, var(--tick-color) 0 5px, transparent 5px 9px);
+  background-size: 9px 1px;
+  background-position: left center;
+  background-repeat: repeat-x;
+  opacity: 0.7;
+}
+
+/* ---------- 字符进度条 ---------- */
+.ascii-meter {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0;
+  user-select: none;
+}
+.ascii-meter .am-on { color: var(--accent); text-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5); }
+/* 空槽不能太暗 —— 0.45 透明度在深底上几乎不可见，整条 bar 会断成两截 */
+.ascii-meter .am-off { color: var(--muted); opacity: 0.7; }
+
+/* ---------- 面板标题栏：字符带装饰 ---------- */
+/* 卡片标题右侧补一条字符刻度，让「标题」读起来像终端里的一行 prompt */
+.ant-card .ant-card-head-title::after {
+  content: "";
+  display: inline-block;
+  width: 26px;
+  height: 7px;
+  margin-left: 10px;
+  vertical-align: 1px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--tick-color) 0 1px,
+    transparent 1px 4px
+  );
+  opacity: 0.7;
+}
+
+/* ---------- 页头：字符通栏线替代 1px 实线 ---------- */
+/* 页头原有的 border-bottom 交给字符带承担，这里抹掉实线 */
+.page-head {
+  border-bottom: none;
+  padding-bottom: 16px;
+  position: relative;
+}
+.page-head-ascii {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  color: var(--line-strong);
+  opacity: 0.9;
+}
+/* 保留页头右端的刻度尺与左侧起笔线，它们与字符带不冲突（层次不同） */
+.page-head::after {
+  bottom: 5px;
+  opacity: 0.8;
+}
+.page-head::before {
+  bottom: 5px;
+}
+
+/* ---------- 侧栏：字符分节线 ---------- */
+.sider-divider {
+  margin: 10px 14px 6px;
+  opacity: 0.85;
+}
+@keyframes stream-flow { to { background-position-x: 20px; } }

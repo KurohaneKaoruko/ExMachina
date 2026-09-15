@@ -15,8 +15,9 @@ import {
   ApiOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined,
   PlusOutlined, ReloadOutlined,
 } from "@ant-design/icons";
-import { api, type LlmProfile, type LlmProfilesInfo } from "../api";
+import { api, KEY_MASK, type LlmProfile, type LlmProfilesInfo } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { useT, type TKey } from "../i18n/core";
 
 /** 厂商预设：选中即填端点、协议与常用模型名（模型名可在表单里改） */
 interface Preset {
@@ -31,31 +32,39 @@ const PRESETS: Preset[] = [
   { key: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o", apiFormat: "openai" },
   { key: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5", apiFormat: "anthropic" },
   { key: "gemini", name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash", apiFormat: "gemini" },
-  { key: "azure", name: "Azure OpenAI", baseUrl: "https://<资源名>.openai.azure.com", model: "<部署名>", apiFormat: "azure" },
+  { key: "azure", name: "Azure OpenAI", baseUrl: "https://<resource>.openai.azure.com", model: "<deployment>", apiFormat: "azure" },
   { key: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", apiFormat: "openai" },
   { key: "moonshot", name: "Moonshot / Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "moonshot-v1-32k", apiFormat: "openai" },
-  { key: "qwen", name: "通义千问", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", apiFormat: "openai" },
-  { key: "zhipu", name: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus", apiFormat: "openai" },
-  { key: "ollama", name: "Ollama（本机）", baseUrl: "http://127.0.0.1:11434/v1", model: "llama3.1", apiFormat: "openai" },
+  { key: "qwen", name: "Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", apiFormat: "openai" },
+  { key: "zhipu", name: "Zhipu GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus", apiFormat: "openai" },
+  { key: "ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "llama3.1", apiFormat: "openai" },
 ];
+
+/** 预设的本地化显示名（覆盖 PRESETS.name 的只有中英写法不同的厂商） */
+const PRESET_LABEL: Partial<Record<string, TKey>> = {
+  qwen: "models.preset.qwen",
+  zhipu: "models.preset.zhipu",
+  ollama: "models.preset.ollama",
+};
 
 const CUSTOM = "__custom__";
 
-const API_FORMATS = [
-  { value: "openai", label: "OpenAI 兼容（/chat/completions）" },
-  { value: "anthropic", label: "Anthropic 原生（/v1/messages）" },
-  { value: "gemini", label: "Google Gemini 原生（generateContent）" },
-  { value: "azure", label: "Azure OpenAI（deployments + api-key）" },
+/** API 协议选项的显示名走 i18n（值为协议标识，与后端契约） */
+const API_FORMAT_KEYS: { value: string; key: TKey }[] = [
+  { value: "openai", key: "models.fmt.openai" },
+  { value: "anthropic", key: "models.fmt.anthropic" },
+  { value: "gemini", key: "models.fmt.gemini" },
+  { value: "azure", key: "models.fmt.azure" },
 ];
 
-const KEY_MASK = "***已配置***";
+/** 密钥掩码哨兵：KEY_MASK 从 api.ts 引入（与后端契约一致：提交掩码位 = 服务端沿用旧值） */
 
-/** 协议短标签（卡片上的 Tag 用） */
-const FORMAT_LABEL: Record<string, string> = {
-  openai: "OpenAI 兼容",
-  anthropic: "Anthropic",
-  gemini: "Gemini",
-  azure: "Azure",
+/** 协议短标签（卡片上的 Tag 用），显示名走 i18n */
+const FORMAT_LABEL_KEY: Record<string, TKey> = {
+  openai: "models.fmtShort.openai",
+  anthropic: "models.fmtShort.anthropic",
+  gemini: "models.fmtShort.gemini",
+  azure: "models.fmtShort.azure",
 };
 
 /** 表单字段：密钥为可增删的动态行 */
@@ -69,6 +78,7 @@ function liveKeys(rows: { value?: string }[] | undefined): string[] {
 }
 
 export function ModelsView(): React.ReactElement {
+  const t = useT();
   const [info, setInfo] = useState<LlmProfilesInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(false);
@@ -159,7 +169,7 @@ export function ModelsView(): React.ReactElement {
     try {
       await api.saveLlmProfile({
         id: existing?.id ?? ((v.id ?? "").trim() || undefined),
-        name: (v.name ?? "").trim() || "未命名提供商",
+        name: (v.name ?? "").trim() || t("models.unnamed"),
         baseUrl: (v.baseUrl ?? "").trim(),
         apiFormat: v.apiFormat ?? "openai",
         apiKey,
@@ -167,31 +177,31 @@ export function ModelsView(): React.ReactElement {
         model: (v.model ?? "").trim(),
         fallback: v.fallback ?? "",
       });
-      message.success(existing ? `已保存：${v.name || existing.name}` : `提供商已接入：${v.name}`);
+      message.success(existing ? t("models.savedName", { name: v.name || existing.name }) : t("models.added", { name: v.name }));
       setModal(false);
       await load();
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
 
   const activate = async (id: string) => {
     try {
       await api.activateLlmProfile(id);
-      message.success(`已设为全局默认：${id}`);
+      message.success(t("models.activated", { id }));
       await load();
     } catch (e) {
-      message.error(`切换失败：${String(e)}`);
+      message.error(t("models.switchFailed", { err: String(e) }));
     }
   };
 
   const remove = async (id: string) => {
     try {
       await api.deleteLlmProfile(id);
-      message.success(`已删除：${id}`);
+      message.success(t("models.deletedName", { id }));
       await load();
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("models.deleteFailed", { err: String(e) }));
     }
   };
 
@@ -201,16 +211,16 @@ export function ModelsView(): React.ReactElement {
     try {
       const r = await api.testLlmProfile(id);
       if (r.ok) {
-        message.success(`连通正常（HTTP ${r.status ?? 200}）`);
+        message.success(t("models.testOk", { status: r.status ?? 200 }));
       } else if (r.configured === false || r.mock) {
-        message.warning(r.message ?? "该档案尚未配置 API Key");
+        message.warning(r.message ?? t("models.testNoKey"));
       } else {
         message.error(
-          `连通失败：${r.error ?? `HTTP ${r.status ?? "?"} ${r.snippet ?? ""}`.slice(0, 160)}`,
+          t("models.testFail", { detail: (r.error ?? `HTTP ${r.status ?? "?"} ${r.snippet ?? ""}`).slice(0, 160) }),
         );
       }
     } catch (e) {
-      message.error(`测试失败：${String(e)}`);
+      message.error(t("models.testFailed", { err: String(e) }));
     } finally {
       setTesting("");
     }
@@ -225,26 +235,28 @@ export function ModelsView(): React.ReactElement {
   );
 
   const presetOptions = [
-    ...PRESETS.map((p) => ({ value: p.key, label: p.name })),
-    { value: CUSTOM, label: "自定义 / 自建端点（OpenAI 兼容）" },
+    ...PRESETS.map((p) => ({ value: p.key, label: PRESET_LABEL[p.key] ? t(PRESET_LABEL[p.key]!) : p.name })),
+    { value: CUSTOM, label: t("models.customPreset") },
   ];
+
+  const apiFormats = API_FORMAT_KEYS.map((f) => ({ value: f.value, label: t(f.key) }));
 
   return (
     <div className="pane-wrap">
       <PageHeader
         en="PROVIDERS"
-        title="提供商"
-        desc="接入模型端点与密钥。未单独指定模型的智能体 / 组跟随「全局默认」。"
+        title={t("nav.providers")}
+        desc={t("models.desc")}
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新增提供商
+              {t("models.add")}
             </Button>
             <Button icon={<ApiOutlined />} onClick={() => void test(undefined)} loading={testing === "__resolved__"}>
-              测试全局默认
+              {t("models.testGlobal")}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
@@ -270,18 +282,18 @@ export function ModelsView(): React.ReactElement {
                 extra={
                   <Space size={4}>
                     {!active && (
-                      <Tooltip title="未单独指定模型的智能体 / 组都跟随它">
+                      <Tooltip title={t("models.setDefaultTip")}>
                         <Button size="small" icon={<CheckCircleOutlined />} onClick={() => void activate(p.id)}>
-                          设为默认
+                          {t("models.setDefault")}
                         </Button>
                       </Tooltip>
                     )}
                     <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} />
                     <Button size="small" loading={testing === p.id} onClick={() => void test(p.id)}>
-                      测试
+                      {t("models.test")}
                     </Button>
                     {profiles.length > 1 && (
-                      <Popconfirm title={`确认删除「${p.name}」？`} onConfirm={() => void remove(p.id)}>
+                      <Popconfirm title={t("common.confirmDelete", { name: p.name })} onConfirm={() => void remove(p.id)}>
                         <Button size="small" danger icon={<DeleteOutlined />} />
                       </Popconfirm>
                     )}
@@ -289,55 +301,55 @@ export function ModelsView(): React.ReactElement {
                 }
               >
                 <div className="model-kv">
-                  <span className="k">端点</span>
+                  <span className="k">{t("models.endpoint")}</span>
                   <span className="mono">{p.baseUrl}</span>
-                  <Tag>{FORMAT_LABEL[p.apiFormat || "openai"] ?? p.apiFormat}</Tag>
+                  <Tag>{t(FORMAT_LABEL_KEY[p.apiFormat || "openai"] ?? "models.fmtShort.openai")}</Tag>
                 </div>
                 <div className="model-kv">
-                  <span className="k">模型</span>
-                  <Tag color="cyan">{p.model || "未指定"}</Tag>
+                  <span className="k">{t("models.modelName")}</span>
+                  <Tag color="cyan">{p.model || t("models.unspecified")}</Tag>
                 </div>
                 <div className="model-kv">
-                  <span className="k">密钥</span>
+                  <span className="k">{t("models.keyLabel")}</span>
                   {hasKey ? (
                     // 已配置是正常态，用中性标签；只有缺密钥才需要警示
-                    <Tag className="tag-ok">已配置{keyCount > 1 ? `（${keyCount} 把）` : ""}</Tag>
+                    <Tag className="tag-ok">{keyCount > 1 ? t("models.keyConfiguredN", { n: keyCount }) : t("models.keyConfigured")}</Tag>
                   ) : (
-                    <Tag color="warning">未配置（对话前请补填）</Tag>
+                    <Tag color="warning">{t("models.keyMissing")}</Tag>
                   )}
-                  {p.fallback ? <Tag>失败回退 → {p.fallback}</Tag> : null}
+                  {p.fallback ? <Tag>{t("models.fallbackTo", { id: p.fallback })}</Tag> : null}
                 </div>
                 <div className="model-kv">
-                  <span className="k">状态</span>
+                  <span className="k">{t("models.statusLabel")}</span>
                   {active ? (
-                    <Tag color="success">全局默认</Tag>
+                    <Tag color="success">{t("models.globalDefault")}</Tag>
                   ) : (
-                    <span className="dim">跟随全局默认</span>
+                    <span className="dim">{t("models.followGlobal")}</span>
                   )}
                 </div>
               </Card>
             );
           })}
         </div>
-        {!loading && profiles.length === 0 && <Empty description="尚无提供商" className="pane-empty" />}
+        {!loading && profiles.length === 0 && <Empty description={t("models.none")} className="pane-empty" />}
       </Spin>
 
       <Modal
         open={modal}
-        title={editing ? `编辑提供商　${editing.name}` : "新增提供商"}
+        title={editing ? t("models.editTitle", { name: editing.name }) : t("models.add")}
         onCancel={() => setModal(false)}
         onOk={() => void submit()}
-        okText="保存"
+        okText={t("common.save")}
         width={560}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="preset" label="提供商类型" rules={[{ required: true }]}>
+          <Form.Item name="preset" label={t("models.presetLabel")} rules={[{ required: true }]}>
             <Select options={presetOptions} onChange={(k) => applyPreset(k)} />
           </Form.Item>
           <Form.Item
             name="baseUrl"
             label="Base URL"
-            rules={[{ required: true, whitespace: true, message: "请填写 API 端点" }]}
+            rules={[{ required: true, whitespace: true, message: t("models.baseUrlRequired") }]}
           >
             <Input placeholder="https://api.deepseek.com/v1" />
           </Form.Item>
@@ -349,24 +361,24 @@ export function ModelsView(): React.ReactElement {
                   {fields.map(({ key, name, ...rest }) => (
                     <div key={key} className="key-row">
                       <Form.Item {...rest} name={name} noStyle>
-                        <Input.Password placeholder={editing ? KEY_MASK : "sk-…"} />
+                        <Input.Password placeholder={editing ? "******" : "sk-…"} />
                       </Form.Item>
                       {fields.length > 1 && (
                         <Button
                           type="text"
                           icon={<MinusCircleOutlined />}
                           onClick={() => remove(name)}
-                          aria-label="移除这把密钥"
+                          aria-label={t("models.removeKey")}
                         />
                       )}
                     </div>
                   ))}
                   <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add("")}>
-                    添加密钥
+                    {t("models.addKey")}
                   </Button>
                   <div className="ant-form-item-extra" style={{ marginTop: 6 }}>
-                    可填多把：同一智能体粘性使用其中一把，仅在限额类失败时切换。
-                    {editing ? "留空或保持掩码 = 沿用已配置的密钥。" : "留空可先建档案，之后再补填。"}
+                    {t("models.keysExtra")}
+                    {editing ? t("models.keysExtraEdit") : t("models.keysExtraNew")}
                   </div>
                 </>
               )}
@@ -375,33 +387,33 @@ export function ModelsView(): React.ReactElement {
 
           <Form.Item
             name="model"
-            label="默认模型"
-            extra="连接该端点后默认使用的模型名；个体与组可在各自页面单独指定"
+            label={t("models.defaultModel")}
+            extra={t("models.defaultModelExtra")}
           >
             <Input placeholder="deepseek-chat" />
           </Form.Item>
 
           <div className="form-grid-2">
-            <Form.Item name="name" label="显示名称">
-              <Input placeholder="如 DeepSeek 主力" />
+            <Form.Item name="name" label={t("models.displayName")}>
+              <Input placeholder={t("models.displayNamePlaceholder")} />
             </Form.Item>
             <Form.Item
               name="id"
-              label="档案 ID"
-              rules={[{ pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母 / 数字 / - / _" }]}
+              label={t("models.profileId")}
+              rules={[{ pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("models.idPattern") }]}
             >
-              <Input placeholder="留空自动生成" disabled={Boolean(editing)} />
+              <Input placeholder={t("models.idAuto")} disabled={Boolean(editing)} />
             </Form.Item>
           </div>
-          <Form.Item name="apiFormat" label="API 协议" extra="预设已按厂商填好，通常无需改动">
-            <Select options={API_FORMATS} />
+          <Form.Item name="apiFormat" label={t("models.apiFormat")} extra={t("models.apiFormatExtra")}>
+            <Select options={apiFormats} />
           </Form.Item>
           <Form.Item
             name="fallback"
-            label="失败回退（可选）"
-            extra="该档案请求失败且尚未产生内容时，自动改用所选档案重试"
+            label={t("models.fallback")}
+            extra={t("models.fallbackExtra")}
           >
-            <Select allowClear placeholder="不回退" options={fallbackOptions} />
+            <Select allowClear placeholder={t("models.noFallback")} options={fallbackOptions} />
           </Form.Item>
         </Form>
       </Modal>

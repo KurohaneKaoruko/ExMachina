@@ -1,16 +1,109 @@
-/** 通道网关：多平台多账号接入（webhook / telegram），每个账号可绑定不同智能体组 */
+/** 通道网关：多平台多账号接入（QQ 官方机器人 / NapCat / Telegram / webhook 桥接），每个账号可绑定不同智能体组 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Collapse,
-  Button, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message,
+import {
+  Button, Collapse, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Tooltip, message,
 } from "antd";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { api, type Channel } from "../api";
+import { api, type Channel, type ChannelStatus } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
+import { useT, type TKey } from "../i18n/core";
+
+/** 平台目录：表单字段、凭证判定、回复形态全部由目录驱动 —— 接新平台加一条即可 */
+interface ChanField {
+  key: string;
+  labelKey: TKey;
+  secret?: boolean;
+  required?: boolean;
+  ph?: string;
+  helpKey?: TKey;
+  /** 存顶层字段（telegram.token / 桥接.secret）；缺省存 config.<key> */
+  top?: "token" | "secret";
+  /** 布尔开关（存 "true"/空） */
+  toggle?: boolean;
+}
+interface ChanPlat {
+  key: string;
+  color: string;
+  /** 表格里的平台标牌（品牌名，各语言一致） */
+  tag?: string;
+  tagKey?: TKey;
+  labelKey: TKey;
+  helpKey: TKey;
+  fields: ChanField[];
+  /** 回复形态：平台原生回信（适配器直接发回原会话）；缺省 = webhook 回调 */
+  replyBuiltin?: boolean;
+}
+
+const PLATFORMS: ChanPlat[] = [
+  {
+    key: "qqbot",
+    color: "geekblue",
+    tag: "QQ Bot",
+    labelKey: "channels.plat.qqbot",
+    helpKey: "channels.platHelp.qqbot",
+    replyBuiltin: true,
+    fields: [
+      { key: "appId", labelKey: "channels.f.appId", required: true, ph: "AppID", helpKey: "channels.f.appIdHelp" },
+      { key: "appSecret", labelKey: "channels.f.appSecret", secret: true, required: true, ph: "AppSecret", helpKey: "channels.f.appSecretHelp" },
+      { key: "sandbox", labelKey: "channels.f.sandbox", toggle: true, helpKey: "channels.f.sandboxHelp" },
+    ],
+  },
+  {
+    key: "napcat",
+    color: "blue",
+    tag: "NapCat",
+    labelKey: "channels.plat.napcat",
+    helpKey: "channels.platHelp.napcat",
+    replyBuiltin: true,
+    fields: [
+      { key: "url", labelKey: "channels.f.napUrl", required: true, ph: "ws://127.0.0.1:3001", helpKey: "channels.f.napUrlHelp" },
+      { key: "token", labelKey: "channels.f.napToken", secret: true, helpKey: "channels.f.napTokenHelp" },
+    ],
+  },
+  {
+    key: "telegram",
+    color: "processing",
+    tag: "Telegram",
+    labelKey: "channels.plat.telegram",
+    helpKey: "channels.platHelp.telegram",
+    replyBuiltin: true,
+    fields: [{ top: "token", key: "token", labelKey: "channels.f.token", secret: true, required: true, ph: "123456:ABC-DEF…" }],
+  },
+  {
+    key: "webhook",
+    color: "cyan",
+    tag: "Webhook",
+    labelKey: "channels.plat.webhook",
+    helpKey: "channels.platHelp.webhook",
+    fields: [{ top: "secret", key: "secret", labelKey: "channels.f.secret", secret: true, ph: "channels.f.secretPh" }],
+  },
+  {
+    key: "qq",
+    color: "geekblue",
+    tagKey: "channels.tag.qq",
+    labelKey: "channels.plat.qq",
+    helpKey: "channels.platHelp.qq",
+    fields: [{ top: "secret", key: "secret", labelKey: "channels.f.secret", secret: true, ph: "channels.f.secretPh" }],
+  },
+  {
+    key: "wechat",
+    color: "green",
+    tagKey: "channels.tag.wechat",
+    labelKey: "channels.plat.wechat",
+    helpKey: "channels.platHelp.wechat",
+    fields: [{ top: "secret", key: "secret", labelKey: "channels.f.secret", secret: true, ph: "channels.f.secretPh" }],
+  },
+];
+
+/** webhook 桥接语义的平台：入站靠外部桥 POST，出站靠回调 */
+const BRIDGE_TYPES = ["webhook", "qq", "wechat"];
 
 export function ChannelsView(): React.ReactElement {
+  const t = useT();
   const { groups } = useExm();
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [status, setStatus] = useState<Record<string, ChannelStatus>>({});
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<Channel | null>(null);
@@ -29,15 +122,40 @@ export function ChannelsView(): React.ReactElement {
     void load();
   }, [load]);
 
+  // 运行状态轮询：适配器对账周期 5s，这里同步 5s 拉一次总览
+  useEffect(() => {
+    let alive = true;
+    const pull = () =>
+      api
+        .channelStatus()
+        .then((s) => {
+          if (alive) setStatus(s);
+        })
+        .catch(() => {});
+    pull();
+    const timer = setInterval(pull, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ platform: "webhook" });
+    form.setFieldsValue({ platform: "qqbot" });
     setModal(true);
   };
 
   const openEdit = (c: Channel) => {
     setEditing(c);
+    const plat = PLATFORMS.find((p) => p.key === c.type);
+    const cfg: Record<string, unknown> = { ...(c.config ?? {}) };
+    plat?.fields
+      .filter((f) => f.toggle)
+      .forEach((f) => {
+        cfg[f.key] = c.config?.[f.key] === "true";
+      });
     form.setFieldsValue({
       platform: c.type,
       account: c.account,
@@ -46,12 +164,20 @@ export function ChannelsView(): React.ReactElement {
       replyWebhook: c.replyWebhook,
       token: c.token,
       allowedChats: (c.allowedChats ?? []).join(", "),
+      config: cfg,
     });
     setModal(true);
   };
 
   const submit = async () => {
     const v = await form.validateFields();
+    const plat = PLATFORMS.find((p) => p.key === v.platform) ?? PLATFORMS[0];
+    const config: Record<string, string> = {};
+    for (const f of plat.fields) {
+      if (f.top) continue;
+      const raw = v.config?.[f.key];
+      config[f.key] = f.toggle ? (raw ? "true" : "") : String(raw ?? "").trim();
+    }
     const body = {
       platform: v.platform,
       account: v.account || undefined,
@@ -59,6 +185,7 @@ export function ChannelsView(): React.ReactElement {
       secret: v.secret || undefined,
       replyWebhook: v.replyWebhook || undefined,
       token: v.token || undefined,
+      config,
       allowedChats: (v.allowedChats ?? "")
         .split(/[,,\s]+/)
         .map((s: string) => s.trim())
@@ -67,15 +194,15 @@ export function ChannelsView(): React.ReactElement {
     try {
       if (editing) {
         await api.updateChannel(editing.id, body);
-        message.success(`通道已更新：${editing.id}`);
+        message.success(t("channels.updated", { id: editing.id }));
       } else {
         await api.createChannel({ id: v.id, enabled: true, ...body });
-        message.success(`通道已创建：${v.id}（5 秒内自动接管调度）`);
+        message.success(t("channels.created", { id: v.id }));
       }
       setModal(false);
       await load();
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
 
@@ -87,38 +214,74 @@ export function ChannelsView(): React.ReactElement {
   const remove = async (id: string) => {
     try {
       await api.deleteChannel(id);
-      message.success(`通道已删除：${id}`);
+      message.success(t("channels.del", { id }));
       await load();
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("channels.deleteFailed", { err: String(e) }));
     }
   };
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const platformTag = (t: string) =>
-    t === "telegram" ? (
-      <Tag color="processing">Telegram</Tag>
-    ) : t === "qq" ? (
-      <Tag color="geekblue">QQ</Tag>
-    ) : t === "wechat" ? (
-      <Tag color="green">微信</Tag>
-    ) : (
-      <Tag color="cyan">Webhook</Tag>
+
+  const platformTag = (p: string) => {
+    const plat = PLATFORMS.find((x) => x.key === p);
+    if (!plat) return <Tag>{p}</Tag>;
+    return <Tag color={plat.color}>{plat.tag ?? (plat.tagKey ? t(plat.tagKey) : p)}</Tag>;
+  };
+
+  const fieldSet = (c: Channel, f: ChanField) =>
+    f.top === "token" ? !!c.token : f.top === "secret" ? !!c.secret : !!c.config?.[f.key];
+
+  const credTag = (c: Channel) => {
+    const plat = PLATFORMS.find((x) => x.key === c.type);
+    if (!plat) return <Tag>{c.type}</Tag>;
+    const missing = plat.fields.filter((f) => f.required && !fieldSet(c, f));
+    if (missing.length > 0) {
+      return (
+        <Tag color="error">
+          {t("channels.credMissing", { fields: missing.map((f) => t(f.labelKey)).join(" / ") })}
+        </Tag>
+      );
+    }
+    const any = plat.fields.some((f) => (f.required || f.secret) && fieldSet(c, f));
+    return any ? <Tag color="success">{t("channels.credOk")}</Tag> : <Tag>{t("channels.noCred")}</Tag>;
+  };
+
+  /** 运行状态：桥接类型无运行时；内置适配器以最近一次上报为准 */
+  const statusCell = (c: Channel) => {
+    if (BRIDGE_TYPES.includes(c.type) || !c.enabled) return <span className="dim">—</span>;
+    const st = status[c.id];
+    if (!st) return <Tag>{t("channels.stWait")}</Tag>;
+    return (
+      <Space direction="vertical" size={0}>
+        <Tooltip title={`${st.detail} · ${st.at}`}>
+          <Tag color={st.state === "ok" ? "success" : "error"} style={{ cursor: "default" }}>
+            {st.state === "ok" ? t("channels.stOk") : t("channels.stErr")}
+          </Tag>
+        </Tooltip>
+        <span
+          className="mono dim"
+          style={{ maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {st.detail}
+        </span>
+      </Space>
     );
+  };
 
   return (
     <div className="pane-wrap">
       <PageHeader
         en="CHANNELS"
-        title="通道"
-        desc="把外部的消息平台接到某个智能体组：多平台可并存、同平台可多账号，每个账号绑定一个组，来消息即以该组上下文执行。"
+        title={t("nav.channels")}
+        desc={t("channels.desc")}
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              接入账号
+              {t("channels.add")}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
@@ -130,10 +293,10 @@ export function ChannelsView(): React.ReactElement {
           rowKey="id"
           pagination={false}
           dataSource={channels}
-          locale={{ emptyText: <Empty description="无接入账号：接入 Telegram 机器人或 Webhook 消息源" className="pane-empty" /> }}
+          locale={{ emptyText: <Empty description={t("channels.empty")} className="pane-empty" /> }}
           columns={[
             {
-              title: "账号",
+              title: t("channels.colAccount"),
               render: (_, c) => (
                 <Space direction="vertical" size={0}>
                   <b>
@@ -143,42 +306,40 @@ export function ChannelsView(): React.ReactElement {
                 </Space>
               ),
             },
-            { title: "平台", render: (_, c) => platformTag(c.type) },
+            { title: t("channels.colPlatform"), render: (_, c) => platformTag(c.type) },
             {
-              title: "绑定组",
+              title: t("channels.colGroup"),
               render: (_, c) =>
-                c.group ? <Tag color="purple">{c.group}</Tag> : <Tag>当前组（跟随对话页切换）</Tag>,
+                c.group ? <Tag color="purple">{c.group}</Tag> : <Tag>{t("channels.followCurrent")}</Tag>,
             },
+            { title: t("channels.colSecret"), render: (_, c) => credTag(c) },
+            { title: t("channels.colStatus"), render: (_, c) => statusCell(c) },
             {
-              title: "凭据",
-              render: (_, c) =>
-                c.type === "telegram" ? (
-                  c.token ? <Tag color="warning">token 已设置</Tag> : <Tag color="error">缺 token</Tag>
-                ) : c.secret ? (
-                  <Tag color="warning">密钥已设置</Tag>
+              title: t("channels.colReply"),
+              render: (_, c) => {
+                const plat = PLATFORMS.find((x) => x.key === c.type);
+                return plat?.replyBuiltin ? (
+                  <Tag>{t("channels.replyBuiltin")}</Tag>
                 ) : (
-                  <Tag>无密钥</Tag>
-                ),
+                  <span className="mono dim">{c.replyWebhook ?? "—"}</span>
+                );
+              },
             },
             {
-              title: "回调",
-              render: (_, c) => <span className="mono dim">{c.replyWebhook ?? "—"}</span>,
-            },
-            {
-              title: "启用",
+              title: t("channels.colEnabled"),
               render: (_, c) => <Switch size="small" checked={c.enabled} onChange={(v) => void toggle(c, v)} />,
             },
             {
-              title: "操作",
+              title: t("channels.colOps"),
               width: 140,
               render: (_, c) => (
                 <Space>
                   <Button size="small" onClick={() => openEdit(c)}>
-                    编辑
+                    {t("common.edit")}
                   </Button>
-                  <Popconfirm title="确认删除该账号通道？" onConfirm={() => void remove(c.id)}>
+                  <Popconfirm title={t("channels.deleteConfirm")} onConfirm={() => void remove(c.id)}>
                     <Button size="small" danger>
-                      删除
+                      {t("common.delete")}
                     </Button>
                   </Popconfirm>
                 </Space>
@@ -188,98 +349,121 @@ export function ChannelsView(): React.ReactElement {
         />
       </Spin>
 
-      {channels.some((c) => c.type === "webhook") && (
+      {channels.some((c) => BRIDGE_TYPES.includes(c.type)) && (
         <div className="inbound-hint hud">
-          <div className="rail-label">Webhook 入站（其他平台经此桥接）</div>
-          <pre className="live-pre">{`POST ${origin}/api/channels/<通道ID>/inbound
-Content-Type: application/json
-
-{ "secret": "<密钥>", "text": "消息内容", "sessionKey": "用户标识" }`}</pre>
-          <div className="dim">
-            Telegram 为原生长轮询（填 BotFather token 即用）；Slack / 飞书 / 钉钉 / Discord 可用其
-            Outgoing Webhook / 事件订阅功能把消息转发到上面的 inbound 地址，回复经 replyWebhook 或 WS 返回。
-          </div>
+          <div className="rail-label">{t("channels.webhookTitle")}</div>
+          <pre className="live-pre">{t("channels.inboundSample", { origin })}</pre>
+          <div className="dim">{t("channels.bridgeHint")}</div>
         </div>
       )}
 
       <Modal
         open={modal}
-        title={editing ? `编辑账号 ${editing.id}` : "接入账号"}
+        title={editing ? t("channels.editTitle", { id: editing.id }) : t("channels.add")}
         onCancel={() => setModal(false)}
         onOk={() => void submit()}
-        okText="保存"
+        okText={t("common.save")}
+        cancelText={t("common.cancel")}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
-            <Select
-              disabled={editing !== null}
-              options={[
-                { value: "telegram", label: "Telegram（原生机器人，长轮询）" },
-                { value: "qq", label: "QQ（经桥接器：消息转发到 inbound）" },
-                { value: "wechat", label: "微信（经桥接器：消息转发到 inbound）" },
-                { value: "webhook", label: "Webhook（通用 HTTP 入站）" },
-              ]}
-              onChange={(v) => form.setFieldsValue({ token: undefined, secret: undefined })}
-            />
-          </Form.Item>
-          {!editing && (
-            <Form.Item name="id" label="通道 ID" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}>
-              <Input placeholder="如 tg-main" />
-            </Form.Item>
-          )}
           <Form.Item noStyle shouldUpdate={(a, b) => a.platform !== b.platform}>
-            {({ getFieldValue }) =>
-              getFieldValue("platform") === "telegram" ? (
-                <Form.Item
-                  name="token"
-                  label="Bot Token（@BotFather 签发）"
-                  rules={editing ? [] : [{ required: true }]}
-                  extra={editing ? "留空 = 沿用已设置 token" : undefined}
-                >
-                  <Input.Password placeholder="123456:ABC-DEF…" />
-                </Form.Item>
-              ) : (
-                <Form.Item name="secret" label="入站密钥（可选）">
-                  <Input.Password placeholder="留空则不校验" />
-                </Form.Item>
-              )
-            }
-          </Form.Item>
-          <Form.Item name="group" label="绑定智能体组（该账号的消息在此组执行）">
-            <Select
-              allowClear
-              placeholder="缺省 = 当前组（跟随对话页切换）"
-              options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
-            />
-          </Form.Item>
-
-          <Collapse
-            ghost
-            className="form-advanced"
-            items={[
-              {
-                key: "adv",
-                label: "高级设置（备注 / 会话白名单 / 出站回调）",
-                children: (
-                  <>
-                    <Form.Item name="account" label="账号备注（同平台多账号时区分用途）">
-                      <Input placeholder="如 主号 / 客服号" />
-                    </Form.Item>
+            {({ getFieldValue }) => {
+              const plat = PLATFORMS.find((p) => p.key === getFieldValue("platform")) ?? PLATFORMS[0];
+              return (
+                <>
+                  <Form.Item
+                    name="platform"
+                    label={t("channels.f.platform")}
+                    rules={[{ required: true }]}
+                    extra={t(plat.helpKey)}
+                  >
+                    <Select
+                      disabled={editing !== null}
+                      options={PLATFORMS.map((p) => ({ value: p.key, label: t(p.labelKey) }))}
+                      onChange={() => form.setFieldsValue({ token: undefined, secret: undefined, config: {} })}
+                    />
+                  </Form.Item>
+                  {!editing && (
                     <Form.Item
-                      name="allowedChats"
-                      label="会话白名单（Telegram）"
-                      extra="允许交互的 chat id，逗号分隔；留空 = 不限，可防陌生人滥用机器人"
+                      name="id"
+                      label={t("channels.f.id")}
+                      rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("channels.idPattern") }]}
                     >
-                      <Input placeholder="如 123456789, 987654321" />
+                      <Input placeholder={t("channels.f.idPh")} />
                     </Form.Item>
-                    <Form.Item name="replyWebhook" label="出站回调 URL（webhook 平台）">
-                      <Input placeholder="运行结束后 POST 结果" />
-                    </Form.Item>
-                  </>
-                ),
-              },
-            ]}
-          />
+                  )}
+                  {plat.fields.map((f) =>
+                    f.toggle ? (
+                      <Form.Item
+                        key={f.key}
+                        name={f.top ? f.key : ["config", f.key]}
+                        valuePropName="checked"
+                        label={t(f.labelKey)}
+                        extra={f.helpKey ? t(f.helpKey) : undefined}
+                      >
+                        <Switch size="small" />
+                      </Form.Item>
+                    ) : (
+                      <Form.Item
+                        key={f.key}
+                        name={f.top ? f.key : ["config", f.key]}
+                        label={t(f.labelKey)}
+                        rules={
+                          f.required && !editing
+                            ? [{ required: true, message: t("channels.f.required") }]
+                            : undefined
+                        }
+                        extra={f.helpKey ? t(f.helpKey) : undefined}
+                      >
+                        {f.secret ? (
+                          <Input.Password autoComplete="new-password" placeholder={f.ph?.startsWith("channels.") ? t(f.ph as TKey) : f.ph} />
+                        ) : (
+                          <Input placeholder={f.ph?.startsWith("channels.") ? t(f.ph as TKey) : f.ph} />
+                        )}
+                      </Form.Item>
+                    ),
+                  )}
+                  <Form.Item name="group" label={t("channels.f.group")}>
+                    <Select
+                      allowClear
+                      placeholder={t("channels.f.groupPh")}
+                      options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.id}）` }))}
+                    />
+                  </Form.Item>
+
+                  <Collapse
+                    ghost
+                    className="form-advanced"
+                    items={[
+                      {
+                        key: "adv",
+                        label: plat.replyBuiltin ? t("channels.advNative") : t("channels.adv"),
+                        children: (
+                          <>
+                            <Form.Item name="account" label={t("channels.f.account")}>
+                              <Input placeholder={t("channels.f.accountPh")} />
+                            </Form.Item>
+                            <Form.Item
+                              name="allowedChats"
+                              label={t("channels.f.allowedChats")}
+                              extra={t("channels.f.allowedChatsExtra")}
+                            >
+                              <Input placeholder={t("channels.f.allowedChatsPh")} />
+                            </Form.Item>
+                            {!plat.replyBuiltin && (
+                              <Form.Item name="replyWebhook" label={t("channels.f.replyWebhook")}>
+                                <Input placeholder={t("channels.f.replyWebhookPh")} />
+                              </Form.Item>
+                            )}
+                          </>
+                        ),
+                      },
+                    ]}
+                  />
+                </>
+              );
+            }}
+          </Form.Item>
         </Form>
       </Modal>
     </div>

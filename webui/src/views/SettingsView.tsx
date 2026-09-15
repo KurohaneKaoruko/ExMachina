@@ -4,26 +4,47 @@
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, InputNumber, message, Select, Switch } from "antd";
-import { DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
+import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
-import { useT } from "../i18n";
+import { useTheme } from "../theme";
+import { useT, type TKey } from "../i18n/core";
 import { PageHeader } from "../components/PageHeader";
 import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
 
-/** 分组元数据 */
-const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: string; descKey: string }> = {
+/** 分组元数据。ui 是本地偏好分区，不属于后端 config schema */
+const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey: TKey }> = {
   runtime: { icon: <SettingOutlined />, titleKey: "sec.runtime", descKey: "sec.runtime.desc" },
   memory: { icon: <DatabaseOutlined />, titleKey: "sec.memory", descKey: "sec.memory.desc" },
   security: { icon: <SafetyCertificateOutlined />, titleKey: "sec.security", descKey: "sec.security.desc" },
   automation: { icon: <FieldTimeOutlined />, titleKey: "sec.automation", descKey: "sec.automation.desc" },
+  ui: { icon: <BgColorsOutlined />, titleKey: "sec.ui", descKey: "sec.ui.desc" },
 };
 
-/** 特定字段用选择器而非自由文本 */
-const ENUM_OVERRIDES: Record<string, { value: string; label: string }[]> = {
+/**
+ * 后端 config_schema() 下发的 label/help 是中文常量，前端在此按字段 key 覆盖为 i18n 词条；
+ * 未收录的字段回退后端原文（新增配置项零 UI 改动的契约不被破坏）。
+ */
+const FIELD_I18N: Record<string, { label: TKey; help?: TKey }> = {
+  "maxConcurrency": { label: "cfg.maxConcurrency", help: "cfg.maxConcurrency.help" },
+  "maxSessionTokens": { label: "cfg.maxSessionTokens", help: "cfg.maxSessionTokens.help" },
+  "memory.enabled": { label: "cfg.memoryEnabled", help: "cfg.memoryEnabled.help" },
+  "memory.mdMaxChars": { label: "cfg.mdMaxChars", help: "cfg.mdMaxChars.help" },
+  "memory.recallLimit": { label: "cfg.recallLimit", help: "cfg.recallLimit.help" },
+  "memory.halfLifeDays": { label: "cfg.halfLifeDays", help: "cfg.halfLifeDays.help" },
+  "security.execApproval": { label: "cfg.execApproval", help: "cfg.execApproval.help" },
+  "security.execAllowlist": { label: "cfg.execAllowlist", help: "cfg.execAllowlist.help" },
+  "automation.heartbeatEnabled": { label: "cfg.heartbeatEnabled", help: "cfg.heartbeatEnabled.help" },
+  "automation.heartbeatIntervalMinutes": { label: "cfg.heartbeatInterval", help: "cfg.heartbeatInterval.help" },
+  "automation.heartbeatPrompt": { label: "cfg.heartbeatPrompt", help: "cfg.heartbeatPrompt.help" },
+  "automation.autoAdapt": { label: "cfg.autoAdapt", help: "cfg.autoAdapt.help" },
+};
+
+/** 特定字段用选择器而非自由文本（显示名走 i18n，值是发给后端的枚举） */
+const ENUM_OVERRIDES: Record<string, { value: string; labelKey: TKey }[]> = {
   "security.execApproval": [
-    { value: "off", label: "关闭（不拦截）" },
-    { value: "risky", label: "仅高危命令" },
-    { value: "always", label: "全部命令" },
+    { value: "off", labelKey: "cfg.approval.off" },
+    { value: "risky", labelKey: "cfg.approval.risky" },
+    { value: "always", labelKey: "cfg.approval.always" },
   ],
 };
 
@@ -59,6 +80,8 @@ function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
 
 export function SettingsView(): React.ReactElement {
   const { config, saveConfig } = useExm();
+  const stream = useTheme((s) => s.stream);
+  const setStream = useTheme((s) => s.setStream);
   const t = useT();
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -96,9 +119,9 @@ export function SettingsView(): React.ReactElement {
         else body[k] = v;
       }
       await saveConfig(body);
-      message.success("配置已保存并热生效");
+      message.success(t("settings.savedToast"));
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     } finally {
       setSaving(false);
     }
@@ -108,11 +131,11 @@ export function SettingsView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="CONFIG"
-        title="设置"
-        desc="运行时容量、记忆召回、命令闸门与心跳自动化的集中配置。模型接入在「提供商」页维护；此处改动保存后热生效，无需重启。"
+        title={t("settings.title")}
+        desc={t("settings.desc")}
       />
       <div className="settings2">
-        {/* 左侧分类导航 */}
+        {/* 左侧分类导航：后端 schema 分组 + 本地「界面」偏好 */}
         <nav className="cfg-nav">
           {groups.map((g) => (
             <button
@@ -124,23 +147,53 @@ export function SettingsView(): React.ReactElement {
               <span>{SECTIONS[g.key] ? t(SECTIONS[g.key]!.titleKey) : g.label}</span>
             </button>
           ))}
+          <button
+            className={`cfg-nav-item ${selected === "ui" ? "on" : ""}`}
+            onClick={() => setSelected("ui")}
+          >
+            <span className="cfg-nav-icon">{SECTIONS.ui.icon}</span>
+            <span>{t("sec.ui")}</span>
+          </button>
         </nav>
         {/* 右侧面板：仅当前分类 */}
         <section className="cfg-panel">
-        {current && meta ? (
+        {selected === "ui" ? (
+          /* —— 本地界面偏好：即时生效，不参与「保存设置」 —— */
+          <>
+            <header className="cfg-panel-head">
+              <h3>{t("sec.ui")}</h3>
+              <p>{t("sec.ui.desc")}。</p>
+            </header>
+            <div className="cfg-list">
+              <div className="cfg2-row">
+                <div className="cfg2-label">
+                  <div className="cfg2-name">{t("settings.ui.streamName")}</div>
+                  <div className="cfg2-help">{t("settings.ui.streamHelp")}</div>
+                </div>
+                <div className="cfg2-ctrl">
+                  <Switch checked={stream === "on"} onChange={(v) => setStream(v ? "on" : "off")} />
+                </div>
+              </div>
+            </div>
+            <div className="cfg2-foot">
+              <span className="dim">{t("settings.localTip")}</span>
+            </div>
+          </>
+        ) : current && meta ? (
           <>
             <header className="cfg-panel-head">
               <h3>{t(meta.titleKey)}</h3>
-              <p>{t(meta.descKey)}。改动保存后热生效，无需重启。</p>
+              <p>{t(meta.descKey)}。{t("settings.hotTip")}</p>
             </header>
             <div className="cfg-list">
               {current.fields.map((f) => {
                 const value = values[f.key];
+                const fi = FIELD_I18N[f.key];
                 const ctrl = ENUM_OVERRIDES[f.key] ? (
                   <Select
                     style={{ width: 220 }}
                     value={String(value ?? f.default)}
-                    options={ENUM_OVERRIDES[f.key]}
+                    options={ENUM_OVERRIDES[f.key].map((o) => ({ value: o.value, label: t(o.labelKey) }))}
                     onChange={(v) => setField(f.key, v)}
                   />
                 ) : f.kind === "boolean" ? (
@@ -169,8 +222,8 @@ export function SettingsView(): React.ReactElement {
                 return (
                   <div className="cfg2-row" key={f.key}>
                     <div className="cfg2-label">
-                      <div className="cfg2-name">{f.label}</div>
-                      {f.help && <div className="cfg2-help">{f.help}</div>}
+                      <div className="cfg2-name">{fi ? t(fi.label) : f.label}</div>
+                      <div className="cfg2-help">{fi?.help ? t(fi.help) : f.help}</div>
                     </div>
                     <div className="cfg2-ctrl">{ctrl}</div>
                   </div>
@@ -179,9 +232,9 @@ export function SettingsView(): React.ReactElement {
             </div>
             <div className="cfg2-foot">
               <Button type="primary" loading={saving} onClick={save}>
-                保存{t(meta.titleKey)}
+                {t("settings.save")}
               </Button>
-              <span className="dim">保存后热生效，无需重启</span>
+              <span className="dim">{t("settings.hotTip")}</span>
             </div>
           </>
         ) : (

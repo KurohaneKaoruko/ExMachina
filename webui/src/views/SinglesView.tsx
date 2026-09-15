@@ -5,6 +5,7 @@ import { PlusOutlined, ReloadOutlined, SettingOutlined, UserOutlined } from "@an
 import { api, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { buildModelOptions, modelLabel } from "../models";
+import { useT } from "../i18n/core";
 
 interface SingleInfo {
   identifier: string;
@@ -15,6 +16,7 @@ interface SingleInfo {
 }
 
 export function SinglesView(): React.ReactElement {
+  const t = useT();
   const [singles, setSingles] = useState<SingleInfo[]>([]);
   const [activeSingle, setActiveSingle] = useState<string | undefined>(undefined);
   const [profiles, setProfiles] = useState<LlmProfile[]>([]);
@@ -49,22 +51,22 @@ export function SinglesView(): React.ReactElement {
         description: v.description,
         prompt: v.prompt || undefined,
       });
-      message.success(`智能体已创建：${v.identifier}`);
+      message.success(t("singles.created", { id: v.identifier }));
       setModal(false);
       form.resetFields();
       await load();
     } catch (e) {
-      message.error(`创建失败：${String(e)}`);
+      message.error(t("singles.createFailed", { err: String(e) }));
     }
   };
 
   const remove = async (id: string) => {
     try {
       await api.deleteSingle(id);
-      message.success(`已删除：${id}`);
+      message.success(t("singles.removed", { id }));
       await load();
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("singles.deleteFailed", { err: String(e) }));
     }
   };
 
@@ -72,11 +74,11 @@ export function SinglesView(): React.ReactElement {
     if (!modelTarget) return;
     try {
       await api.setAgentModel(modelTarget.identifier, modelDraft);
-      message.success(`默认模型已更新：${modelTarget.name}`);
+      message.success(t("singles.modelUpdated", { name: modelTarget.name }));
       setModelTarget(null);
       await load();
     } catch (e) {
-      message.error(`设置失败：${String(e)}`);
+      message.error(t("singles.setFailed", { err: String(e) }));
     }
   };
 
@@ -84,15 +86,15 @@ export function SinglesView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="AGENTS"
-        title="智能体"
-        desc="独立于任何组、直接对接你的单体智能体（预置 Machina 以「本机」自称）。与谁对话在「对话」页左栏切换，这里只管档案与默认模型。"
+        title={t("nav.agent")}
+        desc={t("singles.desc")}
         actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setModal(true)}>
-              新建智能体
+              {t("singles.new")}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
@@ -110,7 +112,7 @@ export function SinglesView(): React.ReactElement {
                   <UserOutlined />
                   <span>{s.name}</span>
                   <span className="mono dim">{s.identifier}</span>
-                  {activeSingle === s.identifier && <Tag color="processing">对话目标</Tag>}
+                  {activeSingle === s.identifier && <Tag color="processing">{t("singles.activeTag")}</Tag>}
                 </Space>
               }
               extra={
@@ -123,41 +125,40 @@ export function SinglesView(): React.ReactElement {
                       setModelDraft(s.modelHint ?? "");
                     }}
                   >
-                    设置
+                    {t("singles.settings")}
                   </Button>
-                  <Popconfirm title="确认删除该智能体？" onConfirm={() => void remove(s.identifier)}>
+                  <Popconfirm title={t("singles.deleteConfirm")} onConfirm={() => void remove(s.identifier)}>
                     <Button size="small" danger>
-                      删除
+                      {t("common.delete")}
                     </Button>
                   </Popconfirm>
                 </Space>
               }
             >
               <div className="dim">{s.description}</div>
-              <div className="skill-line">域：{s.domain || "单体"}</div>
+              <div className="skill-line">{t("singles.domain", { domain: s.domain || t("singles.solo") })}</div>
               <div className="skill-line">
-                默认模型：<Tag color="geekblue">{modelLabel(s.modelHint, profiles)}</Tag>
+                {t("singles.model")}<Tag color="geekblue">{modelLabel(s.modelHint, profiles)}</Tag>
               </div>
             </Card>
           ))}
         </div>
         {!loading && singles.length === 0 && (
-          <Empty description="尚无智能体：创建一个直接对话的智能体（默认 Machina 已内置）" className="graph-empty" />
+          <Empty description={t("singles.empty")} className="graph-empty" />
         )}
       </Spin>
 
       {/* 默认模型设置（跟随全局 / 指定提供商与模型） */}
       <Modal
         open={modelTarget !== null}
-        title={`默认模型 · ${modelTarget?.name ?? ""}`}
+        title={t("singles.modelTitle", { name: modelTarget?.name ?? "" })}
         onCancel={() => setModelTarget(null)}
         onOk={() => void saveModel()}
-        okText="保存"
+        okText={t("common.save")}
         width={480}
       >
         <div className="pane-hint" style={{ marginBottom: 12 }}>
-          该智能体的对话与任务将使用所选模型；选「跟随全局默认」时使用「提供商」页中设为全局默认的提供商。
-          提供商本身请到「提供商」页维护。
+          {t("singles.modelHint")}
         </div>
         <Select
           value={modelDraft}
@@ -169,27 +170,27 @@ export function SinglesView(): React.ReactElement {
 
       <Modal
         open={modal}
-        title="新建智能体"
+        title={t("singles.new")}
         onCancel={() => setModal(false)}
         onOk={() => void submit()}
-        okText="创建"
+        okText={t("singles.create")}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="如：写作助理" />
+          <Form.Item name="name" label={t("singles.f.name")} rules={[{ required: true }]}>
+            <Input placeholder={t("singles.f.namePh")} />
           </Form.Item>
           <Form.Item
             name="identifier"
-            label="标识（identifier）"
-            rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: "仅字母/数字/-/_" }]}
+            label={t("singles.f.identifier")}
+            rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("singles.idPattern") }]}
           >
-            <Input placeholder="如 writing-buddy" />
+            <Input placeholder={t("singles.f.identifierPh")} />
           </Form.Item>
-          <Form.Item name="description" label="职责" rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder="该智能体的职责一句话描述" />
+          <Form.Item name="description" label={t("singles.f.duty")} rules={[{ required: true }]}>
+            <Input.TextArea rows={2} placeholder={t("singles.f.dutyPh")} />
           </Form.Item>
-          <Form.Item name="prompt" label="提示词（可选，留空生成模板）">
-            <Input.TextArea rows={4} placeholder="定义它的身份、说话方式与工作方式" />
+          <Form.Item name="prompt" label={t("singles.f.prompt")}>
+            <Input.TextArea rows={4} placeholder={t("singles.f.promptPh")} />
           </Form.Item>
         </Form>
       </Modal>

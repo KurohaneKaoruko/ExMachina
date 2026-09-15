@@ -4,8 +4,10 @@ import { Button, Empty, Segmented, Space, Spin, Table, Tag, message } from "antd
 import { CheckOutlined, CloseOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type ApprovalRequest } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { useT } from "../i18n/core";
 
 export function ApprovalsView(): React.ReactElement {
+  const t = useT();
   const [status, setStatus] = useState<string>("pending");
   const [items, setItems] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -27,15 +29,15 @@ export function ApprovalsView(): React.ReactElement {
     try {
       const r = await api.decideApproval(id, approve);
       if (r.status === "executed") {
-        message.success(`已批准并代执行（审批单 ${id}）`);
+        message.success(t("approvals.approvedExecuted", { id }));
       } else if (r.status === "failed") {
-        message.warning(`已批准但执行失败（审批单 ${id}）`);
+        message.warning(t("approvals.approvedFailed", { id }));
       } else {
-        message.info(`已拒绝（审批单 ${id}）`);
+        message.info(t("approvals.rejected", { id }));
       }
       await load();
     } catch (e) {
-      message.error(`操作失败：${String(e)}`);
+      message.error(t("common.opFailed", { err: String(e) }));
     }
   };
 
@@ -43,20 +45,20 @@ export function ApprovalsView(): React.ReactElement {
     <div className="pane-wrap">
       <PageHeader
         en="APPROVALS"
-        title="审批"
-        desc="终端命令的拦截与放行记录：闸门档位在「设置」页 security.execApproval 控制（off / risky / always），批准后由系统代执行并留存输出。"
+        title={t("nav.approvals")}
+        desc={t("approvals.desc")}
         actions={
           <>
             <Segmented
               value={status}
               onChange={(v) => setStatus(v as string)}
               options={[
-                { value: "pending", label: "待审批" },
-                { value: "all", label: "全部" },
+                { value: "pending", label: t("approvals.tabPending") },
+                { value: "all", label: t("approvals.tabAll") },
               ]}
             />
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              刷新
+              {t("common.refresh")}
             </Button>
           </>
         }
@@ -67,26 +69,26 @@ export function ApprovalsView(): React.ReactElement {
           rowKey="id"
           pagination={{ pageSize: 12 }}
           dataSource={items}
-          locale={{ emptyText: <Empty description="无审批单" className="pane-empty" /> }}
+          locale={{ emptyText: <Empty description={t("approvals.empty")} className="pane-empty" /> }}
           columns={[
             {
-              title: "状态",
+              title: t("approvals.colStatus"),
               width: 100,
               render: (_, r) =>
                 r.status === "pending" ? (
-                  <Tag color="warning">待审批</Tag>
+                  <Tag color="warning">{t("approvals.stPending")}</Tag>
                 ) : r.status === "executed" ? (
-                  <Tag color="success">已执行</Tag>
+                  <Tag color="success">{t("approvals.stExecuted")}</Tag>
                 ) : r.status === "approved" ? (
-                  <Tag color="success">已批准</Tag>
+                  <Tag color="success">{t("approvals.stApproved")}</Tag>
                 ) : r.status === "failed" ? (
-                  <Tag color="error">执行失败</Tag>
+                  <Tag color="error">{t("approvals.stFailed")}</Tag>
                 ) : (
-                  <Tag>已拒绝</Tag>
+                  <Tag>{t("approvals.stRejected")}</Tag>
                 ),
             },
             {
-              title: "命令",
+              title: t("approvals.colCommand"),
               render: (_, r) => (
                 <Space direction="vertical" size={0} className="full-width">
                   <code className="cmd-code">$ {r.command}</code>
@@ -97,21 +99,21 @@ export function ApprovalsView(): React.ReactElement {
               ),
             },
             {
-              title: "结果",
+              title: t("approvals.colResult"),
               render: (_, r) =>
                 r.result ? <span className="dim result-cell">{r.result.slice(0, 240)}</span> : <span className="dim">—</span>,
             },
             {
-              title: "操作",
+              title: t("approvals.colOps"),
               width: 160,
               render: (_, r) =>
                 r.status === "pending" ? (
                   <Space>
                     <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => void decide(r.id, true)}>
-                      批准
+                      {t("approvals.approve")}
                     </Button>
                     <Button size="small" danger icon={<CloseOutlined />} onClick={() => void decide(r.id, false)}>
-                      拒绝
+                      {t("approvals.reject")}
                     </Button>
                   </Space>
                 ) : (

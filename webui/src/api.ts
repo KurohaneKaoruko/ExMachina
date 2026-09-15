@@ -1,5 +1,9 @@
 /** REST 客户端 —— 契约见 docs/04 §7 */
 import type { AgentDefinition, ChatMessage, EvidenceItem, Session, TaskGraph } from "./types";
+import { tr } from "./i18n/core";
+
+/** 密钥掩码哨兵（与后端 llm_admin::KEY_MASK / 通道脱敏同一契约）：提交时收到此值 = 沿用服务端旧值 */
+export const KEY_MASK = "***已配置***";
 
 function authHeaders(): Record<string, string> {
   const key = localStorage.getItem("exm.key") ?? "";
@@ -17,7 +21,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       localStorage.removeItem("exm.key");
       window.location.reload();
     }
-    throw new Error("401 需要访问密钥");
+    throw new Error(tr("api.unauthorized"));
   }
   if (!resp.ok && resp.status !== 202) {
     const body = await resp.text();
@@ -183,9 +187,18 @@ export interface Channel {
   secret?: string;
   replyWebhook?: string;
   token?: string;
-  /** 会话白名单（Telegram chat id；空 = 不限） */
+  /** 平台扩展配置：qqbot → appId/appSecret/sandbox；napcat → url/token */
+  config?: Record<string, string>;
+  /** 会话白名单（Telegram chat id / QQ openid / OneBot 群号或 QQ 号；空 = 不限） */
   allowedChats?: string[];
   createdAt: string;
+}
+
+/** 通道运行状态（内置适配器上报；桥接类型无运行时不产生条目） */
+export interface ChannelStatus {
+  state: "ok" | "error";
+  detail: string;
+  at: string;
 }
 
 export interface LlmProfile {
@@ -253,7 +266,7 @@ export const api = {
       body: form,
     });
     const data = (await resp.json()) as { text?: string; error?: string };
-    if (!resp.ok || data.error) throw new Error(data.error ?? `转写失败 (${resp.status})`);
+    if (!resp.ok || data.error) throw new Error(data.error ?? tr("api.transcribeFailed", { status: resp.status }));
     return data.text ?? "";
   },
   speak: async (text: string) => {
@@ -265,7 +278,7 @@ export const api = {
     });
     if (!resp.ok) {
       const err = (await resp.json().catch(() => ({}))) as { error?: string };
-      throw new Error(err.error ?? `合成失败 (${resp.status})`);
+      throw new Error(err.error ?? tr("api.synthFailed", { status: resp.status }));
     }
     return resp.blob();
   },
@@ -425,6 +438,7 @@ export const api = {
     }),
 
   listChannels: () => req<Channel[]>("/channels"),
+  channelStatus: () => req<Record<string, ChannelStatus>>("/channels/status"),
   createChannel: (body: {
     id: string;
     platform?: string;
@@ -435,8 +449,9 @@ export const api = {
     token?: string;
     enabled?: boolean;
     allowedChats?: string[];
+    config?: Record<string, string>;
   }) => req<Channel>("/channels", { method: "POST", body: JSON.stringify(body) }),
-  updateChannel: (id: string, body: { enabled?: boolean; group?: string; token?: string; secret?: string; replyWebhook?: string; account?: string; allowedChats?: string[] }) =>
+  updateChannel: (id: string, body: { enabled?: boolean; group?: string; token?: string; secret?: string; replyWebhook?: string; account?: string; allowedChats?: string[]; config?: Record<string, string> }) =>
     req<Channel>(`/channels/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 

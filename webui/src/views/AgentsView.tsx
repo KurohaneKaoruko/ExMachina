@@ -17,6 +17,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, UndoOutlined } from "@ant-d
 import { api, type PersonaInfo } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
+import { useT } from "../i18n/core";
 import type { AgentDefinition } from "../types";
 
 interface GroupLite {
@@ -36,6 +37,7 @@ function sortMembers(list: AgentDefinition[], primary?: string): AgentDefinition
 }
 
 export function AgentsView(): React.ReactElement {
+  const t = useT();
   const groups = useExm((s) => s.groups);
   const activeGroup = useExm((s) => s.activeGroup);
   const [gid, setGid] = useState<string>("");
@@ -83,22 +85,22 @@ export function AgentsView(): React.ReactElement {
         prompt: v.prompt || undefined,
         group: gid || undefined,
       });
-      message.success(`子个体已创建：${v.name}`);
+      message.success(t("agents.created", { name: v.name }));
       setCreateOpen(false);
       form.resetFields();
       await reload();
     } catch (e) {
-      message.error(`创建失败：${String(e)}`);
+      message.error(t("agents.createFailed", { err: String(e) }));
     }
   };
 
   const removeOne = async (identifier: string) => {
     try {
       await api.removeGroupAgent(gid, identifier);
-      message.success(`已删除：${identifier}`);
+      message.success(t("agents.removed", { id: identifier }));
       await reload();
     } catch (e) {
-      message.error(`删除失败：${String(e)}`);
+      message.error(t("agents.deleteFailed", { err: String(e) }));
     }
   };
 
@@ -117,7 +119,7 @@ export function AgentsView(): React.ReactElement {
       const info = await api.getPersona(a.identifier);
       setPersonaDraft(info.persona);
     } catch (e) {
-      message.error(`读取人设失败：${String(e)}`);
+      message.error(t("agents.personaReadFailed", { err: String(e) }));
       setPersonaOf(null);
     }
   };
@@ -127,10 +129,10 @@ export function AgentsView(): React.ReactElement {
     setSaving(true);
     try {
       await api.putPersona(personaOf.identifier, personaDraft);
-      message.success("人设已保存，下一次派发热生效");
+      message.success(t("agents.personaSaved"));
       setPersonaInfo(await api.getPersona(personaOf.identifier));
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     } finally {
       setSaving(false);
     }
@@ -142,9 +144,9 @@ export function AgentsView(): React.ReactElement {
       await api.resetPersona(personaOf.identifier);
       setPersonaInfo(await api.getPersona(personaOf.identifier));
       setPersonaDraft(``);
-      message.success("已恢复默认智械体风格");
+      message.success(t("agents.personaReset"));
     } catch (e) {
-      message.error(`重置失败：${String(e)}`);
+      message.error(t("agents.resetFailed", { err: String(e) }));
     }
   };
 
@@ -152,11 +154,11 @@ export function AgentsView(): React.ReactElement {
     <div className="agents-wrap">
       <PageHeader
         en="UNITS"
-        title="子个体"
+        title={t("nav.units")}
         desc={
           isBuiltin
-            ? "当前查看内置组的编成（受保护，不可增删）；人设与经验优化可在此调整。"
-            : "当前查看自定义组的编成：可新建 / 删除个体，并调整人设与经验优化。"
+            ? t("agents.descBuiltin")
+            : t("agents.descCustom")
         }
         actions={
           <>
@@ -168,7 +170,7 @@ export function AgentsView(): React.ReactElement {
             />
             {!isBuiltin && (
               <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-                新建子个体
+                {t("agents.new")}
               </Button>
             )}
           </>
@@ -183,41 +185,41 @@ export function AgentsView(): React.ReactElement {
           dataSource={sortMembers(members, primary)}
           columns={[
             {
-              title: "子个体",
+              title: t("agents.colUnit"),
               key: "name",
               render: (_, a) => (
                 <span>
-                  {a.tier === "orchestrator" || a.identifier === primary ? <Tag color="blue">主智能体</Tag> : null}
+                  {a.tier === "orchestrator" || a.identifier === primary ? <Tag color="blue">{t("agents.primaryTag")}</Tag> : null}
                   <b>{a.name}</b> <code>{a.identifier}</code>
                 </span>
               ),
             },
-            { title: "职责", dataIndex: "description", key: "desc", ellipsis: true },
+            { title: t("agents.colDuty"), dataIndex: "description", key: "desc", ellipsis: true },
             {
-              title: "工具",
+              title: t("agents.colTools"),
               dataIndex: "tools",
               key: "tools",
               width: 200,
-              render: (tools: string[]) => tools.map((t) => <Tag key={t}>{t}</Tag>),
+              render: (tools: string[]) => tools.map((tl) => <Tag key={tl}>{tl}</Tag>),
             },
             {
-              title: "状态",
+              title: t("agents.colState"),
               key: "state",
               width: 90,
               render: (_, a) =>
-                busyAgents.has(a.identifier) ? <Tag color="processing">执行中</Tag> : <Tag>空闲</Tag>,
+                busyAgents.has(a.identifier) ? <Tag color="processing">{t("agents.busy")}</Tag> : <Tag>{t("agents.idle")}</Tag>,
             },
             {
-              title: "操作",
+              title: t("agents.colOps"),
               key: "ops",
               width: 150,
               render: (_, a) => (
                 <Space>
                   <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
-                    人设
+                    {t("agents.personaBtn")}
                   </Button>
                   {!isBuiltin && a.identifier !== primary && (
-                    <Popconfirm title={`确认删除 ${a.identifier}？`} onConfirm={() => void removeOne(a.identifier)}>
+                    <Popconfirm title={t("agents.deleteConfirm", { id: a.identifier })} onConfirm={() => void removeOne(a.identifier)}>
                       <Button size="small" danger icon={<DeleteOutlined />} />
                     </Popconfirm>
                   )}
@@ -230,53 +232,53 @@ export function AgentsView(): React.ReactElement {
 
       <Modal
         open={createOpen}
-        title="新建子个体"
+        title={t("agents.new")}
         onCancel={() => setCreateOpen(false)}
         onOk={() => void submitCreate()}
-        okText="创建"
+        okText={t("agents.create")}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="如：市场分析师" />
+          <Form.Item name="name" label={t("agents.f.name")} rules={[{ required: true }]}>
+            <Input placeholder={t("agents.f.namePh")} />
           </Form.Item>
           <Form.Item
             name="identifier"
             label="identifier"
             rules={[
               { required: true },
-              { pattern: /^[A-Za-z0-9_-]{2,48}$/, message: "仅字母/数字/-/_,2–48字符" },
+              { pattern: /^[A-Za-z0-9_-]{2,48}$/, message: t("agents.idPattern") },
             ]}
           >
-            <Input placeholder="如 market-analyst" />
+            <Input placeholder={t("agents.f.identifierPh")} />
           </Form.Item>
-          <Form.Item name="description" label="职责描述" rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder="该子个体负责什么（会写入其提示词模板）" />
+          <Form.Item name="description" label={t("agents.f.duty")} rules={[{ required: true }]}>
+            <Input.TextArea rows={2} placeholder={t("agents.f.dutyPh")} />
           </Form.Item>
-          <Form.Item name="prompt" label="职责提示词（可选；缺省按职责生成模板）">
-            <Input.TextArea rows={4} placeholder={"# 名称\n\n你是 …（职责、规则、输出格式）"} />
+          <Form.Item name="prompt" label={t("agents.f.prompt")}>
+            <Input.TextArea rows={4} placeholder={t("agents.f.promptPh")} />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
         open={personaOf !== null}
-        title={personaOf ? `人设编辑 — ${personaOf.name} (${personaOf.identifier})` : ""}
+        title={personaOf ? t("agents.personaTitle", { name: personaOf.name, id: personaOf.identifier }) : ""}
         onCancel={() => setPersonaOf(null)}
         width={640}
         footer={
           <Space>
             <Popconfirm
-              title="恢复默认智械体风格？"
+              title={t("agents.resetConfirm")}
               onConfirm={() => void resetPersona()}
               disabled={personaInfo ? !personaInfo.custom : false}
             >
               <Button icon={<UndoOutlined />} disabled={personaInfo ? !personaInfo.custom : false}>
-                恢复默认
+                {t("agents.resetBtn")}
               </Button>
             </Popconfirm>
-            <Button onClick={() => setPersonaOf(null)}>关闭</Button>
+            <Button onClick={() => setPersonaOf(null)}>{t("common.close")}</Button>
             <Button type="primary" loading={saving} onClick={() => void savePersona()}>
-              保存并热生效
+              {t("agents.saveHot")}
             </Button>
           </Space>
         }
@@ -285,12 +287,12 @@ export function AgentsView(): React.ReactElement {
           {personaInfo && (
             <div className="persona-status">
               {personaInfo.custom ? (
-                <Tag color="gold">自定义人设</Tag>
+                <Tag color="gold">{t("agents.customPersona")}</Tag>
               ) : (
-                <Tag>默认智械体风格</Tag>
+                <Tag>{t("agents.defaultPersona")}</Tag>
               )}
               <span className="persona-hint">
-                人设影响该智能体的说话风格；保存在 agents/personas/{personaOf?.identifier}.md，下一次派发热生效。
+                {t("agents.personaHint", { id: personaOf?.identifier ?? "" })}
               </span>
             </div>
           )}
@@ -298,7 +300,7 @@ export function AgentsView(): React.ReactElement {
             rows={10}
             value={personaDraft}
             onChange={(e) => setPersonaDraft(e.target.value)}
-            placeholder="描述该个体的说话风格…"
+            placeholder={t("agents.personaPh")}
           />
         </Space>
       </Modal>

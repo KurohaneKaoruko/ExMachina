@@ -10,6 +10,9 @@ use axum::{Json, Router};
 use exm_core::types::CoreEvent;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use parking_lot::Mutex;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------- 技能包
 
@@ -468,13 +471,20 @@ pub async fn deny_request(State(st): State<AppState>, Path(id): Path<String>) ->
 
 // ---------------------------------------------------------------- 通道网关（webhook 通道）
 
-/// 通道定义：外部消息源接入点。平台 = `type`（webhook / telegram …）。
+/// 支持的平台清单：
+/// - `webhook` / `qq` / `wechat`：webhook 桥接语义（社区桥把消息 POST 到 inbound，回复走回调）；
+/// - `telegram`：内置长轮询适配器（telegram.rs）；
+/// - `qqbot`：QQ 官方机器人（q.qq.com 开放平台，WebSocket 长连接，qqbot.rs）；
+/// - `napcat`：OneBot 11 实现（NapCat / Lagrange 等，正向 WebSocket，napcat.rs）。
+pub const CHANNEL_PLATFORMS: &[&str] = &["webhook", "telegram", "qqbot", "napcat", "qq", "wechat"];
+
+/// 通道定义：外部消息源接入点。平台 = `type`（webhook / telegram / qqbot / napcat …）。
 /// 多平台多账号：同类平台可并存多条（每条一个账号），每条可绑定不同智能体组。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub id: String,
-    /// 平台：webhook | telegram
+    /// 平台：webhook | telegram | qqbot | napcat | qq | wechat
     #[serde(rename = "type", default = "default_platform")]
     pub kind: String,
     #[serde(default = "default_true_channel")]
@@ -482,12 +492,13 @@ pub struct Channel {
     /// 账号绑定组：该账号的入站消息在此组上下文执行；缺省 = 激活组
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// 会话白名单：允许交互的 chat id（Telegram 等平台；空 = 不限）
+    /// 会话白名单：允许交互的会话键（Telegram chat id / QQ openid / OneBot 群号或 QQ 号；空 = 不限）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_chats: Vec<String>,
     /// 账号备注（同平台多账号时区分用途）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// webhook / qq / wechat 桥接语义：入站密钥校验
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -495,6 +506,10 @@ pub struct Channel {
     /// telegram 平台：BotFather 签发的 bot token
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// 平台扩展配置（新平台零结构体改动）：qqbot → appId/appSecret/sandbox；
+    /// napcat → url/token。空值键不入库。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
     pub created_at: String,
 }
 
@@ -525,21 +540,120 @@ fn save_channels(core: &exm_core::Core, channels: &[Channel]) -> anyhow::Result<
     Ok(())
 }
 
+impl Channel {
+    /// 平台扩展配置读取（config 键，去除首尾空白）
+    pub(crate) fn cfg(&self, key: &str) -> Option<String> {
+        self.config.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    }
+}
+
+/// 运行收束事件 → 纯文本回帖（telegram / napcat / qqbot 三个适配器共用）。
+pub(crate) fn flatten_statements(payload: &serde_json::Value, max_chars: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(list) = payload.get("statements").and_then(|v| v.as_array()) {
+        for s in list {
+            let tag = s.get("tag").and_then(|v| v.as_str()).unwrap_or("报告");
+            let text = s.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if text.trim().is_empty() {
+                continue;
+            }
+            lines.push(format!("【{tag}】{text}"));
+        }
+    }
+    let mut text = lines.join("\n");
+    if text.trim().is_empty() {
+        text = "（本轮无收束输出）".into();
+    }
+    text.chars().take(max_chars).collect()
+}
+
+// ---------------------------------------------------------------- 通道运行状态
+
+/// 通道运行状态（内置适配器上报；webhook/qq/wechat 桥接无运行时，不产生状态）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChanStatus {
+    /// ok | error
+    pub state: String,
+    /// 人类可读明细（机器人身份 / 最近一次错误原因）
+    pub detail: String,
+    /// 最近上报时刻（ISO8601）
+    pub at: String,
+}
+
+fn chan_statuses() -> &'static Mutex<HashMap<String, ChanStatus>> {
+    static S: OnceLock<Mutex<HashMap<String, ChanStatus>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 适配器上报连接状态（连上 / 断开 / 出错均覆盖写，UI 只看最近一次）
+pub(crate) fn report_status(id: &str, state: &str, detail: impl Into<String>) {
+    chan_statuses().lock().insert(
+        id.to_string(),
+        ChanStatus { state: state.to_string(), detail: detail.into(), at: exm_core::types::now_iso() },
+    );
+}
+
+/// 通道删除 / 停用时清除残留状态（下线的账号不该在状态表里阴魂不散）
+pub(crate) fn clear_status(id: &str) {
+    chan_statuses().lock().remove(id);
+}
+
+/// 通道运行状态总览（通道页状态列轮询）
+pub async fn channel_status() -> impl IntoResponse {
+    let snapshot = chan_statuses().lock().clone();
+    Json(serde_json::to_value(snapshot).unwrap_or(Value::Null)).into_response()
+}
+
+// ---------------------------------------------------------------- 通道 CRUD（脱敏回显）
+
+/// 平台 config 中的敏感键（掩码回显；更新时掩码值 = 沿用旧值）
+fn secret_config_keys(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "qqbot" => &["appSecret"],
+        "napcat" => &["token"],
+        _ => &[],
+    }
+}
+
+/// 通道脱敏序列化：顶层 token/secret 与平台敏感 config 键掩码回显，任何接口都不出明文密钥
+fn channel_json(ch: &Channel) -> Value {
+    let mut v = serde_json::to_value(ch).unwrap_or(Value::Null);
+    let Some(obj) = v.as_object_mut() else { return v };
+    let mask = Value::String(crate::llm_admin::KEY_MASK.into());
+    if ch.secret.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        obj.insert("secret".into(), mask.clone());
+    }
+    if ch.token.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        obj.insert("token".into(), mask.clone());
+    }
+    if let Some(cfg) = obj.get_mut("config").and_then(|c| c.as_object_mut()) {
+        for k in secret_config_keys(&ch.kind) {
+            if ch.cfg(k).is_some() {
+                cfg.insert((*k).to_string(), mask.clone());
+            }
+        }
+    }
+    v
+}
+
 pub async fn list_channels(State(st): State<AppState>) -> impl IntoResponse {
-    Json(serde_json::to_value(load_channels(&st.core)).unwrap_or(Value::Null)).into_response()
+    let list: Vec<Value> = load_channels(&st.core).iter().map(channel_json).collect();
+    Json(list).into_response()
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelBody {
+    /// 创建必填；更新走路径参数，body 可不带（缺省即空串）
+    #[serde(default)]
     pub id: String,
-    /// 平台：webhook（默认）| telegram
+    /// 平台：webhook（默认）| telegram | qqbot | napcat | qq | wechat
     #[serde(default)]
     pub platform: Option<String>,
     /// 账号绑定组
     #[serde(default)]
     pub group: Option<String>,
-    /// 会话白名单（Telegram chat id；空 = 不限）
+    /// 会话白名单（空 = 不限）
     #[serde(default)]
     pub allowed_chats: Option<Vec<String>>,
     #[serde(default)]
@@ -551,6 +665,9 @@ pub struct ChannelBody {
     /// telegram bot token
     #[serde(default)]
     pub token: Option<String>,
+    /// 平台扩展配置（qqbot: appId/appSecret/sandbox；napcat: url/token）
+    #[serde(default)]
+    pub config: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -561,16 +678,28 @@ pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBod
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "非法通道 id" }))).into_response();
     }
     let platform = b.platform.clone().unwrap_or_else(|| "webhook".into());
-    // qq / wechat 走 webhook 桥接语义（社区桥把消息 POST 到 inbound，回复走回调）
-    if !["webhook", "telegram", "qq", "wechat"].contains(&platform.as_str()) {
+    if !CHANNEL_PLATFORMS.contains(&platform.as_str()) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "不支持的平台（可选 webhook / telegram / qq / wechat）" })),
+            Json(json!({ "error": format!("不支持的平台（可选 {}）", CHANNEL_PLATFORMS.join(" / ")) })),
         )
             .into_response();
     }
     if platform == "telegram" && b.token.as_deref().map(|t| t.trim().is_empty()).unwrap_or(true) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "telegram 通道需要 bot token" }))).into_response();
+    }
+    let config: BTreeMap<String, String> = b
+        .config
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .collect();
+    // 新平台必填项：qqbot 需要 appId + appSecret；napcat 需要 WS 地址
+    if platform == "qqbot" && (config.get("appId").map_or(true, |v| v.trim().is_empty()) || config.get("appSecret").map_or(true, |v| v.trim().is_empty())) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "qqbot 通道需要 config.appId 与 config.appSecret" }))).into_response();
+    }
+    if platform == "napcat" && config.get("url").map_or(true, |v| v.trim().is_empty()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "napcat 通道需要 config.url（OneBot 11 正向 WebSocket 地址）" }))).into_response();
     }
     let mut channels = load_channels(&st.core);
     if channels.iter().any(|c| c.id == id) {
@@ -586,13 +715,14 @@ pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBod
         secret: b.secret.filter(|s| !s.trim().is_empty()),
         reply_webhook: b.reply_webhook.filter(|s| !s.trim().is_empty()),
         token: b.token.filter(|s| !s.trim().is_empty()),
+        config,
         created_at: exm_core::types::now_iso(),
     };
     channels.push(ch.clone());
     if let Err(e) = save_channels(&st.core, &channels) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
     }
-    Json(serde_json::to_value(ch).unwrap_or(Value::Null)).into_response()
+    Json(channel_json(&ch)).into_response()
 }
 
 /// 更新通道（启停 / 换组 / 换 token 等）
@@ -605,8 +735,12 @@ pub async fn update_channel(
     let Some(ch) = channels.iter_mut().find(|c| c.id == id) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "通道不存在" }))).into_response();
     };
-    if let Some(v) = b.enabled {
-        ch.enabled = v;
+    if b.enabled == Some(false) {
+        // 停用即下线：清掉运行状态，避免「已停用」的账号还挂着旧状态
+        clear_status(&id);
+    }
+    if let Some(v) = &b.enabled {
+        ch.enabled = *v;
     }
     if let Some(v) = &b.group {
         ch.group = if v.trim().is_empty() { None } else { Some(v.clone()) };
@@ -617,18 +751,52 @@ pub async fn update_channel(
     if let Some(v) = &b.account {
         ch.account = if v.trim().is_empty() { None } else { Some(v.clone()) };
     }
+    // 敏感字段三态：掩码 = 沿用旧值；空 = 清除；其余 = 新值（与提供商页同一语义）
     if let Some(v) = &b.secret {
-        ch.secret = if v.trim().is_empty() { None } else { Some(v.clone()) };
+        let t = v.trim();
+        if t == crate::llm_admin::KEY_MASK {
+            // 掩码回传，保留旧值
+        } else if t.is_empty() {
+            ch.secret = None;
+        } else {
+            ch.secret = Some(t.to_string());
+        }
     }
     if let Some(v) = &b.reply_webhook {
         ch.reply_webhook = if v.trim().is_empty() { None } else { Some(v.clone()) };
     }
     if let Some(v) = &b.token {
-        ch.token = if v.trim().is_empty() { None } else { Some(v.clone()) };
+        let t = v.trim();
+        if t == crate::llm_admin::KEY_MASK {
+            // 掩码回传，保留旧值
+        } else if t.is_empty() {
+            ch.token = None;
+        } else {
+            ch.token = Some(t.to_string());
+        }
+    }
+    if let Some(v) = &b.config {
+        // 整表替换：UI 编辑时按平台提交完整配置；启停等局部更新不带 config 即保持不变。
+        // 敏感键掩码回传 = 从旧表取回原值；空值键不入库（用户清空敏感键即删除）。
+        let mut next: BTreeMap<String, String> = BTreeMap::new();
+        for (k, val) in v {
+            let t = val.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if t == crate::llm_admin::KEY_MASK {
+                if let Some(old) = ch.config.get(k) {
+                    next.insert(k.clone(), old.clone());
+                }
+                continue;
+            }
+            next.insert(k.clone(), t.to_string());
+        }
+        ch.config = next;
     }
     let saved = ch.clone();
     match save_channels(&st.core, &channels) {
-        Ok(_) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),
+        Ok(_) => Json(channel_json(&saved)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -641,7 +809,10 @@ pub async fn delete_channel(State(st): State<AppState>, Path(id): Path<String>) 
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "通道不存在" }))).into_response();
     }
     match save_channels(&st.core, &channels) {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Ok(_) => {
+            clear_status(&id);
+            Json(json!({ "ok": true })).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -780,6 +951,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/approvals", get(list_approvals))
         .route("/api/approvals/:id/approve", post(approve_request))
         .route("/api/approvals/:id/deny", post(deny_request))
+        .route("/api/channels/status", get(channel_status))
         .route("/api/channels", get(list_channels).post(create_channel))
         .route(
             "/api/channels/:id",

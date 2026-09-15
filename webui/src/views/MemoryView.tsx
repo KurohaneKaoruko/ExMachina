@@ -25,8 +25,10 @@ import { DeleteOutlined, PushpinOutlined, ReloadOutlined, SearchOutlined } from 
 import { api, type LlmProfile, type MemoryEntry, type MemoryStats, type RecallHit } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
+import { useT } from "../i18n/core";
 
 function MdEditor(): React.ReactElement {
+  const t = useT();
   const [content, setContent] = useState("");
   const [path, setPath] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -43,7 +45,7 @@ function MdEditor(): React.ReactElement {
         setContent(data.content);
         setPath(data.path);
       } catch (e) {
-        message.error(`读取 memory.md 失败：${String(e)}`);
+        message.error(t("memory.mdReadFailed", { err: String(e) }));
       }
     })();
   }, []);
@@ -60,14 +62,14 @@ function MdEditor(): React.ReactElement {
       const data = (await resp.json()) as { ok?: boolean; compacting?: boolean; error?: string };
       setDirty(false);
       if (data.compacting) {
-        message.info("已保存；内容超过字数上限，AI 正在后台自主压缩，原文已归档");
+        message.info(t("memory.mdCompacting"));
       } else if (data.error) {
         message.error(data.error);
       } else {
-        message.success("memory.md 已保存（下一轮对话即注入）");
+        message.success(t("memory.mdSaved"));
       }
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     } finally {
       setSaving(false);
     }
@@ -77,22 +79,20 @@ function MdEditor(): React.ReactElement {
     <div className="memory-wrap">
       <PageHeader
         en="MEMORY"
-        title="记忆"
-        desc="文件记忆模式：memory.md 是唯一记忆载体，随每轮对话全文注入——适合手工维护、完全可控的长期记忆。"
+        title={t("nav.memory")}
+        desc={t("memory.mdDesc")}
       />
       <Card
         size="small"
-        title="文件记忆（memory.md）"
+        title={t("memory.mdCard")}
         extra={
           <Button type="primary" size="small" loading={saving} disabled={!dirty} onClick={() => void save()}>
-            保存
+            {t("common.save")}
           </Button>
         }
       >
         <div className="dim" style={{ marginBottom: 8 }}>
-          深层记忆已关闭——本文件是唯一记忆载体，随每轮对话注入。直接用 Markdown 维护
-          （目标、偏好、事实、教训均可）；保存在 {path || "memory.md"}。
-          当前 {content.length} 字（上限 5000，超出保存后 AI 自动压缩并归档原文）
+          {t("memory.mdHint", { path: path || "memory.md", n: content.length })}
         </div>
         <Input.TextArea
           value={content}
@@ -119,6 +119,7 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 export function MemoryView(): React.ReactElement {
+  const t = useT();
   const deepEnabled = useExm((s) => s.config?.memory?.enabled !== false);
   const memoryVersion = useExm((s) => s.memoryVersion);
   const agents = useExm((s) => s.agents);
@@ -145,18 +146,18 @@ export function MemoryView(): React.ReactElement {
     })();
   }, []);
   const semanticOptions = useMemo(() => {
-    const opts = [{ value: "", label: "不使用语义检索（仅词项召回）" }];
+    const opts = [{ value: "", label: t("memory.noSemantic") }];
     for (const p of profiles) {
       opts.push({ value: p.id, label: `${p.name}${p.model ? ` · ${p.model}` : ""}` });
     }
     return opts;
-  }, [profiles]);
+  }, [profiles, t]);
   const saveSemantic = async () => {
     try {
       await api.putConfig({ memory: { semanticModel: semanticDraft } });
-      message.success(semanticDraft ? "语义检索已启用" : "已关闭语义检索（仅词项召回）");
+      message.success(semanticDraft ? t("memory.semanticOn") : t("memory.semanticOff"));
     } catch (e) {
-      message.error(`保存失败：${String(e)}`);
+      message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
 
@@ -181,28 +182,28 @@ export function MemoryView(): React.ReactElement {
     <div className="memory-wrap">
       <PageHeader
         en="MEMORY"
-        title="记忆"
-        desc="深层记忆模式：条目写入数据库，按词项 + 语义混合检索召回；群体记忆共享，个体记忆按智能体隔离。"
+        title={t("nav.memory")}
+        desc={t("memory.desc")}
       />
       <Row gutter={16}>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="记忆条目" value={stats?.memory?.total ?? 0} />
+            <Statistic title={t("memory.statTotal")} value={stats?.memory?.total ?? 0} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="群体记忆（共享）" value={stats?.memory?.shared ?? 0} />
+            <Statistic title={t("memory.statShared")} value={stats?.memory?.shared ?? 0} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="个体记忆（私有）" value={stats?.memory?.individual ?? 0} />
+            <Statistic title={t("memory.statIndividual")} value={stats?.memory?.individual ?? 0} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="固定记忆（进入 memory.md）" value={stats?.memory?.pinned ?? 0} />
+            <Statistic title={t("memory.statPinned")} value={stats?.memory?.pinned ?? 0} />
           </Card>
         </Col>
       </Row>
@@ -210,15 +211,15 @@ export function MemoryView(): React.ReactElement {
       <Card
         size="small"
         className="memory-card"
-        title="语义检索"
+        title={t("memory.semanticCard")}
         extra={
           <Button size="small" type="primary" onClick={() => void saveSemantic()}>
-            保存
+            {t("common.save")}
           </Button>
         }
       >
         <div className="model-kv">
-          <span className="k">嵌入模型</span>
+          <span className="k">{t("memory.embedModel")}</span>
           <Select
             size="small"
             style={{ minWidth: 280 }}
@@ -228,48 +229,47 @@ export function MemoryView(): React.ReactElement {
           />
         </div>
         <div className="pane-hint" style={{ marginTop: 8 }}>
-          选一个提供商的嵌入模型（如 text-embedding-3-small）后，记忆召回升级为「词项 + 语义」混合；
-          留空则仅按词项匹配。需要 Openai 兼容或 Azure 协议的提供商。
+          {t("memory.semanticHint")}
         </div>
       </Card>
 
       <Card
         size="small"
         className="memory-card"
-        title="检索深层记忆"
+        title={t("memory.searchCard")}
         extra={
           <Space>
             <Button size="small" icon={<ReloadOutlined />} onClick={() => void reload()}>
-              刷新
+              {t("common.refresh")}
             </Button>
             <Button
               size="small"
               onClick={async () => {
                 await api.reindexMemory();
-                message.success("倒排索引已重建");
+                message.success(t("memory.reindexed"));
                 void reload();
               }}
             >
-              重建索引
+              {t("memory.reindex")}
             </Button>
             <Button
               size="small"
               onClick={async () => {
                 await api.decayMemory();
-                message.success("已执行时间衰减整理");
+                message.success(t("memory.decayed"));
                 void reload();
               }}
             >
-              衰减整理
+              {t("memory.decay")}
             </Button>
             <Button
               size="small"
               onClick={async () => {
                 await api.renderMemory();
-                message.success("memory.md 已重渲染");
+                message.success(t("memory.rendered"));
               }}
             >
-              重渲染基础记忆
+              {t("memory.render")}
             </Button>
           </Space>
         }
@@ -278,7 +278,7 @@ export function MemoryView(): React.ReactElement {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="输入关键词（支持中文，按二元切分匹配）"
+            placeholder={t("memory.searchPh")}
             onPressEnter={async () => {
               const r = await api.searchMemory(query, 8, agentFilter);
               setHits(r.hits);
@@ -292,11 +292,11 @@ export function MemoryView(): React.ReactElement {
               setHits(r.hits);
             }}
           >
-            检索
+            {t("memory.search")}
           </Button>
         </Space.Compact>
         <div className="memory-scope-hint">
-          检索范围：{agentFilter ? `个体 ${agentFilter} 可见（私有 + 群体共享）` : "群体记忆"}
+          {t("memory.scope")}{agentFilter ? t("memory.scopeAgent", { id: agentFilter }) : t("memory.scopeGroup")}
         </div>
 
         {hits !== null && (
@@ -304,14 +304,14 @@ export function MemoryView(): React.ReactElement {
             className="memory-hits"
             size="small"
             dataSource={hits}
-            locale={{ emptyText: "无命中" }}
+            locale={{ emptyText: t("memory.noHits") }}
             renderItem={(h) => (
               <List.Item>
                 <Space direction="vertical" style={{ width: "100%" }}>
                   <Space>
                     <Tag color={KIND_COLORS[h.entry.kind] ?? "default"}>{h.entry.kind}</Tag>
                     <b>{h.entry.title}</b>
-                    <Tag color="green">得分 {h.score.toFixed(2)}</Tag>
+                    <Tag color="green">{t("memory.score", { s: h.score.toFixed(2) })}</Tag>
                     <span className="memory-reason">{h.reasons.join("；")}</span>
                   </Space>
                   <span>{h.entry.body.slice(0, 200)}</span>
@@ -322,7 +322,7 @@ export function MemoryView(): React.ReactElement {
         )}
       </Card>
 
-      <Card size="small" className="memory-card" title="记忆条目（按重要性排序）">
+      <Card size="small" className="memory-card" title={t("memory.entriesCard")}>
         <Space className="memory-filters" wrap>
           {["", "fact", "decision", "preference", "evidence", "digest", "lesson"].map((k) => (
             <Tag.CheckableTag
@@ -330,14 +330,14 @@ export function MemoryView(): React.ReactElement {
               checked={(kindFilter ?? "") === k}
               onChange={() => setKindFilter(k || undefined)}
             >
-              {k === "" ? "全部类型" : k}
+              {k === "" ? t("memory.allKinds") : k}
             </Tag.CheckableTag>
           ))}
-          <span className="memory-scope-label">个体范围：</span>
+          <span className="memory-scope-label">{t("memory.agentScope")}</span>
           <Select
             size="small"
             allowClear
-            placeholder="全部（含所有个体）"
+            placeholder={t("memory.allAgents")}
             style={{ minWidth: 220 }}
             value={agentFilter}
             onChange={(v) => setAgentFilter(v ?? undefined)}
@@ -353,34 +353,34 @@ export function MemoryView(): React.ReactElement {
           rowKey="id"
           dataSource={entries}
           pagination={{ pageSize: 10 }}
-          locale={{ emptyText: <Empty description="记忆库为空：执行任务或手动添加后写入" /> }}
+          locale={{ emptyText: <Empty description={t("memory.emptyEntries")} /> }}
           columns={[
             {
-              title: "类型",
+              title: t("memory.colKind"),
               dataIndex: "kind",
               width: 100,
               render: (k: string) => <Tag color={KIND_COLORS[k] ?? "default"}>{k}</Tag>,
             },
             {
-              title: "层",
+              title: t("memory.colLayer"),
               key: "layer",
               width: 80,
               render: (_, e) =>
                 e.agentId ? (
-                  <Tag color="purple" title={`归属: ${e.agentId}`}>
-                    个体
+                  <Tag color="purple" title={t("memory.belongTo", { id: e.agentId })}>
+                    {t("memory.layerIndividual")}
                   </Tag>
                 ) : (
-                  <Tag color="blue">群体</Tag>
+                  <Tag color="blue">{t("memory.layerGroup")}</Tag>
                 ),
             },
             {
-              title: "标题 / 内容",
+              title: t("memory.colTitle"),
               key: "title",
               render: (_, e) => (
                 <Space direction="vertical" size={0}>
                   <span>
-                    {e.pinned && <Tag color="orange">固定</Tag>}
+                    {e.pinned && <Tag color="orange">{t("memory.pinned")}</Tag>}
                     <b>{e.title}</b>
                   </span>
                   <span className="memory-body">{e.body.slice(0, 140)}</span>
@@ -388,21 +388,21 @@ export function MemoryView(): React.ReactElement {
               ),
             },
             {
-              title: "重要性",
+              title: t("memory.colImportance"),
               dataIndex: "importance",
               width: 90,
               render: (v: number) => v.toFixed(2),
               sorter: (a: MemoryEntry, b: MemoryEntry) => a.importance - b.importance,
             },
-            { title: "置信度", dataIndex: "confidence", width: 90, render: (v: number) => v.toFixed(2) },
-            { title: "访问", dataIndex: "accessCount", width: 70 },
+            { title: t("memory.colConf"), dataIndex: "confidence", width: 90, render: (v: number) => v.toFixed(2) },
+            { title: t("memory.colAccess"), dataIndex: "accessCount", width: 70 },
             {
-              title: "操作",
+              title: t("memory.colOps"),
               key: "ops",
               width: 120,
               render: (_, e) => (
                 <Space>
-                  <Tooltip title={e.pinned ? "取消固定" : "固定到 memory.md"}>
+                  <Tooltip title={e.pinned ? t("memory.unpin") : t("memory.pinTip")}>
                     <Button
                       size="small"
                       type="text"
@@ -414,7 +414,7 @@ export function MemoryView(): React.ReactElement {
                     />
                   </Tooltip>
                   <Popconfirm
-                    title="确认遗忘该条记忆？"
+                    title={t("memory.forgetConfirm")}
                     onConfirm={async () => {
                       await api.forgetMemory(e.id);
                       void reload();
@@ -429,24 +429,24 @@ export function MemoryView(): React.ReactElement {
         />
       </Card>
 
-      <Card size="small" className="memory-card" title="个体可靠性统计（自我进化反馈：选路依据）">
+      <Card size="small" className="memory-card" title={t("memory.reliabilityCard")}>
         <Descriptions size="small" column={1} className="memory-dbpath">
-          <Descriptions.Item label="记忆库">{stats?.memory?.dbPath ?? "-"}</Descriptions.Item>
+          <Descriptions.Item label={t("memory.dbLabel")}>{stats?.memory?.dbPath ?? "-"}</Descriptions.Item>
         </Descriptions>
         <Table
           size="small"
           rowKey="agentId"
           dataSource={stats?.agentStats ?? []}
           pagination={{ pageSize: 8 }}
-          locale={{ emptyText: "暂无：执行任务后累积" }}
+          locale={{ emptyText: t("memory.emptyStats") }}
           columns={[
-            { title: "个体", dataIndex: "agentId" },
-            { title: "执行", dataIndex: "runs", width: 70 },
-            { title: "完成", dataIndex: "done", width: 70 },
-            { title: "受阻", dataIndex: "blocked", width: 70 },
-            { title: "失败", dataIndex: "failed", width: 70 },
+            { title: t("memory.colAgent"), dataIndex: "agentId" },
+            { title: t("memory.colRuns"), dataIndex: "runs", width: 70 },
+            { title: t("memory.colDone"), dataIndex: "done", width: 70 },
+            { title: t("memory.colBlocked"), dataIndex: "blocked", width: 70 },
+            { title: t("memory.colFailed"), dataIndex: "failed", width: 70 },
             {
-              title: "平均置信度",
+              title: t("memory.colAvgConf"),
               dataIndex: "avgConfidence",
               width: 120,
               render: (v: number) => v.toFixed(2),
