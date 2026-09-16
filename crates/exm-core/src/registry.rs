@@ -66,6 +66,7 @@ impl LocalRegistry {
                 primary: Some("exmachina-orchestrator".into()),
                 workspace: None,
                 model: None,
+                capabilities: None,
                 builtin: true,
                 created_at: crate::types::now_iso(),
             };
@@ -220,6 +221,7 @@ impl LocalRegistry {
             primary: None,
             workspace: None,
             model: None,
+            capabilities: None,
             builtin: false,
             created_at: crate::types::now_iso(),
         };
@@ -862,6 +864,23 @@ impl LocalRegistry {
         let mut groups = self.groups.write();
         let g = groups.get_mut(gid).context("组不存在")?;
         g.meta.model = if m.is_empty() { None } else { Some(m.to_string()) };
+        let meta_path = g.dir.join("group.json");
+        std::fs::write(&meta_path, serde_json::to_string_pretty(&g.meta)?)?;
+        Ok(())
+    }
+
+    /// 设置组级能力模型覆盖（每项空串 = 清除该项，跟随全局槽位；全空 = 整块收回）
+    pub fn set_group_capabilities(&self, gid: &str, caps: crate::types::GroupCapabilities) -> anyhow::Result<()> {
+        let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let caps = crate::types::GroupCapabilities {
+            speech: norm(caps.speech),
+            transcribe: norm(caps.transcribe),
+            vision_relay: norm(caps.vision_relay),
+            embedding: norm(caps.embedding),
+        };
+        let mut groups = self.groups.write();
+        let g = groups.get_mut(gid).context("组不存在")?;
+        g.meta.capabilities = if caps == crate::types::GroupCapabilities::default() { None } else { Some(caps) };
         let meta_path = g.dir.join("group.json");
         std::fs::write(&meta_path, serde_json::to_string_pretty(&g.meta)?)?;
         Ok(())

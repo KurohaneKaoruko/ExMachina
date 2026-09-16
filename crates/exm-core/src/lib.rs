@@ -748,6 +748,7 @@ pub fn build_orchestrator(
             ))
         };
         pool.insert(p.id.clone(), profile_provider, p.model.clone());
+        pool.set_models(p.id.clone(), p.models.clone());
         if let Some(fb) = &p.fallback {
             pool.set_fallback(&p.id, fb);
         }
@@ -769,6 +770,9 @@ pub fn build_orchestrator(
         events: events.clone(),
         orch_model: cfg.llm.model.clone(),
         memory_semantic_model: cfg.memory_semantic_model.clone(),
+        speech_target: cfg.speech_model.clone(),
+        stt_target: cfg.stt_model.clone(),
+        vision_relay_target: cfg.vision_relay_model.clone(),
         max_concurrency: cfg.max_concurrency,
         auto_adapt: cfg.automation.auto_adapt,
     })

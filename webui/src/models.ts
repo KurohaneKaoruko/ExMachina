@@ -16,6 +16,18 @@ export function buildModelOptions(profiles: LlmProfile[]): ModelOption[] {
   return opts;
 }
 
+/** 能力模型选项（模型设置页 / 组级覆盖共用）：档案默认（value=档案ID）+ 清单逐模型（value=档案ID/模型名） */
+export function buildCapabilityOptions(profiles: LlmProfile[]): ModelOption[] {
+  const opts: ModelOption[] = [];
+  for (const p of profiles) {
+    if (p.model) opts.push({ value: p.id, label: `${p.name} · ${tr("models.capDefault")}` });
+    for (const m of p.models) {
+      opts.push({ value: `${p.id}/${m.model}`, label: `${p.name} / ${m.model}` });
+    }
+  }
+  return opts;
+}
+
 /** 把 modelHint（档案ID 或 档案ID/模型名）解析为可读标签 */
 export function modelLabel(hint: string | null | undefined, profiles: LlmProfile[]): string {
   if (!hint) return tr("models.followGlobalShort");

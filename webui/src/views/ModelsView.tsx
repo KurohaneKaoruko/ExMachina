@@ -8,14 +8,15 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin,
+  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch,
   Tag, Tooltip, message,
 } from "antd";
 import {
-  ApiOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined,
-  PlusOutlined, ReloadOutlined,
+  ApiOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, EyeOutlined, MinusCircleOutlined,
+  PlusOutlined, ReloadOutlined, SoundOutlined,
 } from "@ant-design/icons";
-import { api, KEY_MASK, type LlmProfile, type LlmProfilesInfo } from "../api";
+import { api, KEY_MASK, type LlmCapabilities, type LlmProfile, type LlmProfilesInfo, type ProfileModel } from "../api";
+import { buildCapabilityOptions } from "../models";
 import { PageHeader } from "../components/PageHeader";
 import { useT, type TKey } from "../i18n/core";
 
@@ -80,6 +81,8 @@ function liveKeys(rows: { value?: string }[] | undefined): string[] {
 export function ModelsView(): React.ReactElement {
   const t = useT();
   const [info, setInfo] = useState<LlmProfilesInfo | null>(null);
+  const [caps, setCaps] = useState<LlmCapabilities>({ speech: "", transcribe: "", visionRelay: "", embedding: "" });
+  const [capSaving, setCapSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<LlmProfile | null>(null);
@@ -90,6 +93,7 @@ export function ModelsView(): React.ReactElement {
     setLoading(true);
     try {
       setInfo(await api.llmProfiles());
+      setCaps(await api.llmCapabilities());
     } finally {
       setLoading(false);
     }
@@ -104,7 +108,7 @@ export function ModelsView(): React.ReactElement {
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ preset: "openai", apiFormat: "openai", keys: [{}] });
+    form.setFieldsValue({ preset: "openai", apiFormat: "openai", keys: [{}], models: [] });
     setModal(true);
   };
 
@@ -114,6 +118,12 @@ export function ModelsView(): React.ReactElement {
     // 密钥合并为一行：主 Key + Key 池（保留原顺序；掩码行的原值在提交时由服务端沿用）
     const mask = p.apiKey ? [KEY_MASK] : [];
     const pool = (p.apiKeys ?? []).map((k) => (k ? KEY_MASK : ""));
+    // 模型清单：空清单且默认模型存在时，先列出默认模型行（能力未标记，用户自行勾选）
+    const rows: ProfileModel[] = p.models.length
+      ? p.models.map((m) => ({ ...m }))
+      : p.model
+        ? [{ model: p.model, vision: false, audio: false }]
+        : [];
     form.setFieldsValue({
       preset,
       id: p.id,
@@ -121,6 +131,7 @@ export function ModelsView(): React.ReactElement {
       baseUrl: p.baseUrl,
       apiFormat: p.apiFormat || "openai",
       model: p.model,
+      models: rows,
       fallback: p.fallback ?? undefined,
       keys: [...mask, ...pool].map((v) => ({ value: v })),
     });
@@ -175,6 +186,9 @@ export function ModelsView(): React.ReactElement {
         apiKey,
         apiKeys,
         model: (v.model ?? "").trim(),
+        models: ((v.models ?? []) as ProfileModel[])
+          .filter((m) => m.model && m.model.trim())
+          .map((m) => ({ model: m.model.trim(), vision: !!m.vision, audio: !!m.audio })),
         fallback: v.fallback ?? "",
       });
       message.success(existing ? t("models.savedName", { name: v.name || existing.name }) : t("models.added", { name: v.name }));
@@ -234,6 +248,41 @@ export function ModelsView(): React.ReactElement {
     [profiles, editing],
   );
 
+  /** 能力槽位候选：每个档案的默认模型 + 清单里的每个模型（"档案ID" / "档案ID/模型名"） */
+  const capOptions = useMemo(() => buildCapabilityOptions(profiles), [profiles]);
+
+  const capField = (
+    key: keyof LlmCapabilities,
+    label: string,
+    hint: string,
+    placeholder: string,
+  ) => (
+    <div className="cap-row" key={key}>
+      <div className="cap-label">{label}</div>
+      <Select
+        allowClear
+        showSearch
+        value={caps[key] || undefined}
+        placeholder={placeholder}
+        options={capOptions}
+        onChange={(v) => setCaps((c) => ({ ...c, [key]: v ?? "" }))}
+      />
+      <div className="dim cap-hint">{hint}</div>
+    </div>
+  );
+
+  const saveCaps = async () => {
+    setCapSaving(true);
+    try {
+      setCaps(await api.saveLlmCapabilities(caps));
+      message.success(t("models.capSaved"));
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    } finally {
+      setCapSaving(false);
+    }
+  };
+
   const presetOptions = [
     ...PRESETS.map((p) => ({ value: p.key, label: PRESET_LABEL[p.key] ? t(PRESET_LABEL[p.key]!) : p.name })),
     { value: CUSTOM, label: t("models.customPreset") },
@@ -244,8 +293,8 @@ export function ModelsView(): React.ReactElement {
   return (
     <div className="pane-wrap">
       <PageHeader
-        en="PROVIDERS"
-        title={t("nav.providers")}
+        en="MODELS"
+        title={t("nav.models")}
         desc={t("models.desc")}
         actions={
           <>
@@ -310,6 +359,23 @@ export function ModelsView(): React.ReactElement {
                   <Tag color="cyan">{p.model || t("models.unspecified")}</Tag>
                 </div>
                 <div className="model-kv">
+                  <span className="k">{t("models.modelList")}</span>
+                  <span className="model-caps">
+                    {p.models.length ? (
+                      p.models.map((m) => (
+                        <Tag key={m.model} color={m.model === p.model ? "geekblue" : "default"}>
+                          {m.model === p.model ? <CheckCircleOutlined /> : null}
+                          {m.model}
+                          {m.vision ? <EyeOutlined style={{ marginLeft: 4 }} /> : null}
+                          {m.audio ? <SoundOutlined style={{ marginLeft: 4 }} /> : null}
+                        </Tag>
+                      ))
+                    ) : (
+                      <span className="dim">{t("models.capNone")}</span>
+                    )}
+                  </span>
+                </div>
+                <div className="model-kv">
                   <span className="k">{t("models.keyLabel")}</span>
                   {hasKey ? (
                     // 已配置是正常态，用中性标签；只有缺密钥才需要警示
@@ -333,6 +399,25 @@ export function ModelsView(): React.ReactElement {
         </div>
         {!loading && profiles.length === 0 && <Empty description={t("models.none")} className="pane-empty" />}
       </Spin>
+
+      <Card
+        size="small"
+        className="hud cap-card"
+        title={t("models.capTitle")}
+        extra={
+          <Button size="small" type="primary" loading={capSaving} onClick={() => void saveCaps()}>
+            {t("common.save")}
+          </Button>
+        }
+      >
+        <div className="dim cap-hint" style={{ marginBottom: 10 }}>{t("models.capGlobalHint")}</div>
+        <div className="cap-grid">
+          {capField("speech", t("models.capSpeech"), t("models.capSpeechHint"), t("models.capUnset"))}
+          {capField("transcribe", t("models.capStt"), t("models.capSttHint"), t("models.capUnset"))}
+          {capField("visionRelay", t("models.capVisionRelay"), t("models.capVisionHint"), t("models.capUnset"))}
+          {capField("embedding", t("models.capEmbed"), t("models.capEmbedHint"), t("models.capEmbedPh"))}
+        </div>
+      </Card>
 
       <Modal
         open={modal}
@@ -391,6 +476,58 @@ export function ModelsView(): React.ReactElement {
             extra={t("models.defaultModelExtra")}
           >
             <Input placeholder="deepseek-chat" />
+          </Form.Item>
+
+          <Form.Item label={t("models.modelList")} style={{ marginBottom: 0 }}>
+            <Form.List name="models">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(({ key, name, ...rest }) => (
+                    <div key={key} className="model-row">
+                      <Form.Item
+                        {...rest}
+                        name={[name, "model"]}
+                        noStyle
+                        rules={[{ required: true, whitespace: true, message: t("models.modelNameRequired") }]}
+                      >
+                        <Input placeholder="gpt-4o" />
+                      </Form.Item>
+                      <label className="cap-switch">
+                        <Form.Item {...rest} name={[name, "vision"]} valuePropName="checked" noStyle>
+                          <Switch size="small" />
+                        </Form.Item>
+                        <EyeOutlined />
+                        {t("models.visionCap")}
+                      </label>
+                      <label className="cap-switch">
+                        <Form.Item {...rest} name={[name, "audio"]} valuePropName="checked" noStyle>
+                          <Switch size="small" />
+                        </Form.Item>
+                        <SoundOutlined />
+                        {t("models.audioCap")}
+                      </label>
+                      <Button
+                        type="text"
+                        icon={<MinusCircleOutlined />}
+                        onClick={() => remove(name)}
+                        aria-label={t("common.delete")}
+                      />
+                    </div>
+                  ))}
+                  <Button
+                    type="dashed"
+                    block
+                    icon={<PlusOutlined />}
+                    onClick={() => add({ model: "", vision: false, audio: false })}
+                  >
+                    {t("models.addModel")}
+                  </Button>
+                  <div className="ant-form-item-extra" style={{ marginTop: 6 }}>
+                    {t("models.modelListExtra")}
+                  </div>
+                </>
+              )}
+            </Form.List>
           </Form.Item>
 
           <div className="form-grid-2">

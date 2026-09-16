@@ -67,7 +67,7 @@ export const NAV_ITEMS: {
   { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
   { key: "agents", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
   { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
-  { key: "models", en: "PROVIDERS", labelKey: "nav.providers", icon: <ApiOutlined /> },
+  { key: "models", en: "MODELS", labelKey: "nav.models", icon: <ApiOutlined /> },
   { key: "graph", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
   { key: "automations", en: "CRON", labelKey: "nav.cron", icon: <ClockCircleOutlined /> },
   { key: "approvals", en: "APPROVALS", labelKey: "nav.approvals", icon: <BellOutlined /> },
@@ -215,7 +215,7 @@ export default function App(): React.ReactElement {
         <div className="nav-footer">
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} />
           <span className="status-text">{wsConnected ? t("status.connected") : t("status.reconnecting")}</span>
-          {/* 通道状态：是否已配置模型端点。未配置即无法推理，提示去「提供商」页补齐。 */}
+          {/* 通道状态：是否已配置模型端点。未配置即无法推理，提示去「模型设置」页补齐。 */}
           <Tag color={llmReady ? "success" : "warning"} className="brand-tag">
             {llmReady ? t("status.link") : t("status.unlinked")}
           </Tag>

@@ -105,6 +105,8 @@ pub struct ChatResponse {
 /// 嵌入模型不属于池的条目——它由「记忆」页的语义检索设置从既有提供商中指定。
 pub struct ModelPool {
     entries: std::collections::HashMap<String, (std::sync::Arc<dyn LlmProvider>, String)>,
+    /// 档案模型清单（模型名 + 视觉/语音能力开关）：多模态路由的判定依据
+    models: std::collections::HashMap<String, Vec<crate::config::ModelEntry>>,
     /// 档案失败回退链：id → 下一个档案 id
     fallbacks: std::collections::HashMap<String, String>,
     /// 全局生效档案 id（回退链的最终兜底）
@@ -121,9 +123,22 @@ impl ModelPool {
     pub fn new() -> Self {
         ModelPool {
             entries: std::collections::HashMap::new(),
+            models: std::collections::HashMap::new(),
             fallbacks: std::collections::HashMap::new(),
             active_id: String::new(),
         }
+    }
+
+    /// 登记档案的模型清单（能力开关随档案编辑经 apply_config 重建）
+    pub fn set_models(&mut self, id: impl Into<String>, models: Vec<crate::config::ModelEntry>) {
+        self.models.insert(id.into(), models);
+    }
+
+    /// 模型能力标记：档案清单里该模型名的 vision/audio 开关。
+    /// None = 清单为空或模型不在清单里（能力未知，调用方保持直通行为）。
+    pub fn capability(&self, pid: &str, model: &str, vision: bool) -> Option<bool> {
+        let list = self.models.get(pid)?;
+        list.iter().find(|m| m.model == model).map(|m| if vision { m.vision } else { m.audio })
     }
 
     /// 全局生效档案 id（build_orchestrator 注入）

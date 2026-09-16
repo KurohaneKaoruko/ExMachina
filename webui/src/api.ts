@@ -119,6 +119,14 @@ export interface AgentStat {
   updatedAt: string;
 }
 
+/** 组级能力模型覆盖（"档案ID" 或 "档案ID/模型名"）：每组可用不同模型栈；缺省 = 跟随全局槽位 */
+export interface GroupCapabilities {
+  speech?: string;
+  transcribe?: string;
+  visionRelay?: string;
+  embedding?: string;
+}
+
 export interface GroupMeta {
   id: string;
   name: string;
@@ -127,6 +135,8 @@ export interface GroupMeta {
   workspace?: string;
   /** 组默认模型（"档案ID" 或 "档案ID/模型名"；空 = 跟随全局生效档案） */
   model?: string;
+  /** 组级能力模型覆盖；缺省字段跟随「模型设置」页的全局槽位 */
+  capabilities?: GroupCapabilities | null;
   builtin: boolean;
   createdAt: string;
 }
@@ -209,10 +219,27 @@ export interface LlmProfile {
   apiKey: string;
   /** 多 Key 池（掩码行 = 沿用旧池同位键） */
   apiKeys?: string[];
-  /** 该提供商的默认模型名 */
+  /** 该提供商的默认模型名（模型清单里设为默认的那一个） */
   model: string;
+  /** 模型清单（模型名 + 视觉/语音能力开关）；空 = 未标记（能力未知，输入直通） */
+  models: ProfileModel[];
   /** 失败回退：下一个档案 id（请求失败且未发出内容时切换） */
   fallback?: string | null;
+}
+
+/** 模型条目：视觉/语音开关决定多模态路由（不支持时走视觉转述/语音转述） */
+export interface ProfileModel {
+  model: string;
+  vision: boolean;
+  audio: boolean;
+}
+
+/** 能力模型槽位："档案ID" 或 "档案ID/模型名"；空 = 全局档案默认（TTS tts-1 / STT whisper-1 / 仅词项召回） */
+export interface LlmCapabilities {
+  speech: string;
+  transcribe: string;
+  visionRelay: string;
+  embedding: string;
 }
 
 export interface LlmProfilesInfo {
@@ -386,6 +413,11 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ model }),
     }),
+  setGroupCapabilities: (gid: string, body: GroupCapabilities) =>
+    req<{ ok: boolean; capabilities?: GroupCapabilities | null }>(`/groups/${gid}/capabilities`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   createSingle: (body: { name: string; identifier: string; description: string; domain?: string; prompt?: string }) =>
     req<AgentDefinition>("/singles", { method: "POST", body: JSON.stringify(body) }),
   deleteSingle: (id: string) => req<{ ok: boolean }>(`/singles/${id}`, { method: "DELETE" }),
@@ -456,7 +488,7 @@ export const api = {
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 
   llmProfiles: () => req<LlmProfilesInfo>("/llm/profiles"),
-  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; model?: string; fallback?: string }) =>
+  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; model?: string; models?: ProfileModel[]; fallback?: string }) =>
     req<{ ok: boolean; id: string; mock?: boolean }>("/llm/profiles", { method: "POST", body: JSON.stringify(body) }),
   deleteLlmProfile: (id: string) => req<{ ok: boolean }>(`/llm/profiles/${id}`, { method: "DELETE" }),
   activateLlmProfile: (id: string) =>
@@ -466,6 +498,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(id ? { id } : {}),
     }),
+  llmCapabilities: () => req<LlmCapabilities>("/llm/capabilities"),
+  saveLlmCapabilities: (body: Partial<LlmCapabilities>) =>
+    req<LlmCapabilities & { ok: boolean }>("/llm/capabilities", { method: "PUT", body: JSON.stringify(body) }),
   setGroupWorkspace: (gid: string, workspace: string) =>
     req<{ ok: boolean }>(`/groups/${gid}/workspace`, { method: "PUT", body: JSON.stringify({ workspace }) }),
 };

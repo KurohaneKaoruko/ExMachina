@@ -857,6 +857,30 @@ body {
   text-transform: uppercase;
 }
 .model-kv .mono { word-break: break-all; }
+/* 模型清单标签（提供商卡）：眼睛=视觉、喇叭=语音，图标与文字留缝 */
+.model-caps { display: inline-flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.model-caps .ant-tag { margin-inline-end: 0; }
+.model-caps .anticon { font-size: 11px; opacity: 0.85; }
+/* 编辑弹窗：模型清单行（输入 + 视觉/语音开关 + 删除） */
+.model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.model-row > .ant-form-item { flex: 1; min-width: 0; margin: 0; }
+.cap-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: default;
+  white-space: nowrap;
+}
+/* 能力模型卡：两列栅格（窄屏降单列） */
+.cap-card { margin-top: 14px; }
+.cap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+@media (max-width: 900px) { .cap-grid { grid-template-columns: 1fr; } }
+.cap-row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cap-row .cap-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.cap-row .cap-hint { font-size: 11.5px; line-height: 1.5; }
 /* 正常态标签：不吃 antd 的 warning/error 语义色，用中性描边表示「已就绪」 */
 .tag-ok {
   color: var(--green) !important;

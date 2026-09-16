@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use exm_core::config::LlmProfile;
+use exm_core::config::{LlmProfile, ModelEntry};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -21,12 +21,18 @@ fn mask_key(k: &str) -> String {
 
 fn profile_json(p: &LlmProfile) -> Value {
     let keys: Vec<Value> = p.api_keys.iter().map(|k| Value::String(mask_key(k))).collect();
+    let models: Vec<Value> = p
+        .models
+        .iter()
+        .map(|m| json!({ "model": m.model, "vision": m.vision, "audio": m.audio }))
+        .collect();
     json!({
         "id": p.id, "name": p.name, "baseUrl": p.base_url,
         "apiKey": mask_key(&p.api_key),
         "apiKeys": keys,
         "apiFormat": if p.api_format.is_empty() { "openai" } else { &p.api_format },
         "model": p.model,
+        "models": models,
         "fallback": p.fallback,
     })
 }
@@ -57,9 +63,22 @@ pub struct LlmProfileBody {
     pub api_format: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// 模型清单（模型名 + 视觉/语音能力开关）；缺省 = 沿用旧清单
+    #[serde(default)]
+    pub models: Option<Vec<ModelEntryBody>>,
     /// 失败回退：下一个档案 id（空串清除；缺省 = 沿用）
     #[serde(default)]
     pub fallback: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntryBody {
+    pub model: String,
+    #[serde(default)]
+    pub vision: bool,
+    #[serde(default)]
+    pub audio: bool,
 }
 
 fn resolve_profile_input(
@@ -87,6 +106,29 @@ fn resolve_profile_input(
     if api_keys.is_empty() {
         api_keys = existing.map(|e| e.api_keys.clone()).unwrap_or_default();
     }
+    // 模型清单：缺省沿用旧清单；提交时空值模型名剔除。默认模型若不在清单中自动补入（能力未标记）。
+    let mut models: Vec<ModelEntry> = match &v.models {
+        Some(list) => list
+            .iter()
+            .map(|m| ModelEntry {
+                model: m.model.trim().to_string(),
+                vision: m.vision,
+                audio: m.audio,
+            })
+            .filter(|m| !m.model.is_empty())
+            .collect(),
+        None => existing.map(|e| e.models.clone()).unwrap_or_default(),
+    };
+    let model_name = v
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| existing.map(|e| e.model.clone()).unwrap_or_default());
+    if !model_name.is_empty() && !models.iter().any(|m| m.model == model_name) {
+        models.insert(0, ModelEntry { model: model_name.clone(), vision: false, audio: false });
+    }
     LlmProfile {
         id: v.id
             .clone()
@@ -99,14 +141,9 @@ fn resolve_profile_input(
             .unwrap_or_else(|| existing.map(|e| e.base_url.clone()).unwrap_or_default()),
         api_key: key,
         api_keys,
+        models,
         api_format: v.api_format.clone().unwrap_or_else(|| existing.map(|e| e.api_format.clone()).unwrap_or_default()),
-        model: v
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| existing.map(|e| e.model.clone()).unwrap_or_default()),
+        model: model_name,
         fallback: match v.fallback.as_deref() {
             None => existing.and_then(|e| e.fallback.clone()),
             Some(f) if f.trim().is_empty() => None,
@@ -227,6 +264,7 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
             api_keys: cfg.llm.api_keys.clone(),
             api_format: cfg.llm.api_format.clone(),
             model: cfg.llm.model.clone(),
+            models: Vec::new(),
             fallback: None,
         }),
     };
@@ -289,10 +327,76 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
     }
 }
 
+// ---------------------------------------------------------------- 能力模型槽位
+
+/// 能力模型总览：语音合成 / 语音转述 / 视觉转述 / 嵌入。
+/// 嵌入与「记忆」页的语义检索是同一字段（memory.semanticModel），两处入口等价。
+pub async fn get_capabilities(State(st): State<AppState>) -> impl IntoResponse {
+    let cfg = st.core.config();
+    Json(json!({
+        "speech": cfg.speech_model,
+        "transcribe": cfg.stt_model,
+        "visionRelay": cfg.vision_relay_model,
+        "embedding": cfg.memory_semantic_model,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilitiesBody {
+    #[serde(default)]
+    pub speech: Option<String>,
+    #[serde(default)]
+    pub transcribe: Option<String>,
+    #[serde(default)]
+    pub vision_relay: Option<String>,
+    #[serde(default)]
+    pub embedding: Option<String>,
+}
+
+/// 更新能力模型槽位（"档案ID" 或 "档案ID/模型名"；空串 = 清除回落默认；缺省 = 沿用）
+pub async fn put_capabilities(
+    State(st): State<AppState>,
+    Json(b): Json<CapabilitiesBody>,
+) -> impl IntoResponse {
+    let mut cfg = (*st.core.config()).clone();
+    if let Some(v) = b.speech {
+        cfg.speech_model = v.trim().to_string();
+    }
+    if let Some(v) = b.transcribe {
+        cfg.stt_model = v.trim().to_string();
+    }
+    if let Some(v) = b.vision_relay {
+        cfg.vision_relay_model = v.trim().to_string();
+    }
+    if let Some(v) = b.embedding {
+        cfg.memory_semantic_model = v.trim().to_string();
+    }
+    cfg.use_mock = cfg.use_mock || exm_core::config::mock_enabled_from_env();
+    match st.core.apply_config(cfg) {
+        Ok(_) => {
+            let cfg = st.core.config();
+            Json(json!({
+                "ok": true,
+                "speech": cfg.speech_model,
+                "transcribe": cfg.stt_model,
+                "visionRelay": cfg.vision_relay_model,
+                "embedding": cfg.memory_semantic_model,
+            }))
+            .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/llm/profiles", get(list_profiles).post(save_profile))
         .route("/api/llm/profiles/:id", axum::routing::delete(delete_profile))
         .route("/api/llm/active", axum::routing::put(activate_profile))
         .route("/api/llm/test", post(test_profile))
+        .route(
+            "/api/llm/capabilities",
+            axum::routing::get(get_capabilities).put(put_capabilities),
+        )
 }

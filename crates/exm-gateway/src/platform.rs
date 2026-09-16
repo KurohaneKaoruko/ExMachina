@@ -173,6 +173,41 @@ pub async fn set_group_model(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupCapsBody {
+    #[serde(default)]
+    pub speech: Option<String>,
+    #[serde(default)]
+    pub transcribe: Option<String>,
+    #[serde(default)]
+    pub vision_relay: Option<String>,
+    #[serde(default)]
+    pub embedding: Option<String>,
+}
+
+/// 设置组级能力模型覆盖（每组可用不同模型栈；空串 = 清除该项跟随全局）
+pub async fn set_group_capabilities(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<GroupCapsBody>,
+) -> impl IntoResponse {
+    let caps = exm_core::types::GroupCapabilities {
+        speech: b.speech,
+        transcribe: b.transcribe,
+        vision_relay: b.vision_relay,
+        embedding: b.embedding,
+    };
+    match st.core.registry().set_group_capabilities(&id, caps) {
+        Ok(_) => Json(json!({
+            "ok": true,
+            "capabilities": st.core.group_meta(&id).and_then(|m| m.capabilities),
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
 /// 会话事件溯源（活动页用，取最近 limit 条）
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -936,6 +971,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/groups/:id/agents", get(group_agents))
         .route("/api/groups/:id/primary", post(set_group_primary))
         .route("/api/groups/:id/model", axum::routing::put(set_group_model))
+        .route("/api/groups/:id/capabilities", axum::routing::put(set_group_capabilities))
         .route("/api/groups/:id/workspace", axum::routing::put(set_group_workspace))
         .route("/api/groups/:id/overview", get(group_overview))
         .route("/api/sessions/:id/events", get(session_events))

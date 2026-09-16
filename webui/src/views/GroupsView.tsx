@@ -4,10 +4,10 @@ import {
   Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message,
 } from "antd";
 import { PlusOutlined, SettingOutlined, UsergroupDeleteOutlined } from "@ant-design/icons";
-import { api, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
+import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
-import { buildModelOptions } from "../models";
+import { buildCapabilityOptions, buildModelOptions } from "../models";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 
@@ -26,6 +26,7 @@ export function GroupsView(): React.ReactElement {
   const [wsDraft, setWsDraft] = useState("");
   const [descDraft, setDescDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [capsDraft, setCapsDraft] = useState<GroupCapabilities>({});
   const [groupForm] = Form.useForm();
   const [agentForm] = Form.useForm();
 
@@ -129,6 +130,7 @@ export function GroupsView(): React.ReactElement {
     setWsDraft(meta?.workspace ?? "");
     setDescDraft(meta?.description ?? "");
     setModelDraft(meta?.model ?? "");
+    setCapsDraft(meta?.capabilities ?? {});
     setSettingsOpen(true);
   };
 
@@ -137,6 +139,7 @@ export function GroupsView(): React.ReactElement {
     try {
       await api.setGroupWorkspace(meta.id, wsDraft.trim());
       await api.setGroupModel(meta.id, modelDraft);
+      await api.setGroupCapabilities(meta.id, capsDraft);
       message.success(t("groups.settingsSaved"));
       setSettingsOpen(false);
       await loadMembers(meta.id);
@@ -144,6 +147,21 @@ export function GroupsView(): React.ReactElement {
       message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
+
+  /** 组级能力覆盖行：空 = 跟随全局槽位 */
+  const capField = (key: keyof GroupCapabilities, label: string) => (
+    <div className="cap-row" key={key}>
+      <div className="cap-label">{label}</div>
+      <Select
+        allowClear
+        showSearch
+        value={capsDraft[key] || undefined}
+        options={buildCapabilityOptions(profiles)}
+        placeholder={t("groups.capsFollow")}
+        onChange={(v) => setCapsDraft((c) => ({ ...c, [key]: v ?? "" }))}
+      />
+    </div>
+  );
 
   return (
     <div className="pane-wrap">
@@ -340,6 +358,14 @@ export function GroupsView(): React.ReactElement {
               onChange={setModelDraft}
               options={buildModelOptions(profiles)}
             />
+          </Form.Item>
+          <Form.Item label={t("groups.capsTitle")} help={t("groups.capsHint")} style={{ marginBottom: 8 }}>
+            <div className="cap-grid" style={{ gap: "8px 14px" }}>
+              {capField("speech", t("models.capSpeech"))}
+              {capField("transcribe", t("models.capStt"))}
+              {capField("visionRelay", t("models.capVisionRelay"))}
+              {capField("embedding", t("models.capEmbed"))}
+            </div>
           </Form.Item>
         </Form>
       </Modal>

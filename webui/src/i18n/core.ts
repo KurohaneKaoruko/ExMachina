@@ -77,10 +77,12 @@ export function useT(): (key: TArg, params?: TParams) => string {
   };
 }
 
-/** 非 React 上下文用（zustand store / 工具函数）：读当前语言快照做翻译。
- *  注意：不会随语言切换自动重渲染，仅用于即时构造的消息文本。 */
+/** 非 React 上下文用（store / 工具函数 / 渲染期辅助函数）：同步读当前语言做翻译。
+ *  ⚠️ 必须走 `getState()` 而不是 hook：`useLang((s)=>…)` 在组件渲染期间被调用
+ *  （如构造 Select options 时）会把 hook 计进当前组件 → 两次渲染间钩子数漂移 → React #310 崩树。
+ *  代价：不随语言切换自动重渲染——渲染期文案请用 useT()。 */
 export function tr(key: TArg, params?: TParams): string {
-  const lang = useLang((s) => s.lang); // zustand store 可在组件外同步读取
+  const lang = useLang.getState().lang;
   let s = lookup(lang, key) ?? key;
   if (params) {
     for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));

@@ -88,16 +88,95 @@ pub struct Orchestrator {
     pub orch_model: String,
     /// 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回（由记忆设置指定）
     pub memory_semantic_model: String,
+    /// 能力模型槽位（"档案ID" 或 "档案ID/模型名"）：语音合成 / 语音转述 / 视觉转述
+    pub speech_target: String,
+    pub stt_target: String,
+    pub vision_relay_target: String,
     pub max_concurrency: usize,
     /// 新教训达阈值时自动提炼经验改进要点（docs/10 §5）
     pub auto_adapt: bool,
 }
 
 impl Orchestrator {
+    /// 能力槽位目标（组覆盖优先）：激活组的组级覆盖 → 全局槽位（模型设置页）。
+    /// 返回 None = 该槽位全局与组都未配置（调用方回落出厂默认）。
+    fn capability_target(&self, slot: &str) -> Option<String> {
+        let from_group = self
+            .registry
+            .active_group_meta()
+            .and_then(|m| m.capabilities)
+            .and_then(|c| match slot {
+                "speech" => c.speech,
+                "transcribe" => c.transcribe,
+                "vision_relay" => c.vision_relay,
+                "embedding" => c.embedding,
+                _ => None,
+            });
+        let target = from_group.or_else(|| match slot {
+            "speech" => Some(self.speech_target.clone()),
+            "transcribe" => Some(self.stt_target.clone()),
+            "vision_relay" => Some(self.vision_relay_target.clone()),
+            "embedding" => Some(self.memory_semantic_model.clone()),
+            _ => None,
+        });
+        target.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
     /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 exmachina-orchestrator）。
-    /// 语音转写：全局生效档案的 Provider（whisper 系模型名）
+    /// 语音转写：组覆盖 → 全局槽位指定的档案/模型；未配置回落全局生效档案的 whisper-1
     pub async fn transcribe_audio(&self, audio: &[u8], filename: &str) -> anyhow::Result<String> {
-        self.orch_provider.transcribe("whisper-1", audio, filename).await
+        match self.capability_target("transcribe").and_then(|t| self.resolve_capability(&t)) {
+            Some((provider, model)) => provider.transcribe(&model, audio, filename).await,
+            None => self.orch_provider.transcribe("whisper-1", audio, filename).await,
+        }
+    }
+
+    /// 语音合成：组覆盖 → 全局槽位指定的档案/模型；未配置回落全局生效档案的 tts-1
+    pub async fn speak_audio(&self, text: &str) -> anyhow::Result<Vec<u8>> {
+        match self.capability_target("speech").and_then(|t| self.resolve_capability(&t)) {
+            Some((provider, model)) => provider.speak(&model, text).await,
+            None => self.orch_provider.speak("tts-1", text).await,
+        }
+    }
+
+    /// 视觉转述：生效模型未标记支持视觉（清单里明确 vision=false）且配置了转述模型时，
+    /// 把图片逐张交给转述模型转成文字描述。返回 None = 无需/无法转述（保持直通或忽略）。
+    async fn relay_images(&self, images: &[String]) -> Option<String> {
+        if images.is_empty() {
+            return None;
+        }
+        // 目标模型视觉能力：链首候选（真正会接这批图片的模型）
+        let vision = self
+            .orch_candidates()
+            .first()
+            .and_then(|(pid, _, model)| self.model_pool.capability(pid, model, true));
+        match vision {
+            Some(true) | None => return None, // 支持视觉 / 能力未知（保持直通）
+            Some(false) => {}
+        }
+        let (provider, model) = self
+            .capability_target("vision_relay")
+            .and_then(|t| self.resolve_capability(&t))?;
+        let mut out = String::new();
+        for (i, img) in images.iter().enumerate() {
+            let mut msg = ChatMessage::user(
+                "请用中文详细描述这张图片的内容：主体与场景、可见文字、数据与关键细节。只输出描述正文。",
+            );
+            msg.images = vec![img.clone()];
+            let req = ChatRequest::new(model.clone(), vec![msg]);
+            match provider.chat(req).await {
+                Ok(resp) if !resp.content.trim().is_empty() => {
+                    out.push_str(&format!("【图片{}】{}\n", i + 1, resp.content.trim()));
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("[vision-relay] 图片转述失败：{e}"),
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 
     /// memory.md 超限自主压缩：LLM 简略化，旧全文归档（深层开 = 存数据库；关 = 存工作区归档文件）
@@ -135,11 +214,6 @@ impl Orchestrator {
         }
         std::fs::write(&self.memory_md_path, &compressed)?;
         Ok((len, compressed.chars().count()))
-    }
-
-    /// 语音合成：全局生效档案的 Provider（tts 系模型，mp3 字节）
-    pub async fn speak_audio(&self, text: &str) -> anyhow::Result<Vec<u8>> {
-        self.orch_provider.speak("tts-1", text).await
     }
 
     /// 工作者端执行入口：远程派发在本地执行（供 WorkerSession 调用）
@@ -234,21 +308,25 @@ impl Orchestrator {
         provider.embed(&model, &[text.to_string()]).await.ok()?.into_iter().next()
     }
 
-    /// 解析语义检索目标（记忆设置指定的档案与模型）；未配置返回 None
+    /// 解析语义检索目标（组覆盖 → 全局记忆设置指定的档案与模型）；未配置返回 None
     fn semantic_recall(&self) -> Option<(Arc<dyn LlmProvider>, String)> {
-        let id = self.memory_semantic_model.trim().to_string();
+        let target = self.capability_target("embedding")?;
+        self.resolve_capability(&target).filter(|(_, m)| !m.is_empty())
+    }
+
+    /// 解析能力槽位目标（"档案ID" 或 "档案ID/模型名"）→ (Provider, 生效模型名)。
+    /// 目标为空或档案不存在返回 None（调用方回落默认行为）。
+    fn resolve_capability(&self, target: &str) -> Option<(Arc<dyn LlmProvider>, String)> {
+        let id = target.trim().to_string();
         if id.is_empty() {
             return None;
         }
         let (pid, model) = match id.split_once('/') {
             Some((p, m)) if !m.trim().is_empty() => (p.trim().to_string(), m.trim().to_string()),
-            _ => (id.trim().to_string(), String::new()),
+            _ => (id, String::new()),
         };
         let (provider, profile_model) = self.model_pool.entry(&pid)?;
         let model = if model.is_empty() { profile_model } else { model };
-        if model.is_empty() {
-            return None; // 档案没给模型名：无从嵌入
-        }
         Some((provider, model))
     }
 
@@ -926,8 +1004,30 @@ impl Orchestrator {
         let mut user_msg = ChatMessage::user(format!(
             "{context_block}用户任务输入：{text}\n\n【要求】按 OrchestratorPlan 契约输出 JSON。nodes 中的 agentIdentifier 必须来自上方可调度清单。"
         ));
-        // 多模态输入：本轮附带的图片（data URL）随用户消息进入规划
-        user_msg.images = crate::image_stash::take(session_id);
+        // 多模态输入：本轮附带的图片（data URL）。生效模型未标记视觉能力时，
+        // 走「视觉转述」模型把图片转成文字描述注入；未配置转述且明确无视觉 → 丢弃并说明。
+        let images = crate::image_stash::take(session_id);
+        match self.relay_images(&images).await {
+            Some(desc) => {
+                let note = format!(
+                    "\n\n## 图片内容（由视觉转述模型转写，原始图片未直接下发）\n{desc}"
+                );
+                user_msg.content.push_str(&note);
+            }
+            None => {
+                let vision = self
+                    .orch_candidates()
+                    .first()
+                    .and_then(|(pid, _, model)| self.model_pool.capability(pid, model, true));
+                if vision == Some(false) && !images.is_empty() {
+                    user_msg.content.push_str(
+                        "\n\n（用户随本轮附带了图片，但当前模型不支持视觉且未配置视觉转述模型，图片已忽略。）",
+                    );
+                } else {
+                    user_msg.images = images;
+                }
+            }
+        }
         let mut messages = vec![
             ChatMessage::system(format!(
                 "{system_prompt}\n\n## 当前可调度子个体\n{registry_brief}\n\n{skill_brief}{playbook_brief}{stats_block}{memory_block}"

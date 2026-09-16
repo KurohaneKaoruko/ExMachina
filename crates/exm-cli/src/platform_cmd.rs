@@ -181,6 +181,7 @@ pub fn run_model_add(
         api_keys: Vec::new(),
         api_format: String::new(),
         model: model.trim().to_string(),
+        models: Vec::new(),
     };
     if let Some(slot) = cfg.llm_profiles.iter_mut().find(|p| p.id == profile.id) {
         *slot = profile.clone();

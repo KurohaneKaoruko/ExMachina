@@ -12,9 +12,24 @@ use std::path::{Path, PathBuf};
 /// 配置结构版本（新增字段时 +1，并在 `migrate_file` 中补默认值）
 pub const CONFIG_VERSION: u32 = 1;
 
+/// 提供商下的模型条目：能力开关让平台知道该模型支持哪些多模态输入。
+/// 模型未列入清单（或档案无清单）视为能力未知，保持直通行为。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    /// 模型名（API 的 model 参数）
+    pub model: String,
+    /// 支持视觉（图片输入）
+    #[serde(default)]
+    pub vision: bool,
+    /// 支持音频（语音输入）
+    #[serde(default)]
+    pub audio: bool,
+}
+
 /// 厂商模型档案：一条 OpenAI 兼容端点（OpenAI/DeepSeek/通义/Kimi/智谱/Ollama/vLLM …）。
 /// 多档案可并存，`active_profile` 决定当前生效者；切换即热生效（apply_config 重建运行时）。
-/// 档案只描述「端点 + 密钥 + 默认模型」；指挥体 / 子个体不在此区分——编成本身已按角色分配模型。
+/// 档案描述「端点 + 密钥 + 模型清单」；指挥体 / 子个体不在此区分——编成本身已按角色分配模型。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmProfile {
@@ -29,9 +44,12 @@ pub struct LlmProfile {
     /// API 协议：openai（默认）| anthropic
     #[serde(default)]
     pub api_format: String,
-    /// 该提供商的默认模型名
+    /// 该提供商的默认模型名（模型清单里勾「默认」的那一个）
     #[serde(default)]
     pub model: String,
+    /// 模型清单（含视觉/语音能力开关）；空 = 未标记（能力未知，输入直通）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelEntry>,
     /// 失败回退：下一个档案 id（请求失败且未发出内容时切换；成环自动截断）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
@@ -114,6 +132,13 @@ pub struct ExmConfig {
     pub memory_half_life_days: f64,
     /// 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回
     pub memory_semantic_model: String,
+    /// 能力模型槽位（"档案ID" 或 "档案ID/模型名"）：
+    /// 语音合成（TTS）；空 = 全局档案默认 tts-1
+    pub speech_model: String,
+    /// 语音识别 / 语音转述（STT）；空 = 全局档案默认 whisper-1
+    pub stt_model: String,
+    /// 视觉转述：生效模型未标记视觉能力时，用它把图片转成文字描述；空 = 不转述
+    pub vision_relay_model: String,
     /// 测试替身通道（仅 `EXM_LLM_MOCK=1` 或测试代码置位；产品运行时不生效）
     pub use_mock: bool,
     /// 执行审批（安全闸门）
@@ -153,7 +178,22 @@ struct ConfigFile {
     #[serde(default)]
     active_profile: Option<String>,
     #[serde(default)]
+    capabilities: Option<CapabilitiesFile>,
+    #[serde(default)]
     mcp_servers: Option<Vec<crate::mcp::McpServerConfig>>,
+}
+
+/// 能力模型槽位（模型设置页配置）：语音合成 / 语音识别 / 视觉转述。
+/// 嵌入（语义检索）沿用 memory.semanticModel，不在此重复。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CapabilitiesFile {
+    #[serde(default)]
+    speech: Option<String>,
+    #[serde(default)]
+    transcribe: Option<String>,
+    #[serde(default)]
+    vision_relay: Option<String>,
 }
 
 /// 档案的读取形态：兼容历史上区分「指挥体模型 / 子个体模型」的旧配置。
@@ -184,6 +224,9 @@ struct LlmProfileFile {
     unit_model: Option<String>,
     #[serde(default)]
     fallback: Option<String>,
+    /// 模型清单（模型名 + 视觉/语音能力开关）
+    #[serde(default)]
+    models: Option<Vec<ModelEntry>>,
     /// 历史遗留：档案级嵌入模型（现由「记忆」页的语义检索设置管理）
     #[serde(default)]
     embed_model: Option<String>,
@@ -209,6 +252,12 @@ impl LlmProfileFile {
             api_keys: self.api_keys,
             api_format: self.api_format,
             model,
+            models: self
+                .models
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| !m.model.trim().is_empty())
+                .collect(),
             fallback: self.fallback,
         }
     }
@@ -424,6 +473,7 @@ impl ExmConfig {
                 api_keys: Vec::new(),
                 api_format: String::new(),
                 model: llm.model.clone(),
+                models: Vec::new(),
                 fallback: None,
             });
         }
@@ -454,6 +504,7 @@ impl ExmConfig {
         let data_dir = std::env::var("EXM_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| dir.join("data"));
+        let file_cap = file.capabilities.clone().unwrap_or_default();
         let agents_dir = std::env::var("EXM_AGENTS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| root.join("agents"));
@@ -481,6 +532,9 @@ impl ExmConfig {
             memory_recall_limit: file_mem.recall_limit.unwrap_or(5),
             memory_half_life_days: file_mem.half_life_days.unwrap_or(30.0),
             memory_semantic_model: file_mem.semantic_model.clone().unwrap_or_default(),
+            speech_model: file_cap.speech.unwrap_or_default(),
+            stt_model: file_cap.transcribe.unwrap_or_default(),
+            vision_relay_model: file_cap.vision_relay.unwrap_or_default(),
             use_mock,
             security,
             automation,
@@ -521,6 +575,7 @@ impl ExmConfig {
                         api_keys: p.api_keys.clone(),
                         api_format: p.api_format.clone(),
                         model: p.model.clone(),
+                        models: Some(p.models.clone()),
                         orch_model: None,
                         unit_model: None,
                         fallback: p.fallback.clone(),
@@ -529,6 +584,11 @@ impl ExmConfig {
                     .collect(),
             ),
             active_profile: Some(self.active_profile.clone()),
+            capabilities: Some(CapabilitiesFile {
+                speech: Some(self.speech_model.clone()),
+                transcribe: Some(self.stt_model.clone()),
+                vision_relay: Some(self.vision_relay_model.clone()),
+            }),
             mcp_servers: Some(self.mcp_servers.clone()),
             security: Some(SecurityFile {
                 exec_approval: Some(self.security.exec_approval.clone()),

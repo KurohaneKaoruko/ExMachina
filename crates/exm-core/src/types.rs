@@ -285,6 +285,25 @@ pub enum RouteLevel {
 
 // ---------------------------------------------------------------- 智能体组与个体定义
 
+/// 组级能力模型覆盖（"档案ID" 或 "档案ID/模型名"）：每个组可用不同的模型栈；
+/// 任一项缺省 = 跟随「模型设置」页的全局槽位
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupCapabilities {
+    /// 语音合成（TTS）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech: Option<String>,
+    /// 语音识别 / 语音转述
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcribe: Option<String>,
+    /// 视觉转述
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_relay: Option<String>,
+    /// 嵌入（组记忆语义检索）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<String>,
+}
+
 /// 智能体组元数据：组是隔离与切换的基本单位（docs/09）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -303,6 +322,9 @@ pub struct GroupMeta {
     /// 组内未显式指定模型的个体随组）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 组级能力模型覆盖：每组可用不同模型栈；缺省字段跟随全局槽位
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<GroupCapabilities>,
     /// 内置组（默认智械体集群）：定义受保护，不可增删个体
     #[serde(default)]
     pub builtin: bool,

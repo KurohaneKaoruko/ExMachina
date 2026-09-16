@@ -362,6 +362,43 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     c.check("切换激活组", sw.status().is_success());
 
+    // 组级能力模型覆盖：写入（空串=清除该项）→ 组元数据回读 → 清空整块收回
+    let caps: serde_json::Value = client
+        .put(format!("{base}/groups/product/capabilities"))
+        .json(&serde_json::json!({
+            "speech": "default/tts-x",
+            "transcribe": "",
+            "visionRelay": "default/vision-x",
+            "embedding": "default"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "组级能力覆盖写入",
+        caps["ok"] == true
+            && caps["capabilities"]["speech"] == "default/tts-x"
+            && caps["capabilities"]["visionRelay"] == "default/vision-x"
+            && caps["capabilities"]["embedding"] == "default"
+            && caps["capabilities"]["transcribe"].is_null(),
+    );
+    let groups1: serde_json::Value = client.get(format!("{base}/groups")).send().await?.json().await?;
+    let product_caps = groups1["groups"]
+        .as_array()
+        .and_then(|a| a.iter().find(|g| g["id"] == "product"))
+        .map(|g| g["capabilities"]["speech"] == "default/tts-x")
+        .unwrap_or(false);
+    c.check("组级能力覆盖落盘回读", product_caps);
+    let caps_clr: serde_json::Value = client
+        .put(format!("{base}/groups/product/capabilities"))
+        .json(&serde_json::json!({ "speech": "", "transcribe": "", "visionRelay": "", "embedding": "" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("组级能力覆盖清空收回", caps_clr["ok"] == true && caps_clr["capabilities"].is_null());
+
     let agents_g: serde_json::Value = client.get(format!("{base}/agents")).send().await?.json().await?;
     c.check("新组初始为空", agents_g.as_array().map(|a| a.is_empty()).unwrap_or(false));
 
@@ -793,13 +830,66 @@ async fn main() -> anyhow::Result<()> {
         .json(&serde_json::json!({
             "id": "e2e-vendor", "name": "E2E 厂商",
             "baseUrl": "https://api.example.com/v1",
-            "apiKey": "sk-e2e", "model": "vendor-large"
+            "apiKey": "sk-e2e", "model": "vendor-large",
+            "models": [
+                { "model": "vendor-large", "vision": false, "audio": false },
+                { "model": "vendor-vision", "vision": true, "audio": true }
+            ]
         }))
         .send()
         .await?
         .json()
         .await?;
     c.check("新增模型档案", new_profile["ok"] == true && new_profile["id"] == "e2e-vendor");
+    let plist: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    let vendor = plist["profiles"]
+        .as_array()
+        .and_then(|a| a.iter().find(|p| p["id"] == "e2e-vendor"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    c.check(
+        "模型清单与视觉/语音开关回显",
+        vendor["models"].as_array().map(|m| {
+            m.len() == 2
+                && m[0]["model"] == "vendor-large"
+                && m[0]["vision"] == false
+                && m[1]["model"] == "vendor-vision"
+                && m[1]["vision"] == true
+                && m[1]["audio"] == true
+        }).unwrap_or(false),
+    );
+
+    // 能力模型槽位：语音合成 / 语音转述 / 视觉转述 / 嵌入（嵌入 = memory.semanticModel 同字段）
+    let caps_put: serde_json::Value = client
+        .put(format!("{base}/llm/capabilities"))
+        .json(&serde_json::json!({
+            "speech": "e2e-vendor/tts-x",
+            "transcribe": "e2e-vendor",
+            "visionRelay": "e2e-vendor/vendor-vision",
+            "embedding": "e2e-vendor/embed-1"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "能力槽位写入生效",
+        caps_put["ok"] == true
+            && caps_put["speech"] == "e2e-vendor/tts-x"
+            && caps_put["visionRelay"] == "e2e-vendor/vendor-vision"
+            && caps_put["embedding"] == "e2e-vendor/embed-1",
+    );
+    let caps_get: serde_json::Value = client.get(format!("{base}/llm/capabilities")).send().await?.json().await?;
+    c.check(
+        "能力槽位可回读",
+        caps_get["transcribe"] == "e2e-vendor" && caps_get["embedding"] == "e2e-vendor/embed-1",
+    );
+    // 清空恢复：不把 e2e 的能力槽位留在本地 config
+    let _ = client
+        .put(format!("{base}/llm/capabilities"))
+        .json(&serde_json::json!({ "speech": "", "transcribe": "", "visionRelay": "", "embedding": "" }))
+        .send()
+        .await;
     let activated: serde_json::Value = client
         .put(format!("{base}/llm/active"))
         .json(&serde_json::json!({ "id": "e2e-vendor" }))
