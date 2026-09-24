@@ -3,7 +3,14 @@
 
 <div align="center">
 
-<img src="docs/exmachina-logo.svg" width="100%" alt="EXMACHINA · Agent Cluster">
+```text
+███████╗  ██╗  ██╗  ███╗   ███╗   █████╗    ██████╗  ██╗  ██╗  ██╗  ███╗   ██╗   █████╗
+██╔════╝  ╚██╗██╔╝  ████╗ ████║  ██╔══██╗  ██╔════╝  ██║  ██║  ██║  ████╗  ██║  ██╔══██╗
+█████╗     ╚███╔╝   ██╔████╔██║  ███████║  ██║       ███████║  ██║  ██╔██╗ ██║  ███████║
+██╔══╝     ██╔██╗   ██║╚██╔╝██║  ██╔══██║  ██║       ██╔══██║  ██║  ██║╚██╗██║  ██╔══██║
+███████╗  ██╔╝ ██╗  ██║ ╚═╝ ██║  ██║  ██║  ╚██████╗  ██║  ██║  ██║  ██║ ╚████║  ██║  ██║
+╚══════╝  ╚═╝  ╚═╝  ╚═╝     ╚═╝  ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝
+```
 
 ![Stage](https://img.shields.io/badge/stage-pre--alpha-orange)
 ![Rust](https://img.shields.io/badge/Rust-stable-dea584?logo=rust&logoColor=white)
@@ -22,17 +29,6 @@
 > Contracts are defined in [docs/](./docs) (Chinese, source of truth).
 
 ---
-
-## Why a Cluster, Not Another Assistant
-
-Single-agent assistants hit a clear ceiling: **one context, one chain of thought, one answer**. The larger the task, the more likely they lose constraints, lose evidence, and compromise with themselves mid-chain — you can't trace how the conclusion was reached, or intervene when it goes off track.
-
-EXMACHINA takes a different path: turning "accomplish something complex" into an **auditable organizational behavior**.
-
-- **Division of labor** — The orchestrator does one thing: lock boundaries, decompose tasks, dispatch, arbitrate, converge. 39 sub-agents each hold a domain (research, architecture, implementation, verification, decision-making, operations, security, documentation…), producing in parallel.
-- **Contract-driven** — Every sub-agent's output must pass SyncReport structural + business validation. Failures auto-rewrite (max 2 attempts), then escalate to the orchestrator.
-- **Full auditability** — Three ledgers (task / evidence / risk) evolve per round, so every answer can answer "what's the evidence and where's the risk".
-- **Composable** — Groups are the unit of isolation and switching. Build any team structure you need; the primary agent can expand its own roster mid-task.
 
 ## Quick Start
 
@@ -66,6 +62,17 @@ git clone https://github.com/KurohaneKaoruko/ExMachina.git && cd ExMachina
 npm install && npm run build:webui
 cargo run -p exm-gateway --release        # http://127.0.0.1:4173
 ```
+
+## Why a Cluster, Not Another Assistant
+
+Single-agent assistants hit a clear ceiling: **one context, one chain of thought, one answer**. The larger the task, the more likely they lose constraints, lose evidence, and compromise with themselves mid-chain — you can't trace how the conclusion was reached, or intervene when it goes off track.
+
+EXMACHINA takes a different path: turning "accomplish something complex" into an **auditable organizational behavior**.
+
+- **Division of labor** — The orchestrator does one thing: lock boundaries, decompose tasks, dispatch, arbitrate, converge. 39 sub-agents each hold a domain (research, architecture, implementation, verification, decision-making, operations, security, documentation…), producing in parallel.
+- **Contract-driven** — Every sub-agent's output must pass SyncReport structural + business validation. Failures auto-rewrite (max 2 attempts), then escalate to the orchestrator.
+- **Full auditability** — Three ledgers (task / evidence / risk) evolve per round, so every answer can answer "what's the evidence and where's the risk".
+- **Composable** — Groups are the unit of isolation and switching. Build any team structure you need; the primary agent can expand its own roster mid-task.
 
 ## Core Features
 

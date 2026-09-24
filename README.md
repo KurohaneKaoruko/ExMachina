@@ -3,7 +3,14 @@
 
 <div align="center">
 
-<img src="docs/exmachina-logo.svg" width="100%" alt="EXMACHINA · 智械体集群">
+```text
+███████╗  ██╗  ██╗  ███╗   ███╗   █████╗    ██████╗  ██╗  ██╗  ██╗  ███╗   ██╗   █████╗
+██╔════╝  ╚██╗██╔╝  ████╗ ████║  ██╔══██╗  ██╔════╝  ██║  ██║  ██║  ████╗  ██║  ██╔══██╗
+█████╗     ╚███╔╝   ██╔████╔██║  ███████║  ██║       ███████║  ██║  ██╔██╗ ██║  ███████║
+██╔══╝     ██╔██╗   ██║╚██╔╝██║  ██╔══██║  ██║       ██╔══██║  ██║  ██║╚██╗██║  ██╔══██║
+███████╗  ██╔╝ ██╗  ██║ ╚═╝ ██║  ██║  ██║  ╚██████╗  ██║  ██║  ██║  ██║ ╚████║  ██║  ██║
+╚══════╝  ╚═╝  ╚═╝  ╚═╝     ╚═╝  ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚═╝  ╚═╝  ╚═══╝  ╚═╝  ╚═╝
+```
 
 ![阶段](https://img.shields.io/badge/%E9%98%B6%E6%AE%B5-%E5%BC%80%E5%8F%91%E4%B8%AD%20%7C%20pre--alpha-orange)
 ![Rust](https://img.shields.io/badge/Rust-stable-dea584?logo=rust&logoColor=white)
@@ -22,6 +29,62 @@
 > 契约以 [docs/](./docs) 为唯一事实源。
 
 ---
+
+## 快速开始
+
+前置：[Rust](https://rustup.rs)（stable）与 Node.js ≥ 22（仅构建 WebUI 需要）。
+
+**快速启动**（下载预编译发行版，无需 Rust / Node）：
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/quickstart.sh | bash
+```
+
+```batch
+:: Windows
+curl -fsSL -o quickstart.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/quickstart.bat
+quickstart.bat
+```
+
+从 [Releases](https://github.com/KurohaneKaoruko/ExMachina/releases) 下载预编译包，解压即用，免编译。
+
+**从源码安装**（含 Rust/Node 安装 + 克隆 + 编译 + 构建 + 启动）：
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/install.sh | bash
+```
+
+```batch
+:: Windows（下载后运行）
+curl -fsSL -o install.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/install.bat
+install.bat
+```
+
+脚本自动安装缺失的 Rust / Node.js，克隆仓库，编译构建，启动网关。
+
+浏览器打开 http://127.0.0.1:4173 即可使用。首次建议到「模型提供商」页配置 API 密钥。
+
+**手动构建**：
+
+```bash
+git clone https://github.com/KurohaneKaoruko/ExMachina.git && cd ExMachina
+npm install && npm run build:webui
+cargo run -p exm-gateway --release        # http://127.0.0.1:4173
+```
+
+终端对话与编成查看：
+
+```bash
+cargo run -p exm-cli --release --bin exm -- chat "分析当前项目的架构风险"
+cargo run -p exm-cli --release --bin exm -- agents
+```
+
+> **低性能设备**（淘汰笔记本 / 迷你主机 / 老台式机）：到 [Releases](https://github.com/KurohaneKaoruko/ExMachina/releases)
+> 下载预编译包，解压即得 `exm-gateway` + WebUI + 编成数据——免编译、免 Node、免 Docker，一个进程跑起整个集群。
+>
+> Docker：`docker compose up --build`（编成与状态卷持久化，详见 [docker-compose.yml](./docker-compose.yml)）。
 
 ## 为什么需要"集群"，而不是再要一个助手
 
@@ -150,62 +213,6 @@ flowchart LR
 - **提示词协议**：`agents/prompts/protocol/` 下 11 部协议（绝对理性 / 证据分级 / 冲突裁决 /
   多智能体回流 / 审查 / 调试 / 变更 / 审计 / 发布 / 回滚 / 工作区协作），编织进指挥体与子个体的系统提示。
 - **存储**：文档型 fsdb（`.exmachina/data`），无 C 依赖；repository 接口保留换回 SQLite/redb 的余地。
-
-## 快速开始
-
-前置：[Rust](https://rustup.rs)（stable）与 Node.js ≥ 22（仅构建 WebUI 需要）。
-
-**快速启动**（下载预编译发行版，无需 Rust / Node）：
-
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/quickstart.sh | bash
-```
-
-```batch
-:: Windows
-curl -fsSL -o quickstart.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/quickstart.bat
-quickstart.bat
-```
-
-从 [Releases](https://github.com/KurohaneKaoruko/ExMachina/releases) 下载预编译包，解压即用，免编译。
-
-**从源码安装**（含 Rust/Node 安装 + 克隆 + 编译 + 构建 + 启动）：
-
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/install.sh | bash
-```
-
-```batch
-:: Windows（下载后运行）
-curl -fsSL -o install.bat https://raw.githubusercontent.com/KurohaneKaoruko/ExMachina/main/scripts/install.bat
-install.bat
-```
-
-脚本自动安装缺失的 Rust / Node.js，克隆仓库，编译构建，启动网关。
-
-浏览器打开 http://127.0.0.1:4173 即可使用。首次建议到「模型提供商」页配置 API 密钥。
-
-**手动构建**：
-
-```bash
-git clone https://github.com/KurohaneKaoruko/ExMachina.git && cd ExMachina
-npm install && npm run build:webui
-cargo run -p exm-gateway --release        # http://127.0.0.1:4173
-```
-
-终端对话与编成查看：
-
-```bash
-cargo run -p exm-cli --release --bin exm -- chat "分析当前项目的架构风险"
-cargo run -p exm-cli --release --bin exm -- agents
-```
-
-> **低性能设备**（淘汰笔记本 / 迷你主机 / 老台式机）：到 [Releases](https://github.com/KurohaneKaoruko/ExMachina/releases)
-> 下载预编译包，解压即得 `exm-gateway` + WebUI + 编成数据——免编译、免 Node、免 Docker，一个进程跑起整个集群。
->
-> Docker：`docker compose up --build`（编成与状态卷持久化，详见 [docker-compose.yml](./docker-compose.yml)）。
 
 ## CLI 命令
 
