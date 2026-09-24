@@ -1,6 +1,6 @@
-# 本项目固定使用 GNU 工具链：
-#   本机未安装 MSVC Build Tools（无 link.exe），而 GNU 工具链自带 rust-lld 与
-#   self-contained 运行库，纯 Rust 依赖可直接编译运行（已验证）。
-#   若迁移到装有 VS Build Tools 的机器，可改为 "stable-x86_64-pc-windows-msvc"。
+# 项目使用 rustup 自带的 stable 通道，由 rustup 按当前宿主平台自动选择
+# 对应的 target triple（Linux 上即为 stable-x86_64-unknown-linux-gnu，
+# macOS 为 aarch64/apple-darwin，Windows 由宿主导向 GNU/MSVC）。
+# 这样跨平台构建无需改动本文件。
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "stable"

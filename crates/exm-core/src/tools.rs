@@ -121,6 +121,9 @@ pub async fn execute_shell_command_timed(workspace_root: &Path, cmd: &str, timeo
         Ok(c) => c,
         Err(e) => return ToolResult::err(format!("命令执行失败: {e}")),
     };
+    // `pid` 只在 Windows 路径下作为 taskkill 的 /PID 入参使用；
+    // POSIX 上 tokio 已通过 spawn 时的 kill_on_drop(true) 自动 SIGKILL 子进程。
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     let pid = child.id();
     // 管道读取放入独立任务：超时路径可 abort，避免残留读端拖住运行时收尾
     let out_task = child.stdout.take().map(|mut s| {
