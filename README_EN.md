@@ -1,6 +1,10 @@
 
 # ExMachina — A Collaborative Agent Cluster
 
+> [!WARNING]
+> This project is in pre-alpha. Interfaces and data formats may break without notice. Do not use in production.
+> Contracts are defined in [docs/](./docs) (Chinese, source of truth).
+
 <div align="center">
 
 ```text
@@ -23,10 +27,6 @@
 <p align="center">
   <a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a>
 </p>
-
-> [!WARNING]
-> This project is in pre-alpha. Interfaces and data formats may break without notice. Do not use in production.
-> Contracts are defined in [docs/](./docs) (Chinese, source of truth).
 
 ---
 

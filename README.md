@@ -1,6 +1,10 @@
 
 # ExMachina — 一个群体协作的智能集群
 
+> [!WARNING]
+> 项目处于开发阶段（pre-alpha），接口与数据格式可能破坏性变更，请勿用于生产环境。
+> 契约以 [docs/](./docs) 为唯一事实源。
+
 <div align="center">
 
 ```text
@@ -23,10 +27,6 @@
 <p align="center">
   <a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a>
 </p>
-
-> [!WARNING]
-> 项目处于开发阶段（pre-alpha），接口与数据格式可能破坏性变更，请勿用于生产环境。
-> 契约以 [docs/](./docs) 为唯一事实源。
 
 ---
 
