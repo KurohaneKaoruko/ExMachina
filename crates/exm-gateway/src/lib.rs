@@ -991,7 +991,11 @@ async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<
 
 // ---------------------------------------------------------------- 启动
 
-pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
+/// 启动网关并阻塞运行。
+///
+/// `host`：默认 `0.0.0.0`（公网可访问，方便本地开发用 `127.0.0.1` 收紧）。
+///   可通过 `EXM_HOST` 环境变量覆盖；显式传 `None` 时读取环境变量，传 `Some(s)` 时强制使用 `s`。
+pub async fn serve(core: Arc<Core>, port: u16, host: Option<&str>) -> anyhow::Result<()> {
     platform::spawn_cron_scheduler(core.clone());
     telegram::spawn_supervisor(core.clone());
     napcat::spawn_supervisor(core.clone());
@@ -1022,11 +1026,20 @@ pub async fn serve(core: Arc<Core>, port: u16) -> anyhow::Result<()> {
         });
     }
     let router = build_router(core.clone());
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    // 默认监听 0.0.0.0，公网可访问（避免「能跑起来」但远程访问不到的尴尬）。
+    // 本地严格隔离可设环境变量 EXM_HOST=127.0.0.1 或显式传 Some("127.0.0.1")。
+    let host_str: String = match host {
+        Some(s) => s.to_string(),
+        None => std::env::var("EXM_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+    };
+    let bind_addr: std::net::IpAddr = host_str.parse().map_err(|e| {
+        anyhow::anyhow!("invalid --host/EXM_HOST value {host_str:?}: {e}")
+    })?;
+    let addr = std::net::SocketAddr::from((bind_addr, port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("[gateway] EXMACHINA Gateway 已启动");
-    println!("[gateway]   REST  http://127.0.0.1:{port}/api");
-    println!("[gateway]   WS    ws://127.0.0.1:{port}/ws?sessionId=<id>");
+    println!("[gateway]   REST  http://{addr}/api");
+    println!("[gateway]   WS    ws://{addr}/ws?sessionId=<id>");
     println!(
         "[gateway]   LLM   {}",
         if core.is_mock() {

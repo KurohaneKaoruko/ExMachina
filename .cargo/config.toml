@@ -1,7 +1,7 @@
-# 工具链由仓库根 `rust-toolchain.toml` 固定为 stable-x86_64-pc-windows-gnu
-# （本机无 MSVC Build Tools；GNU 工具链自带 rust-lld 与 self-contained 运行库）。
-# 因此这里不再覆盖 build.target——保持"宿主即目标"，避免交叉编译语义带来的
-# 构建脚本链接问题（build script 始终按宿主编译）。
-
+# 工具链：项目根 `rust-toolchain.toml` 把 channel 固定为 `stable`，
+# 实际 target triple 由 rustup 按宿主平台自动选择。
+#
+# 这里只保留网络层配置：使用系统 git 而非 libgit2，避免某些环境下
+# 的协议兼容问题（具体见 cargo 文档 `net.git-fetch-with-cli`）。
 [net]
 git-fetch-with-cli = true

@@ -70,6 +70,10 @@ enum Commands {
     Serve {
         #[arg(short, long, default_value_t = 4173)]
         port: u16,
+        /// 监听地址，默认 `0.0.0.0`（公网可访问）；本地严格隔离用 `127.0.0.1`
+        /// 也可通过 `EXM_HOST` 环境变量设置
+        #[arg(short = 'H', long, default_value = "")]
+        host: String,
     },
     /// 分布式执行节点：接入网关承接子个体派发（旧设备算力入池）
     Worker {
@@ -462,9 +466,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Commands::Serve { port } => {
+        Commands::Serve { port, host } => {
             let core = build_core(&workspace)?;
-            exm_gateway::serve(core, port).await
+            let host_ref = if host.is_empty() { None } else { Some(host.as_str()) };
+            exm_gateway::serve(core, port, host_ref).await
         }
         Commands::Worker { url, token, id } => {
             let core = build_core(&workspace)?;
