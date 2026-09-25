@@ -1,0 +1,1 @@
+  if (Test-Path $dir) { Info 'existing install detected - (program files replaced, .exmachina data preserved)' }
