@@ -416,10 +416,18 @@ impl OpenAiCompatibleProvider {
                     .filter(|m| m.role != "system")
                     .map(|m| self.map_message(m))
                     .collect();
-                serde_json::json!({
-                    "model": req.model, "system": system, "messages": messages,
+                let mut body = serde_json::json!({
+                    "model": req.model,
+                    "messages": messages,
                     "max_tokens": req.max_tokens.unwrap_or(1024), "stream": stream,
-                })
+                });
+                if !system.trim().is_empty() {
+                    // prompt caching：系统提示作为可缓存前缀（长会话显著省 token）
+                    body["system"] = serde_json::json!([
+                        { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
+                    ]);
+                }
+                body
             }
             "gemini" => {
                 let system: String = req
@@ -457,6 +465,10 @@ impl OpenAiCompatibleProvider {
                     "model": req.model, "messages": messages,
                     "temperature": req.temperature, "stream": stream,
                 });
+                if stream {
+                    // 流式用量统计：末块返回 usage（OpenAI 兼容端点）
+                    body["stream_options"] = serde_json::json!({ "include_usage": true });
+                }
                 if let Some(mt) = req.max_tokens {
                     body["max_tokens"] = serde_json::json!(mt);
                 }
@@ -467,9 +479,14 @@ impl OpenAiCompatibleProvider {
         if !req.tools.is_empty() {
             match self.api_format.as_str() {
                 "anthropic" => {
-                    base["tools"] = serde_json::json!(req.tools.iter().map(|t| serde_json::json!({
+                    let mut tools: Vec<serde_json::Value> = req.tools.iter().map(|t| serde_json::json!({
                         "name": t.name, "description": t.description, "input_schema": t.parameters,
-                    })).collect::<Vec<_>>());
+                    })).collect();
+                    // prompt caching：工具定义为静态前缀，末项打缓存断点
+                    if let Some(last) = tools.last_mut() {
+                        last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                    }
+                    base["tools"] = serde_json::json!(tools);
                 }
                 "gemini" => {
                     base["tools"] = serde_json::json!([{ "functionDeclarations": req.tools.iter().map(|t| serde_json::json!({
@@ -878,6 +895,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let mut acc = String::new();
         let mut buf = String::new();
+        // 用量统计（三协议：openai 末块 usage / anthropic message_start+message_delta / gemini usageMetadata）
+        let mut usage_prompt: u64 = 0;
+        let mut usage_completion: u64 = 0;
         // 工具调用流式分片组装：openai/anthropic 按索引拼增量，gemini 为整块
         let mut call_frags: Vec<(String, String, String)> = Vec::new(); // (id, name, arguments-json)
         let mut gemini_calls: Vec<ToolCall> = Vec::new();
@@ -959,6 +979,36 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         acc.push_str(&delta);
                         let _ = tx.send(delta);
                     }
+                    // 用量：openai（末块 usage）/ anthropic（message_start 输入）/ gemini
+                    if let Some(u) = v.get("usage") {
+                        let p = u
+                            .get("prompt_tokens")
+                            .or_else(|| u.get("input_tokens"))
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        let c = u
+                            .get("completion_tokens")
+                            .or_else(|| u.get("output_tokens"))
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        if p > 0 {
+                            usage_prompt = p;
+                        }
+                        if c > 0 {
+                            usage_completion = c;
+                        }
+                    }
+                    if let Some(p) = v.pointer("/message/usage/input_tokens").and_then(|x| x.as_u64()) {
+                        usage_prompt = p;
+                    }
+                    if let Some(u) = v.get("usageMetadata") {
+                        if let Some(p) = u.get("promptTokenCount").and_then(|x| x.as_u64()) {
+                            usage_prompt = p;
+                        }
+                        if let Some(c) = u.get("candidatesTokenCount").and_then(|x| x.as_u64()) {
+                            usage_completion = c;
+                        }
+                    }
                 }
             }
         }
@@ -973,7 +1023,12 @@ impl LlmProvider for OpenAiCompatibleProvider {
             })
             .collect();
         tool_calls.extend(gemini_calls);
-        Ok(ChatResponse { content: acc, prompt_tokens: 0, completion_tokens: 0, tool_calls })
+        Ok(ChatResponse {
+            content: acc,
+            prompt_tokens: usage_prompt,
+            completion_tokens: usage_completion,
+            tool_calls,
+        })
     }
 }
 

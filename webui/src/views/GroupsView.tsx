@@ -99,7 +99,7 @@ export function GroupsView(): React.ReactElement {
 
   const doRemoveAgent = async (identifier: string) => {
     try {
-      await fetch(`/api/agents/${identifier}`, { method: "DELETE" });
+      await api.removeAgent(identifier);
       await loadMembers(meta!.id);
       await refreshAgents();
       message.success(t("groups.agentDeleted", { id: identifier }));
@@ -110,12 +110,7 @@ export function GroupsView(): React.ReactElement {
 
   const doSetPrimary = async (identifier: string) => {
     try {
-      const resp = await fetch(`/api/groups/${meta!.id}/primary`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier }),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
+      await api.setGroupPrimary(meta!.id, identifier);
       await loadMembers(meta!.id);
       message.success(t("groups.primarySet", { id: identifier }));
     } catch (e) {

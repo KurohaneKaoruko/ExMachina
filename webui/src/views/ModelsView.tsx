@@ -68,14 +68,16 @@ const FORMAT_LABEL_KEY: Record<string, TKey> = {
   azure: "models.fmtShort.azure",
 };
 
-/** 表单字段：密钥为可增删的动态行 */
+/** 表单字段：密钥为可增删的动态行；掩码行携带 keep = 旧池索引（提交结构化沿用，展示仍为掩码） */
 interface KeyForm {
-  keys?: { value?: string }[];
+  keys?: { value?: string; keep?: number }[];
 }
 
-/** 取有效密钥行（去空白）；掩码行保留原值语义 */
-function liveKeys(rows: { value?: string }[] | undefined): string[] {
-  return (rows ?? []).map((r) => (r?.value ?? "").trim()).filter(Boolean);
+/** 取有效密钥行（去空白），保序返回行对象 */
+function liveRows(rows: KeyForm["keys"]): { value: string; keep?: number }[] {
+  return (rows ?? [])
+    .filter((r) => (r?.value ?? "").trim() !== "")
+    .map((r) => ({ value: (r?.value ?? "").trim(), keep: r?.keep }));
 }
 
 export function ModelsView(): React.ReactElement {
@@ -115,9 +117,9 @@ export function ModelsView(): React.ReactElement {
   const openEdit = (p: LlmProfile) => {
     setEditing(p);
     const preset = PRESETS.find((x) => x.baseUrl === p.baseUrl)?.key ?? CUSTOM;
-    // 密钥合并为一行：主 Key + Key 池（保留原顺序；掩码行的原值在提交时由服务端沿用）
-    const mask = p.apiKey ? [KEY_MASK] : [];
-    const pool = (p.apiKeys ?? []).map((k) => (k ? KEY_MASK : ""));
+    // 密钥行合并为一行序列：主 Key 掩码行（keep: -1 = 主沿用，不入池）+ Key 池掩码行（keep = 旧池索引）
+    const maskRows = p.apiKey ? [{ value: KEY_MASK, keep: -1 }] : [];
+    const poolRows = (p.apiKeys ?? []).map((k, j) => (k ? { value: KEY_MASK, keep: j } : { value: "" }));
     // 模型清单：空清单且默认模型存在时，先列出默认模型行（能力未标记，用户自行勾选）
     const rows: ProfileModel[] = p.models.length
       ? p.models.map((m) => ({ ...m }))
@@ -133,7 +135,7 @@ export function ModelsView(): React.ReactElement {
       model: p.model,
       models: rows,
       fallback: p.fallback ?? undefined,
-      keys: [...mask, ...pool].map((v) => ({ value: v })),
+      keys: [...maskRows, ...poolRows],
     });
     setModal(true);
   };
@@ -156,26 +158,32 @@ export function ModelsView(): React.ReactElement {
   const submit = async () => {
     const v = await form.validateFields();
     const existing = editing;
-    // 密钥行：掩码 = 沿用旧值（主 Key 走 apiKey，其余进 apiKeys）
-    const rows = liveKeys((v as KeyForm).keys);
-    const masks = rows.filter((k) => k === KEY_MASK);
-    const fresh = rows.filter((k) => k !== KEY_MASK);
+    // 行序即语义：首行 = 主 Key 位（掩码 = 沿用旧值，明文 = 设置/替换主 Key），
+    // 其余行按原序进 Key 池；掩码行以结构化 { keep: 旧池索引 } 提交，删行/插行后不串位。
+    const rows = liveRows((v as KeyForm).keys);
+    const fresh = rows.filter((r) => r.value !== KEY_MASK).map((r) => r.value);
+    const poolEntries: (string | { keep: number })[] = rows
+      .slice(1)
+      .map((r) => (r.value === KEY_MASK ? { keep: r.keep ?? 0 } : r.value));
     let apiKey: string;
-    let apiKeys: string[];
+    let apiKeys: (string | { keep: number })[];
     if (existing) {
-      const hadPrimary = Boolean(existing.apiKey);
-      if (masks.length > 0) {
-        // 保留原主 Key，其余掩码位沿用旧池
-        apiKey = hadPrimary ? KEY_MASK : "";
-        const poolMasks = masks.length - (hadPrimary ? 1 : 0);
-        apiKeys = [...fresh, ...(existing.apiKeys ?? []).slice(0, Math.max(0, poolMasks))];
+      const first = rows[0];
+      if (first?.value === KEY_MASK) {
+        // 首行掩码：主 Key 沿用旧值（服务端无主 Key 时保持空），其余行全部进池
+        apiKey = existing.apiKey ? KEY_MASK : "";
+        apiKeys = poolEntries;
+      } else if (first) {
+        // 首行明文：设置/替换主 Key，其余行进池
+        apiKey = first.value;
+        apiKeys = poolEntries;
       } else {
+        // 行已删空：交由服务端沿用旧值（不丢失已配置密钥）
         apiKey = "";
-        apiKeys = fresh;
+        apiKeys = [];
       }
     } else {
       [apiKey = "", ...apiKeys] = fresh;
-      if (masks.length > 0) apiKey = "";
     }
     try {
       await api.saveLlmProfile({

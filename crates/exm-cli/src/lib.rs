@@ -132,6 +132,25 @@ enum Commands {
         #[command(subcommand)]
         action: ModelAction,
     },
+    /// 文件检查点：写工具落笔前的自动快照，可回看与回滚
+    Checkpoint {
+        #[command(subcommand)]
+        action: CheckpointAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CheckpointAction {
+    /// 列出检查点（日期 / 文件 / 大小）
+    List,
+    /// 回滚某文件到检查点版本
+    Restore {
+        /// 工作区相对路径，如 src/main.rs
+        path: String,
+        /// 检查点日期（YYYY-MM-DD）；缺省 = 最近一份
+        #[arg(long)]
+        date: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -556,6 +575,29 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
                 ModelAction::Use { id } => platform_cmd::run_model_use(&core, &id),
                 ModelAction::Remove { id } => platform_cmd::run_model_remove(&core, &id),
                 ModelAction::Test { id } => platform_cmd::run_model_test(&core, id.as_deref()).await,
+            }
+        }
+        Commands::Checkpoint { action } => {
+            let core = build_core(&workspace)?;
+            match action {
+                CheckpointAction::List => {
+                    let rows = core.list_checkpoints();
+                    if rows.is_empty() {
+                        println!("尚无检查点（写/编辑文件前会自动快照到 .exmachina/checkpoints/）");
+                    } else {
+                        println!("{:<12} {:<50} {:>10}", "日期", "文件", "大小");
+                        for (date, rel, size) in rows.iter().take(200) {
+                            println!("{date:<12} {rel:<50} {size:>9} B");
+                        }
+                        println!("（共 {} 份快照）", rows.len());
+                    }
+                    Ok(())
+                }
+                CheckpointAction::Restore { path, date } => {
+                    let msg = core.restore_checkpoint(date.as_deref(), &path)?;
+                    println!("{msg}");
+                    Ok(())
+                }
             }
         }
         Commands::Group { action } => {

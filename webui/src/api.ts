@@ -39,19 +39,39 @@ export interface GatewayConfig {
     enabled: boolean;
     recallLimit: number;
     halfLifeDays: number;
+    /** memory.md 字数上限（超限触发 AI 自主压缩） */
+    mdMaxChars?: number;
     /** 语义检索目标："档案ID" 或 "档案ID/模型名"；空 = 仅词项召回 */
     semanticModel: string;
   };
   security: {
     execApproval: string;
     execAllowlist: string;
+    /** 后台访问密钥（服务端掩码回显；空 = 免鉴权） */
+    authKey?: string;
+    /** 终端命令超时（秒）；后台任务不受此限 */
+    terminalTimeoutSecs?: number;
+    /** 工具结果落盘阈值（字符） */
+    toolOutputSpillChars?: number;
   };
   automation: {
     heartbeatEnabled: boolean;
     heartbeatIntervalMinutes: number;
     heartbeatPrompt: string;
     autoAdapt: boolean;
+    /** 子个体单次派发的最大工具步数 */
+    unitMaxSteps?: number;
   };
+  /** 联网搜索后端（web_search 工具；未配置则不下发该工具） */
+  search?: { provider: string; endpoint: string; apiKey: string; maxResults: number };
+  /** 沙箱执行（环境净化 / bwrap / strict 闸门） */
+  sandbox?: { mode: string; allowNetwork: boolean; useBwrap: boolean; memoryMb: number; maxProcesses: number };
+  /** 浏览器自动化（browser 工具） */
+  browser?: { executable: string; headless: boolean; timeoutSecs: number; maxChars: number };
+  /** 生命周期钩子 */
+  hooks?: { preTool: string[]; postTool: string[]; onRunEnd: string[] };
+  /** 工具面（声明式自定义工具） */
+  tools?: { custom: Array<Record<string, unknown>> };
   mock: boolean;
 }
 
@@ -339,6 +359,9 @@ export const api = {
     req<GroupMeta>("/groups", { method: "POST", body: JSON.stringify(body) }),
   switchGroup: (id: string) =>
     req<{ ok: boolean }>("/groups/active", { method: "PUT", body: JSON.stringify({ id }) }),
+  /** 设置组主智能体 */
+  setGroupPrimary: (gid: string, identifier: string) =>
+    req<{ ok: boolean }>(`/groups/${gid}/primary`, { method: "POST", body: JSON.stringify({ identifier }) }),
   deleteGroup: (id: string) => req<{ ok: boolean }>(`/groups/${id}`, { method: "DELETE" }),
   createAgent: (body: {
     name: string;
@@ -408,6 +431,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ model }),
     }),
+  /** 更新个体可编辑字段（name/domain/description/capabilities/tools/modelHint；identifier/tier/promptFile 不可改） */
+  updateAgent: (
+    identifier: string,
+    body: { name?: string; domain?: string; description?: string; capabilities?: string[]; tools?: string[]; modelHint?: string },
+  ) => req<AgentDefinition>(`/agents/${identifier}`, { method: "PUT", body: JSON.stringify(body) }),
+  /** 更新单体智能体可编辑字段（同 updateAgent 字段集） */
+  updateSingle: (
+    id: string,
+    body: { name?: string; domain?: string; description?: string; capabilities?: string[]; tools?: string[]; modelHint?: string },
+  ) => req<AgentDefinition>(`/singles/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   setGroupModel: (gid: string, model: string) =>
     req<{ ok: boolean }>(`/groups/${gid}/model`, {
       method: "PUT",
@@ -488,7 +521,7 @@ export const api = {
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 
   llmProfiles: () => req<LlmProfilesInfo>("/llm/profiles"),
-  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: string[]; model?: string; models?: ProfileModel[]; fallback?: string }) =>
+  saveLlmProfile: (body: { id?: string; name?: string; baseUrl?: string; apiFormat?: string; apiKey?: string; apiKeys?: (string | { keep: number })[]; model?: string; models?: ProfileModel[]; fallback?: string }) =>
     req<{ ok: boolean; id: string; mock?: boolean }>("/llm/profiles", { method: "POST", body: JSON.stringify(body) }),
   deleteLlmProfile: (id: string) => req<{ ok: boolean }>(`/llm/profiles/${id}`, { method: "DELETE" }),
   activateLlmProfile: (id: string) =>

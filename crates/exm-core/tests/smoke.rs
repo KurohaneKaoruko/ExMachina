@@ -173,6 +173,7 @@ async fn 执行审批_高危命令拦截与批准放行() {
         exec_approval: "always".into(),
         exec_allowlist: vec![],
         auth_key: String::new(),
+        ..Default::default()
     };
     // always 模式（无豁免白名单）：所有终端命令都需审批
     let gw = exm_core::tools::ToolGateway::new(
@@ -220,6 +221,7 @@ async fn 执行审批_高危命令拦截与批准放行() {
             exec_approval: "always".into(),
             exec_allowlist: vec!["echo".into()],
             auth_key: String::new(),
+            ..Default::default()
         },
     );
     let allowed = gw_exempt
@@ -256,6 +258,7 @@ async fn 执行审批_高危命令拦截与批准放行() {
         exec_approval: "risky".into(),
         exec_allowlist: vec![],
         auth_key: String::new(),
+        ..Default::default()
     };
     let gw_risky = exm_core::tools::ToolGateway::new(
         core.config().workspace_root.clone(),
@@ -445,6 +448,7 @@ fn temp_registry(tag: &str) -> exm_core::registry::LocalRegistry {
         primary: None,
         workspace: None,
         model: None,
+        capabilities: None,
         builtin: true,
         created_at: now_iso(),
     };
@@ -724,8 +728,30 @@ async fn web_fetch工具与图片暂存() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     // 规格注册：白名单内含 web_fetch
-    let specs = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebFetch]);
+    let specs = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebFetch], false, false);
     assert!(specs.iter().any(|s| s.name == "web_fetch"), "web_fetch 应在规格中");
+
+    // 工具面（对标主流 agent）：edit / grep / glob 在白名单内即下发
+    let full = exm_core::tools::ToolGateway::tool_specs(
+        &[ToolName::Read, ToolName::Edit, ToolName::Grep, ToolName::Glob, ToolName::WebSearch],
+        false,
+        false,
+    );
+    for name in ["read", "edit", "grep", "glob"] {
+        assert!(full.iter().any(|s| s.name == name), "{name} 应下发");
+    }
+    // 诚实性：搜索后端未配置时 web_search 不得出现在下发的 schema 里
+    assert!(
+        !full.iter().any(|s| s.name == "web_search"),
+        "搜索未配置时不得下发 web_search（不承诺不存在的能力）"
+    );
+    let with_search = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebSearch], true, false);
+    assert!(with_search.iter().any(|s| s.name == "web_search"), "搜索就绪时应下发 web_search");
+    // 浏览器同理：探测不到浏览器可执行文件时不下发 browser
+    let no_browser = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Browser], false, false);
+    assert!(!no_browser.iter().any(|s| s.name == "browser"), "无浏览器时不得下发 browser");
+    let with_browser = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Browser], false, true);
+    assert!(with_browser.iter().any(|s| s.name == "browser"), "浏览器就绪时应下发 browser");
 
     let cfg = {
         let _serial = serial_guard();
@@ -992,4 +1018,496 @@ async fn 语音转写_通道契约() {
     // 合成契约同构：Mock 明确不支持
     let s = MockLlmProvider.speak("tts-1", "你好").await;
     assert!(s.is_err() && s.unwrap_err().to_string().contains("不支持"));
+}
+
+/// 工具面（对标主流 agent）：edit 精确编辑 / read 行号分页 / grep / glob / 检查点 / 排程，
+/// 以及安全边界（路径越界、终端白名单细化与连接符拒绝）
+#[tokio::test]
+async fn 工具面_编辑检索排程与安全边界() {
+    let _serial = serial_guard();
+    let mut cfg = test_config();
+    // 隔离工作区：工具会真实读写，不能污染仓库
+    let tmp = std::env::temp_dir().join(format!("exm-tools-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    cfg.workspace_root = tmp.clone();
+    cfg.data_dir = tmp.join("data");
+    cfg.config_path = tmp.join("config.json");
+    cfg.memory_md_path = tmp.join("memory.md");
+    cfg.webui_dist = tmp.join("webui-dist");
+    let core = Core::with_config(cfg).expect("创建 Core 失败");
+    let tools = exm_core::tools::ToolGateway::new(
+        &core.config().workspace_root,
+        core.store.clone(),
+        core.registry.clone(),
+        core.events.clone(),
+        core.config().security.clone(),
+    )
+    .with_cron(core.cron.clone());
+
+    // --- filesystem write + read（行号 + 分页）---
+    let w = tools
+        .execute(
+            "machina",
+            &[ToolName::Filesystem],
+            ToolName::Filesystem,
+            &serde_json::json!({ "op": "write", "path": "docs/demo.txt", "content": "第一行\n第二行 标记\n第三行 标记\n" }),
+        )
+        .await;
+    assert!(w.ok, "写入应成功: {:?}", w.error);
+
+    let r = tools
+        .execute("machina", &[ToolName::Read], ToolName::Read, &serde_json::json!({ "path": "docs/demo.txt" }))
+        .await;
+    assert!(r.ok, "读取应成功: {:?}", r.error);
+    assert!(r.output.contains("    1→第一行"), "应带行号: {}", r.output);
+    assert!(r.output.contains("共 3 行"), "应报总行数: {}", r.output);
+
+    let page = tools
+        .execute(
+            "machina",
+            &[ToolName::Read],
+            ToolName::Read,
+            &serde_json::json!({ "path": "docs/demo.txt", "offset": 2, "limit": 1 }),
+        )
+        .await;
+    assert!(page.output.contains("    2→第二行 标记"), "分页应命中第 2 行: {}", page.output);
+    assert!(page.output.contains("续读 offset=3"), "应提示续读: {}", page.output);
+
+    // --- edit：唯一命中替换 / 多命中拒绝 / 未命中提示 ---
+    let e1 = tools
+        .execute(
+            "machina",
+            &[ToolName::Edit],
+            ToolName::Edit,
+            &serde_json::json!({ "path": "docs/demo.txt", "old_string": "第一行", "new_string": "首行（已改）" }),
+        )
+        .await;
+    assert!(e1.ok, "唯一命中应替换成功: {:?}", e1.error);
+    let after = std::fs::read_to_string(tmp.join("docs/demo.txt")).unwrap();
+    assert!(after.contains("首行（已改）") && !after.contains("第一行"), "替换结果不符: {after}");
+
+    let e2 = tools
+        .execute(
+            "machina",
+            &[ToolName::Edit],
+            ToolName::Edit,
+            &serde_json::json!({ "path": "docs/demo.txt", "old_string": "标记", "new_string": "M" }),
+        )
+        .await;
+    assert!(!e2.ok && e2.error.clone().unwrap_or_default().contains("命中"), "多命中应拒绝: {:?}", e2.error);
+
+    let e3 = tools
+        .execute(
+            "machina",
+            &[ToolName::Edit],
+            ToolName::Edit,
+            &serde_json::json!({ "path": "docs/demo.txt", "old_string": "不存在的文本", "new_string": "x" }),
+        )
+        .await;
+    assert!(!e3.ok && e3.error.clone().unwrap_or_default().contains("未找到"), "未命中应明示: {:?}", e3.error);
+
+    // --- grep / glob ---
+    let g = tools
+        .execute(
+            "machina",
+            &[ToolName::Grep],
+            ToolName::Grep,
+            &serde_json::json!({ "pattern": "首行", "path": "docs" }),
+        )
+        .await;
+    assert!(g.ok && g.output.contains("docs/demo.txt:"), "grep 应返回 文件:行:内容: {}", g.output);
+
+    let gl = tools
+        .execute("machina", &[ToolName::Glob], ToolName::Glob, &serde_json::json!({ "pattern": "**/*.txt" }))
+        .await;
+    assert!(gl.ok && gl.output.contains("docs/demo.txt"), "glob 应列出文件: {}", gl.output);
+
+    // --- 安全：路径越界（`..` 拼接不得逃逸）---
+    let esc = tools
+        .execute(
+            "machina",
+            &[ToolName::Filesystem],
+            ToolName::Filesystem,
+            &serde_json::json!({ "op": "write", "path": "../escaped.txt", "content": "x" }),
+        )
+        .await;
+    assert!(!esc.ok && esc.error.clone().unwrap_or_default().contains("越界"), "越界应被拒: {:?}", esc.error);
+    assert!(!tmp.parent().unwrap().join("escaped.txt").exists(), "越界文件不得被创建");
+
+    // --- 安全：终端白名单细化（子命令）与连接符拒绝 ---
+    let bad_sub = tools
+        .execute(
+            "machina",
+            &[ToolName::Terminal],
+            ToolName::Terminal,
+            &serde_json::json!({ "command": "cargo install some-crate" }),
+        )
+        .await;
+    assert!(!bad_sub.ok && bad_sub.error.clone().unwrap_or_default().contains("白名单"), "未列入的子命令应拒: {:?}", bad_sub.error);
+
+    let chained = tools
+        .execute(
+            "machina",
+            &[ToolName::Terminal],
+            ToolName::Terminal,
+            &serde_json::json!({ "command": "git status && rm -rf docs" }),
+        )
+        .await;
+    assert!(!chained.ok, "连接符命令应被拒");
+    assert!(tmp.join("docs").exists(), "被拒命令不得产生副作用");
+
+    // --- 检查点：写前快照 → 回滚 ---
+    let cps = core.list_checkpoints();
+    assert!(
+        cps.iter().any(|(_, rel, _)| rel.replace('\\', "/") == "docs/demo.txt"),
+        "应有该文件的写前快照: {cps:?}"
+    );
+    core.restore_checkpoint(None, "docs/demo.txt").expect("回滚失败");
+    let restored = std::fs::read_to_string(tmp.join("docs/demo.txt")).unwrap();
+    assert!(restored.contains("第一行"), "回滚应恢复原始内容: {restored}");
+
+    // --- 排程工具：AI 自建定时任务（创建 / 列表 / 删除）---
+    let s1 = tools
+        .execute(
+            "machina",
+            &[ToolName::Schedule],
+            ToolName::Schedule,
+            &serde_json::json!({ "op": "create", "name": "每日巡检", "prompt": "检查未决任务", "cron": "0 9 * * *" }),
+        )
+        .await;
+    assert!(s1.ok, "创建排程应成功: {:?}", s1.error);
+    let s2 = tools
+        .execute("machina", &[ToolName::Schedule], ToolName::Schedule, &serde_json::json!({ "op": "list" }))
+        .await;
+    assert!(s2.ok && s2.output.contains("每日巡检"), "列表应含新任务: {}", s2.output);
+    let job_id = core.cron.list().unwrap().first().map(|j| j.id.clone()).unwrap_or_default();
+    let s3 = tools
+        .execute(
+            "machina",
+            &[ToolName::Schedule],
+            ToolName::Schedule,
+            &serde_json::json!({ "op": "remove", "id": job_id }),
+        )
+        .await;
+    assert!(s3.ok, "删除排程应成功: {:?}", s3.error);
+    assert!(core.cron.list().unwrap().is_empty(), "删除后应为空");
+
+    // --- 结果落盘：超阈值输出写文件并回填路径（用大结果集触发：grep 命中数百行）---
+    let many: String = (0..600)
+        .map(|i| format!("命中行 {i} 用于验证超限结果的落盘引用机制\n"))
+        .collect();
+    let b = tools
+        .execute(
+            "machina",
+            &[ToolName::Filesystem],
+            ToolName::Filesystem,
+            &serde_json::json!({ "op": "write", "path": "docs/many.txt", "content": many }),
+        )
+        .await;
+    assert!(b.ok, "写入大文件应成功: {:?}", b.error);
+    let gb = tools
+        .execute(
+            "machina",
+            &[ToolName::Grep],
+            ToolName::Grep,
+            &serde_json::json!({ "pattern": "命中行", "path": "docs", "maxResults": 500 }),
+        )
+        .await;
+    assert!(gb.ok, "大结果 grep 应成功: {:?}", gb.error);
+    assert!(
+        gb.output.contains("已截断") && gb.output.contains(".exmachina/tool-output/"),
+        "超限结果应落盘并回填路径: {}",
+        gb.output.chars().take(300).collect::<String>()
+    );
+}
+
+/// 沙箱执行：环境净化（敏感变量不外泄）+ strict 联网闸门；浏览器工具端到端（无浏览器则跳过）
+#[tokio::test]
+async fn 沙箱_环境净化与联网闸门_浏览器() {
+    let _serial = serial_guard();
+    let mut cfg = test_config();
+    let tmp = std::env::temp_dir().join(format!("exm-sandbox-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    cfg.workspace_root = tmp.clone();
+    cfg.data_dir = tmp.join("data");
+    cfg.config_path = tmp.join("config.json");
+    cfg.memory_md_path = tmp.join("memory.md");
+    cfg.webui_dist = tmp.join("webui-dist");
+    cfg.sandbox.mode = "workspace".into();
+    cfg.security.exec_approval = "off".into();
+    let core = Core::with_config(cfg.clone()).expect("创建 Core 失败");
+
+    // 故意注入一个敏感变量：沙箱化子进程不得看到它
+    std::env::set_var("EXM_TEST_SECRET", "leak-me-if-visible");
+    let tools = exm_core::tools::ToolGateway::new(
+        &core.config().workspace_root,
+        core.store.clone(),
+        core.registry.clone(),
+        core.events.clone(),
+        core.config().security.clone(),
+    )
+    .with_sandbox(core.config().sandbox.clone());
+
+    #[cfg(target_os = "windows")]
+    let probe = "echo %EXM_TEST_SECRET%";
+    #[cfg(not(target_os = "windows"))]
+    let probe = "echo $EXM_TEST_SECRET";
+    let r = tools
+        .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": probe }))
+        .await;
+    assert!(r.ok, "白名单内命令应执行: {:?}", r.error);
+    assert!(
+        !r.output.contains("leak-me-if-visible"),
+        "沙箱应净化敏感环境变量，实际输出: {}",
+        r.output
+    );
+
+    // Windows 作业对象：句柄可建可挂（自检），且设了资源上限也不妨碍普通命令
+    #[cfg(target_os = "windows")]
+    {
+        assert!(
+            exm_core::tools::windows_job_available(),
+            "应能创建作业对象并把子进程收进作业（沙箱加固自检）"
+        );
+        let mut lim_cfg = cfg.clone();
+        lim_cfg.sandbox.memory_mb = 512;
+        lim_cfg.sandbox.max_processes = 8;
+        let core3 = Core::with_config(lim_cfg).expect("创建 Core 失败");
+        let lim_tools = exm_core::tools::ToolGateway::new(
+            &core3.config().workspace_root,
+            core3.store.clone(),
+            core3.registry.clone(),
+            core3.events.clone(),
+            core3.config().security.clone(),
+        )
+        .with_sandbox(core3.config().sandbox.clone());
+        let r2 = lim_tools
+            .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "echo job-ok" }))
+            .await;
+        assert!(
+            r2.ok && r2.output.contains("job-ok"),
+            "512MB 内存 + 8 进程上限不应妨碍普通命令: {:?}",
+            r2.error
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
+    eprintln!("[skip] 非 Windows 平台：作业对象用例跳过（Linux/macOS 由 ulimit + bwrap 负责）");
+
+    // strict：联网类命令（git fetch）走审批闸门；本地命令不受影响
+    let mut strict_cfg = cfg.clone();
+    strict_cfg.sandbox.mode = "strict".into();
+    strict_cfg.sandbox.allow_network = false;
+    let core2 = Core::with_config(strict_cfg).expect("创建 Core 失败");
+    let strict_tools = exm_core::tools::ToolGateway::new(
+        &core2.config().workspace_root,
+        core2.store.clone(),
+        core2.registry.clone(),
+        core2.events.clone(),
+        core2.config().security.clone(),
+    )
+    .with_sandbox(core2.config().sandbox.clone());
+    let net = strict_tools
+        .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "git fetch" }))
+        .await;
+    assert!(!net.ok, "strict 下联网命令应被拦截");
+    let net_msg = net.error.clone().unwrap_or_default();
+    assert!(net_msg.contains("审批") || net_msg.contains("拦截"), "应给出审批提示: {net_msg}");
+    let local = strict_tools
+        .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "echo local-ok" }))
+        .await;
+    assert!(local.ok && local.output.contains("local-ok"), "strict 下本地命令应放行: {:?}", local.error);
+
+    // 浏览器工具：探测不到浏览器则跳过（按诚实性原则，此时该工具也不会下发给模型）
+    if !tools.browser_ready() {
+        eprintln!("[skip] 未探测到 Chrome/Chromium，跳过浏览器用例");
+        return;
+    }
+    let app = axum::Router::new().route(
+        "/page",
+        axum::routing::get(|| async {
+            "<html><head><title>浏览器用例</title></head><body>\
+             <h1>动态正文</h1><div id=\"box\">初始</div>\
+             <script>document.getElementById('box').textContent = '脚本已执行';</script>\
+             </body></html>"
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let open = tools
+        .execute(
+            "machina",
+            &[ToolName::Browser],
+            ToolName::Browser,
+            &serde_json::json!({ "op": "open", "url": format!("http://{addr}/page") }),
+        )
+        .await;
+    assert!(open.ok, "browser open 应成功: {:?}", open.error);
+    assert!(open.output.contains("动态正文"), "应取到渲染后正文: {}", open.output);
+    assert!(open.output.contains("脚本已执行"), "JS 渲染结果应可见（证明是真实浏览器）: {}", open.output);
+
+    let shot = tools
+        .execute(
+            "machina",
+            &[ToolName::Browser],
+            ToolName::Browser,
+            &serde_json::json!({ "op": "screenshot", "name": "smoke-page" }),
+        )
+        .await;
+    assert!(shot.ok, "截图应成功: {:?}", shot.error);
+    assert!(
+        tmp.join(".exmachina").join("screenshots").join("smoke-page.png").is_file(),
+        "截图应落盘: {}",
+        shot.output
+    );
+    let closed = tools
+        .execute("machina", &[ToolName::Browser], ToolName::Browser, &serde_json::json!({ "op": "close" }))
+        .await;
+    assert!(closed.ok, "close 应成功");
+}
+
+#[tokio::test]
+async fn 自定义工具_HTTP与命令模板() {
+    let _serial = serial_guard();
+    let mut cfg = test_config();
+    let tmp = std::env::temp_dir().join(format!("exm-custom-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    cfg.workspace_root = tmp.clone();
+    cfg.data_dir = tmp.join("data");
+    cfg.config_path = tmp.join("config.json");
+    cfg.memory_md_path = tmp.join("memory.md");
+    cfg.webui_dist = tmp.join("webui-dist");
+    cfg.security.exec_approval = "off".into();
+    cfg.sandbox.mode = "workspace".into();
+
+    // 本地 HTTP 服务：GET 回显 query、POST 回显 body 字段
+    let app = axum::Router::new()
+        .route(
+            "/now",
+            axum::routing::get(|axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                format!("q={}", q.unwrap_or_default())
+            }),
+        )
+        .route(
+            "/echo",
+            axum::routing::post(|axum::Json(b): axum::Json<serde_json::Value>| async move {
+                format!("name={}", b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    cfg.tools.custom = vec![
+        // GET + query 插值（对全部个体可见）
+        exm_core::config::CustomTool {
+            name: "weather".into(),
+            description: "查天气".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"]
+            }),
+            kind: "http".into(),
+            target: format!("http://{addr}/now?city={{city}}"),
+            method: "GET".into(),
+            headers: Default::default(),
+            agents: vec![],
+        },
+        // POST + JSON body
+        exm_core::config::CustomTool {
+            name: "greet".into(),
+            description: String::new(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }),
+            kind: "http".into(),
+            target: format!("http://{addr}/echo"),
+            method: "POST".into(),
+            headers: Default::default(),
+            agents: vec![],
+        },
+        // shell 模板（仅 machina 可见）
+        exm_core::config::CustomTool {
+            name: "shout".into(),
+            description: "喊话".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "word": { "type": "string" } },
+                "required": ["word"]
+            }),
+            kind: "shell".into(),
+            target: "echo hi-{word}".into(),
+            method: String::new(),
+            headers: Default::default(),
+            agents: vec!["machina".into()],
+        },
+        // 对 machina 不可见
+        exm_core::config::CustomTool {
+            name: "other-tool".into(),
+            description: String::new(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            kind: "http".into(),
+            target: "http://127.0.0.1:1/x".into(),
+            method: "GET".into(),
+            headers: Default::default(),
+            agents: vec!["someone-else".into()],
+        },
+    ];
+    let core = Core::with_config(cfg.clone()).expect("创建 Core 失败");
+    let tools = exm_core::tools::ToolGateway::new(
+        &core.config().workspace_root,
+        core.store.clone(),
+        core.registry.clone(),
+        core.events.clone(),
+        core.config().security.clone(),
+    )
+    .with_sandbox(core.config().sandbox.clone())
+    .with_custom_tools(core.config().tools.custom.clone());
+
+    // schema 下发按 agents 可见性过滤
+    let specs = tools.custom_specs_for("machina");
+    let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"weather") && names.contains(&"shout"), "可见自定义工具应下发: {names:?}");
+    assert!(!names.contains(&"other-tool"), "agents 未包含的个体不应看到该工具");
+    assert!(
+        specs.iter().all(|s| s.name != "weather" || s.parameters.get("required").is_some()),
+        "参数 schema 应随工具下发"
+    );
+
+    // GET：query 插值 + URL 编码
+    let r = tools
+        .execute_named("machina", &[], "weather", &serde_json::json!({ "city": "shanghai" }))
+        .await;
+    assert!(r.ok, "http 工具应成功: {:?}", r.error);
+    assert!(r.output.contains("city=shanghai"), "query 应带上实参: {}", r.output);
+
+    // POST：实参作为 JSON body
+    let r = tools
+        .execute_named("machina", &[], "greet", &serde_json::json!({ "name": "exm" }))
+        .await;
+    assert!(r.ok && r.output.contains("name=exm"), "POST body 应带实参: {:?} {}", r.error, r.output);
+
+    // shell：模板插值
+    let r = tools
+        .execute_named("machina", &[], "shout", &serde_json::json!({ "word": "X" }))
+        .await;
+    assert!(r.ok && r.output.contains("hi-X"), "shell 模板应插值: {:?} {}", r.error, r.output);
+
+    // 可见性：agents 未包含 → 拒绝
+    let r = tools.execute_named("machina", &[], "other-tool", &serde_json::json!({})).await;
+    assert!(!r.ok && r.error.clone().unwrap_or_default().contains("未对本个体开放"), "不可见工具应拒绝: {:?}", r.error);
+
+    // 注入面：shell 实参带元字符 → 拒绝
+    let r = tools
+        .execute_named("machina", &[], "shout", &serde_json::json!({ "word": "a&whoami" }))
+        .await;
+    assert!(!r.ok && r.error.clone().unwrap_or_default().contains("不允许的字符"), "危险实参应拒绝: {:?}", r.error);
+
+    // 未知工具
+    let r = tools.execute_named("machina", &[], "no-such-tool", &serde_json::json!({})).await;
+    assert!(!r.ok && r.error.clone().unwrap_or_default().contains("未知工具"), "未知工具应报错: {:?}", r.error);
 }

@@ -58,18 +58,43 @@ interface ExmState {
 }
 
 let ws: WebSocket | null = null;
+/** 连接代际号：每次 connectWs 递增。旧代际残留的 onclose/定时器一律失效，根治 A→B→A 快速切换的闭包竞态 */
+let wsGen = 0;
 
 function connectWs(get: () => ExmState): void {
   const sessionId = get().sessionId;
   if (!sessionId) return;
+  const gen = ++wsGen;
+  // 主动关闭旧连接：其 onclose 携带旧 gen，不会触发重连
   ws?.close();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws?sessionId=${sessionId}&key=${encodeURIComponent(localStorage.getItem("exm.key") ?? "")}`);
-  ws.onopen = () => get().setWs(true);
+  let reconnected = false; // 本代际是否经历过断连重连（成功后补偿拉取丢失的事件）
+  ws.onopen = () => {
+    if (gen !== wsGen) return;
+    get().setWs(true);
+    if (!reconnected) return;
+    // 断连补偿：重拉消息与任务图恢复丢失事件；图无在途节点则解除 running 卡死
+    void (async () => {
+      try {
+        const [messages, graph] = await Promise.all([api.messages(sessionId), api.graph(sessionId)]);
+        if (gen !== wsGen || useExm.getState().sessionId !== sessionId) return;
+        const pending = (graph?.nodes ?? []).some((n) =>
+          ["running", "dispatched", "syncing"].includes(String((n as { status?: string }).status ?? "")),
+        );
+        useExm.setState({ messages, graph: (graph?.nodes?.length ?? 0) > 0 ? graph : null, running: pending });
+      } catch {
+        /* 补偿失败静默：下轮断连重连时再次补偿 */
+      }
+    })();
+  };
   ws.onclose = () => {
+    if (gen !== wsGen) return; // 旧代际：静默退出，不碰当前连接、不重连
     get().setWs(false);
+    reconnected = true;
     setTimeout(() => {
-      if (get().sessionId === sessionId) connectWs(get);
+      if (gen !== wsGen || get().sessionId !== sessionId) return;
+      connectWs(get);
     }, 2000);
   };
   ws.onmessage = (m) => {

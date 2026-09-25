@@ -101,7 +101,7 @@ impl WorkerSession {
                 };
                 let result = core
                     .orchestrator()
-                    .execute_unit(&def, &order, move |delta| {
+                    .execute_unit(&def, &order, "", move |delta| {
                         let _ = tx.send(delta.to_string());
                     })
                     .await;

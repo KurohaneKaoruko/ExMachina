@@ -79,6 +79,8 @@ pub struct Orchestrator {
     /// 远程派发开关（工作者在线即路由远程，失败回落本地）
     pub remote_enabled: bool,
     pub unit_runtime: Arc<AgentRuntime>,
+    /// 工具网关（run 收束钩子、工具能力探测）
+    pub tools: Arc<crate::tools::ToolGateway>,
     pub store: Arc<Store>,
     pub memory: Arc<MemoryStore>,
     pub memory_enabled: bool,
@@ -93,6 +95,8 @@ pub struct Orchestrator {
     pub stt_target: String,
     pub vision_relay_target: String,
     pub max_concurrency: usize,
+    /// 子个体单次派发的最大工具步数（配置分档：L0 直答 3 / 一般 8 / 编码类 20）
+    pub max_unit_steps: usize,
     /// 新教训达阈值时自动提炼经验改进要点（docs/10 §5）
     pub auto_adapt: bool,
 }
@@ -221,13 +225,14 @@ impl Orchestrator {
         &self,
         def: &AgentDefinition,
         order: &DispatchOrder,
+        session_id: &str,
         mut on_token: F,
     ) -> anyhow::Result<SyncReport>
     where
         F: FnMut(&str),
     {
         let chain = self.unit_chain_for(def);
-        self.unit_runtime.execute(def, order, chain, |d| on_token(d)).await
+        self.unit_runtime.execute(def, order, chain, session_id, |d| on_token(d)).await
     }
 
     pub fn orch_id(&self) -> String {
@@ -482,6 +487,11 @@ impl Orchestrator {
         self.emit(session_id, "ledger.updated", serde_json::to_value(&ledger)?);
 
         let result = self.run_round(session_id, &goal).await;
+        // onRunEnd 钩子：一轮收束（成功或失败）时触发，可做通知/留痕/指标
+        let hook_status = if result.is_ok() { "done" } else { "error" };
+        for note in self.tools.run_end_hooks(hook_status, session_id, &self.orch_id()) {
+            self.emit(session_id, "hook.failed", serde_json::json!({ "message": note }));
+        }
         if let Err(err) = &result {
             self.emit(session_id, "run.error", serde_json::json!({ "message": err.to_string() }));
             let _ = self.store.add_message(
@@ -967,7 +977,7 @@ impl Orchestrator {
                 );
             }
         } else {
-            // 深层记忆关闭：回落 memory.md 文件记忆（OpenClaw/Hermes 模式）
+            // 深层记忆关闭：回落 memory.md 文件记忆（文件记忆模式）
             if let Ok(md) = std::fs::read_to_string(&self.memory_md_path) {
                 let trimmed: String = md.chars().take(8000).collect();
                 if !trimmed.trim().is_empty() {
@@ -1115,7 +1125,7 @@ impl Orchestrator {
         let candidates = self.orch_candidates();
         let mut last_err: Option<anyhow::Error> = None;
         for (pid, provider, model) in candidates {
-            let mut req = ChatRequest::new(model, messages.to_vec());
+            let mut req = ChatRequest::new(model.clone(), messages.to_vec());
             req.key_hint = Some("__orch__".into());
             let (tx, mut rx) = unbounded_channel::<String>();
             let req_clone = req.clone();
@@ -1130,8 +1140,20 @@ impl Orchestrator {
             match handle.await {
                 Ok(Ok(resp)) => {
                     self.failover.clear(&pid);
+                    self.tools.record_usage(
+                        session_id,
+                        resp.prompt_tokens,
+                        resp.completion_tokens,
+                        &model,
+                    );
                     if acc.is_empty() {
                         let fallback = provider.chat(req).await?;
+                        self.tools.record_usage(
+                            session_id,
+                            fallback.prompt_tokens,
+                            fallback.completion_tokens,
+                            &model,
+                        );
                         self.emit(
                             session_id,
                             "orchestrator.token",
@@ -1275,7 +1297,11 @@ impl ExecCtx {
                 }
                 allowlist
             },
-            constraints: DispatchConstraints { max_steps: 5, timeout_ms: 120_000 },
+            constraints: DispatchConstraints {
+                // 步数预算按配置分档（复杂任务需要更多「思考-调工具」轮次）；超时随步数放宽
+                max_steps: (o.max_unit_steps as u32).max(3),
+                timeout_ms: (o.max_unit_steps as u64).max(3) * 30_000,
+            },
             report_format: "SyncReport".into(),
         };
 
@@ -1352,14 +1378,15 @@ impl ExecCtx {
                         });
                         let chain = orch.unit_chain_for(&def);
                         orch.unit_runtime
-                            .execute(&def, &order, chain, |_delta| {})
+                            .execute(&def, &order, chain, &self.session_id, |_delta| {})
                             .await
                     }
                 }
             } else {
                 let chain = orch.unit_chain_for(&def);
+                let sid_for_usage = self.session_id.clone();
                 orch.unit_runtime
-                    .execute(&def, &order, chain, move |delta| {
+                    .execute(&def, &order, chain, &sid_for_usage, move |delta| {
                         let _ = evts.send(CoreEvent {
                             kind: "unit.token".into(),
                             session_id: sid.clone(),

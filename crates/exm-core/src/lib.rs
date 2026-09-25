@@ -9,6 +9,7 @@
 pub mod bus;
 pub mod config;
 pub mod cron;
+pub mod browser;
 pub mod fsdb;
 pub mod image_stash;
 pub mod mcp;
@@ -82,6 +83,7 @@ impl Core {
             &memory,
             Some(mcp_handle.clone()),
             None,
+            Some(cron.clone()),
         )?);
 
         Ok(Core {
@@ -103,7 +105,7 @@ impl Core {
     pub fn apply_config(&self, cfg: ExmConfig) -> anyhow::Result<()> {
         cfg.save()?;
         self.mcp.configure(&cfg.mcp_servers);
-        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote())?;
+        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote(), Some(self.cron.clone()))?;
         *self.orchestrator.write() = Arc::new(orch);
         *self.config.write() = Arc::new(cfg);
         Ok(())
@@ -245,14 +247,87 @@ impl Core {
         orch.compact_memory_md(max).await
     }
 
-    /// 会话 token 估算（全部消息陈述字符 / 4）
+    /// 会话 token 用量：优先真实用量（provider 上报），无记录时退回字符估算（全部消息陈述字符 / 4）
     pub fn session_tokens_estimate(&self, session_id: &str) -> u64 {
+        let (prompt, completion, calls) = self.store.usage_total(session_id);
+        if calls > 0 {
+            return prompt + completion;
+        }
         self.store
             .list_messages(session_id, 500)
             .unwrap_or_default()
             .iter()
             .map(|m| m.statements.iter().map(|s| s.text.chars().count() as u64).sum::<u64>() / 4)
             .sum()
+    }
+
+    /// 会话用量明细：(prompt, completion, 调用次数)
+    pub fn session_usage(&self, session_id: &str) -> (u64, u64, usize) {
+        self.store.usage_total(session_id)
+    }
+
+    // ---------------- 文件检查点（写前快照的回看与回滚） ----------------
+
+    fn checkpoints_dir(&self) -> std::path::PathBuf {
+        self.config().workspace_root.join(".exmachina").join("checkpoints")
+    }
+
+    /// 检查点清单：(日期, 相对路径, 字节数)，按日期倒序
+    pub fn list_checkpoints(&self) -> Vec<(String, String, u64)> {
+        let root = self.checkpoints_dir();
+        let mut out: Vec<(String, String, u64)> = Vec::new();
+        let Ok(days) = std::fs::read_dir(&root) else { return out };
+        for day in days.flatten() {
+            if !day.path().is_dir() {
+                continue;
+            }
+            let date = day.file_name().to_string_lossy().to_string();
+            let mut stack = vec![day.path()];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if let Ok(rel) = p.strip_prefix(&root).map(|r| r.to_path_buf()) {
+                        // 去掉前缀的 <日期>/ 段
+                        let rel_str = rel
+                            .components()
+                            .skip(1)
+                            .map(|c| c.as_os_str().to_string_lossy().to_string())
+                            .collect::<Vec<_>>()
+                            .join("/");
+                        let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                        out.push((date.clone(), rel_str, size));
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        out
+    }
+
+    /// 回滚检查点：`date` 为空取最近一份；返回被覆盖的文件相对路径
+    pub fn restore_checkpoint(&self, date: Option<&str>, rel: &str) -> anyhow::Result<String> {
+        let target = self.config().workspace_root.join(".exmachina").join("checkpoints");
+        let day = match date {
+            Some(d) if !d.trim().is_empty() => d.trim().to_string(),
+            _ => self
+                .list_checkpoints()
+                .first()
+                .map(|(d, _, _)| d.clone())
+                .ok_or_else(|| anyhow::anyhow!("没有可用的检查点"))?,
+        };
+        let src = target.join(&day).join(rel);
+        if !src.is_file() {
+            anyhow::bail!("检查点不存在：{day}/{rel}");
+        }
+        let dst = self.config().workspace_root.join(rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&src, &dst)?;
+        Ok(format!("已回滚 {} → {rel}（来自检查点 {day}）", dst.display()))
     }
 
     pub async fn chat(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
@@ -434,7 +509,7 @@ impl Core {
 
     fn rebuild_orchestrator(&self) -> anyhow::Result<()> {
         let cfg = self.config();
-        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote())?;
+        let orch = build_orchestrator(&cfg, &self.store, &self.registry, &self.events, &self.memory, Some(self.mcp.clone()), self.remote(), Some(self.cron.clone()))?;
         *self.orchestrator.write() = Arc::new(orch);
         Ok(())
     }
@@ -687,6 +762,7 @@ pub fn build_orchestrator(
     memory: &Arc<MemoryStore>,
     mcp: Option<Arc<crate::mcp::McpRegistry>>,
     remote: Option<Arc<dyn crate::remote::RemoteExecutor>>,
+    cron: Option<Arc<CronStore>>,
 ) -> anyhow::Result<Orchestrator> {
     // 全局通道：有端点与密钥即真实推理；未配置时——测试替身模式给替身，产品模式给「未配置」指引通道
     let provider: Arc<dyn LlmProvider> = {
@@ -710,20 +786,27 @@ pub fn build_orchestrator(
     };
     let mcp = mcp.unwrap_or_else(crate::mcp::McpRegistry::shared);
     mcp.configure(&cfg.mcp_servers);
-    let tools = Arc::new(
-        ToolGateway::new(
-            &cfg.workspace_root,
-            store.clone(),
-            registry.clone(),
-            events.clone(),
-            cfg.security.clone(),
-        )
-        .with_mcp(mcp),
-    );
+    let mut gateway = ToolGateway::new(
+        &cfg.workspace_root,
+        store.clone(),
+        registry.clone(),
+        events.clone(),
+        cfg.security.clone(),
+    )
+    .with_search(cfg.search.clone())
+    .with_hooks(cfg.hooks.clone())
+    .with_sandbox(cfg.sandbox.clone())
+    .with_browser(cfg.browser.clone())
+    .with_custom_tools(cfg.tools.custom.clone())
+    .with_mcp(mcp);
+    if let Some(c) = &cron {
+        gateway = gateway.with_cron(c.clone());
+    }
+    let tools = Arc::new(gateway);
     let unit_runtime = Arc::new(AgentRuntime::new(
         registry.clone(),
         provider.clone(),
-        tools,
+        tools.clone(),
         cfg.llm.model.clone(),
     ));
     // 模型档案运行池：每个档案独立 Provider。
@@ -762,6 +845,7 @@ pub fn build_orchestrator(
         remote_enabled: remote.is_some(),
         remote,
         unit_runtime,
+        tools,
         store: store.clone(),
         memory: memory.clone(),
         memory_enabled: cfg.memory_enabled,
@@ -774,6 +858,7 @@ pub fn build_orchestrator(
         stt_target: cfg.stt_model.clone(),
         vision_relay_target: cfg.vision_relay_model.clone(),
         max_concurrency: cfg.max_concurrency,
+        max_unit_steps: cfg.automation.unit_max_steps,
         auto_adapt: cfg.automation.auto_adapt,
     })
 }

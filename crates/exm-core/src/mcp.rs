@@ -192,17 +192,28 @@ enum Transport {
     Stdio(StdioClient),
 }
 
-/// 单服务器连接：懒初始化 + 工具清单
+/// 单服务器连接：懒初始化 + 工具/资源/提示词清单
 struct McpConnection {
     cfg: McpServerConfig,
     transport: Option<Transport>,
     next_id: u64,
     tools: Vec<McpToolInfo>,
+    /// resources/list：(uri, 名称)
+    resources: Vec<(String, String)>,
+    /// prompts/list：(名称, 描述)
+    prompts: Vec<(String, String)>,
 }
 
 impl McpConnection {
     fn new(cfg: McpServerConfig) -> Self {
-        McpConnection { cfg, transport: None, next_id: 1, tools: Vec::new() }
+        McpConnection {
+            cfg,
+            transport: None,
+            next_id: 1,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }
     }
 
     async fn ensure_init(&mut self) -> anyhow::Result<()> {
@@ -242,7 +253,7 @@ impl McpConnection {
         }
     }
 
-    /// 刷新工具清单（initialize 后 tools/list）
+    /// 刷新清单（initialize 后 tools/list + resources/list + prompts/list，后两者尽力而为）
     pub async fn refresh_tools(&mut self) -> anyhow::Result<usize> {
         self.ensure_init().await?;
         let result = self.call_raw("tools/list", serde_json::json!({})).await?;
@@ -252,26 +263,164 @@ impl McpConnection {
             .unwrap_or_default();
         let n = tools.len();
         self.tools = tools;
+        // resources / prompts：服务器可能不支持 —— 失败即视为空，不阻塞工具面
+        if let Ok(r) = self.call_raw("resources/list", serde_json::json!({})).await {
+            self.resources = r
+                .get("resources")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| {
+                            let uri = x.get("uri").and_then(|u| u.as_str())?.to_string();
+                            let name = x
+                                .get("name")
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            Some((uri, name))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        if let Ok(r) = self.call_raw("prompts/list", serde_json::json!({})).await {
+            self.prompts = r
+                .get("prompts")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| {
+                            let name = x.get("name").and_then(|u| u.as_str())?.to_string();
+                            let desc = x
+                                .get("description")
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            Some((name, desc))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         Ok(n)
     }
 
     pub fn tool_snapshot(&self) -> Vec<ToolSpec> {
-        self.tools
+        let mut specs: Vec<ToolSpec> = self
+            .tools
             .iter()
             .map(|t| ToolSpec {
                 name: format!("mcp:{}:{}", self.cfg.id, t.name),
                 description: if t.description.is_empty() { format!("MCP 工具 {}/{}", self.cfg.id, t.name) } else { t.description.clone() },
                 parameters: if t.input_schema.is_null() { serde_json::json!({ "type": "object", "properties": {} }) } else { t.input_schema.clone() },
             })
-            .collect()
+            .collect();
+        // 资源读取（MCP resources）：把服务器暴露的文档/数据纳入可调用工具面
+        if !self.resources.is_empty() {
+            let list = self
+                .resources
+                .iter()
+                .take(30)
+                .map(|(uri, name)| if name.is_empty() { format!("- {uri}") } else { format!("- {uri}（{name}）") })
+                .collect::<Vec<_>>()
+                .join("\n");
+            specs.push(ToolSpec {
+                name: format!("mcp:{}:__resource__", self.cfg.id),
+                description: format!(
+                    "读取 MCP 服务器 {} 暴露的资源。可用资源：\n{list}",
+                    self.cfg.id
+                ),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "uri": { "type": "string", "description": "资源 URI" } },
+                    "required": ["uri"]
+                }),
+            });
+        }
+        // 提示词模板（MCP prompts）：按名取回模板正文，供个体在特定任务上直接套用
+        if !self.prompts.is_empty() {
+            let list = self
+                .prompts
+                .iter()
+                .take(30)
+                .map(|(n, d)| if d.is_empty() { format!("- {n}") } else { format!("- {n}：{d}") })
+                .collect::<Vec<_>>()
+                .join("\n");
+            specs.push(ToolSpec {
+                name: format!("mcp:{}:__prompt__", self.cfg.id),
+                description: format!("取回 MCP 服务器 {} 的提示词模板正文。可用模板：\n{list}", self.cfg.id),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "模板名" },
+                        "arguments": { "type": "object", "description": "模板参数（可选）" }
+                    },
+                    "required": ["name"]
+                }),
+            });
+        }
+        specs
     }
 
     fn find_tool(&self, name: &str) -> bool {
         self.tools.iter().any(|t| t.name == name)
     }
 
-    /// 调用工具：name 为服务器内工具名（不带 mcp: 前缀）
+    /// 调用工具：name 为服务器内工具名（不带 mcp: 前缀）。
+    /// `__resource__` / `__prompt__` 为合成工具：分别走 resources/read 与 prompts/get。
     pub async fn call_tool(&mut self, name: &str, arguments: &serde_json::Value) -> McpToolResult {
+        if name == "__resource__" {
+            let uri = arguments.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            if uri.trim().is_empty() {
+                return McpToolResult { ok: false, text: "缺少 uri".into() };
+            }
+            return match self.call_raw("resources/read", serde_json::json!({ "uri": uri })).await {
+                Ok(v) => {
+                    let text = v
+                        .get("contents")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| serde_json::to_string(&v).unwrap_or_default());
+                    McpToolResult { ok: true, text }
+                }
+                Err(e) => McpToolResult { ok: false, text: format!("读取资源失败: {e}") },
+            };
+        }
+        if name == "__prompt__" {
+            let pname = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if pname.trim().is_empty() {
+                return McpToolResult { ok: false, text: "缺少 name".into() };
+            }
+            let params = serde_json::json!({
+                "name": pname,
+                "arguments": arguments.get("arguments").cloned().unwrap_or_else(|| serde_json::json!({})),
+            });
+            return match self.call_raw("prompts/get", params).await {
+                Ok(v) => {
+                    let text = v
+                        .get("messages")
+                        .and_then(|m| m.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| {
+                                    m.pointer("/content/text").and_then(|t| t.as_str()).map(String::from)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| serde_json::to_string(&v).unwrap_or_default());
+                    McpToolResult { ok: true, text }
+                }
+                Err(e) => McpToolResult { ok: false, text: format!("取回提示词失败: {e}") },
+            };
+        }
         if !self.find_tool(name) {
             // 清单可能过期：刷新一次再试
             let _ = self.refresh_tools().await;
@@ -427,6 +576,9 @@ impl McpRegistry {
                     "tools": specs.iter().map(|s| serde_json::json!({
                         "name": s.name, "description": s.description,
                     })).collect::<Vec<_>>(),
+                    // MCP 三要素：tools / resources / prompts（后两者以合成工具形式下发）
+                    "resourcesReadable": specs.iter().any(|s| s.name.ends_with(":__resource__")),
+                    "promptsAvailable": specs.iter().any(|s| s.name.ends_with(":__prompt__")),
                 })
             })
             .collect()

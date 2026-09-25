@@ -56,9 +56,9 @@ pub struct LlmProfileBody {
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
-    /// 多 Key 池（掩码位沿用旧池同位键）
+    /// 多 Key 池：明文 = 新键；掩码哨兵 = 兼容旧客户端按序数沿用；{"keep": i} = 沿用旧池第 i 把键
     #[serde(default)]
-    pub api_keys: Option<Vec<String>>,
+    pub api_keys: Option<Vec<ApiKeyEntry>>,
     #[serde(default)]
     pub api_format: Option<String>,
     #[serde(default)]
@@ -81,6 +81,16 @@ pub struct ModelEntryBody {
     pub audio: bool,
 }
 
+/// Key 池条目：结构化提交让「沿用位」携带旧池引用（删行/插行后不串位），纯掩码字符串保持兼容
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum ApiKeyEntry {
+    /// 明文新键，或掩码哨兵（按「第 n 个掩码沿用旧池第 n 把键」序数对位）
+    Text(String),
+    /// 沿用旧池第 keep 把键（0 起）
+    Keep { keep: usize },
+}
+
 fn resolve_profile_input(
     existing: Option<&LlmProfile>,
     v: &LlmProfileBody,
@@ -90,16 +100,29 @@ fn resolve_profile_input(
         Some(k) if k.trim().is_empty() => existing.map(|e| e.api_key.clone()).unwrap_or_default(),
         Some(k) => k.to_string(),
     };
-    // Key 池：掩码位 = 沿用旧池同位键；明文 = 新键
+    // Key 池：明文 = 新键；{"keep": i} = 沿用旧池第 i 把键（结构化，删行/插行后不串位）；
+    // 掩码哨兵 = 兼容旧客户端，按「第 n 个掩码沿用旧池第 n 把有效键」序数对位
     let mut api_keys: Vec<String> = Vec::new();
     if let Some(list) = &v.api_keys {
-        for (i, k) in list.iter().enumerate() {
-            if k == KEY_MASK {
-                if let Some(old_k) = existing.and_then(|e| e.api_keys.get(i)) {
-                    api_keys.push(old_k.clone());
+        let old_pool: Vec<&String> = existing
+            .map(|e| e.api_keys.iter().filter(|k| !k.trim().is_empty()).collect())
+            .unwrap_or_default();
+        let mut text_mask_seq = 0usize;
+        for k in list {
+            match k {
+                ApiKeyEntry::Keep { keep } => {
+                    if let Some(old_k) = old_pool.get(*keep) {
+                        api_keys.push((*old_k).clone());
+                    }
                 }
-            } else if !k.trim().is_empty() {
-                api_keys.push(k.clone());
+                ApiKeyEntry::Text(s) if s == KEY_MASK => {
+                    if let Some(old_k) = old_pool.get(text_mask_seq) {
+                        api_keys.push((*old_k).clone());
+                    }
+                    text_mask_seq += 1;
+                }
+                ApiKeyEntry::Text(s) if !s.trim().is_empty() => api_keys.push(s.clone()),
+                ApiKeyEntry::Text(_) => {}
             }
         }
     }
@@ -271,7 +294,13 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
     let Some(p) = profile else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "档案不存在" }))).into_response();
     };
-    if p.api_key.trim().is_empty() && p.api_keys.is_empty() {
+    // 探针密钥：主 Key 优先，为空则回落 Key 池首键（与连通测试对齐已配置的键）
+    let probe_key = if p.api_key.trim().is_empty() {
+        p.api_keys.first().cloned().unwrap_or_default()
+    } else {
+        p.api_key.clone()
+    };
+    if probe_key.trim().is_empty() {
         return Json(json!({ "ok": false, "configured": false, "message": "该档案尚未配置 API Key" }))
             .into_response();
     }
@@ -283,7 +312,7 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
     let rb = match fmt {
         "anthropic" => client
             .post(format!("{base}/v1/messages"))
-            .header("x-api-key", &p.api_key)
+            .header("x-api-key", &probe_key)
             .header("anthropic-version", "2023-06-01")
             .json(&json!({
                 "model": model, "max_tokens": 1,
@@ -291,20 +320,20 @@ pub async fn test_profile(State(st): State<AppState>, Json(b): Json<LlmProfileBo
             })),
         "azure" => client
             .post(format!("{base}/openai/deployments/{model}/chat/completions?api-version=2024-10-21"))
-            .header("api-key", &p.api_key)
+            .header("api-key", &probe_key)
             .json(&json!({
                 "messages": [{ "role": "user", "content": "ping" }], "max_tokens": 1,
             })),
         "gemini" => client
             .post(format!("{base}/v1beta/models/{model}:generateContent"))
-            .header("x-goog-api-key", &p.api_key)
+            .header("x-goog-api-key", &probe_key)
             .json(&json!({
                 "contents": [{ "role": "user", "parts": [{ "text": "ping" }] }],
                 "generationConfig": { "maxOutputTokens": 1 },
             })),
         _ => client
             .post(format!("{base}/chat/completions"))
-            .bearer_auth(&p.api_key)
+            .bearer_auth(&probe_key)
             .json(&json!({
                 "model": model,
                 "messages": [{ "role": "user", "content": "ping" }],

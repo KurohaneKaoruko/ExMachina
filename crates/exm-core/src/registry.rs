@@ -6,7 +6,7 @@
 //! 切换组即热切换：指挥体的规划/派发/提示词/人设全部落在激活组内。
 //! 分布式实现可替换本文件（接口一致）。
 
-use crate::types::{normalize_domain, AgentDefinition, GroupMeta, Tier};
+use crate::types::{normalize_domain, AgentDefinition, GroupMeta, Tier, ToolName};
 use anyhow::Context;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -16,6 +16,53 @@ pub struct GroupData {
     pub meta: GroupMeta,
     pub defs: HashMap<String, AgentDefinition>,
     pub dir: PathBuf,
+}
+
+/// 个体可编辑字段补丁（None = 沿用旧值）。identifier/tier/prompt_file 不可经此修改。
+/// model_hint 语义与 set_agent_model 一致：Some("") = 清除（跟随所属组/全局）。
+#[derive(Debug, Clone, Default)]
+pub struct AgentPatch {
+    pub name: Option<String>,
+    pub domain: Option<String>,
+    pub description: Option<String>,
+    pub capabilities: Option<Vec<String>>,
+    pub tools: Option<Vec<ToolName>>,
+    pub model_hint: Option<String>,
+}
+
+impl AgentPatch {
+    fn apply(&self, def: &mut AgentDefinition) {
+        if let Some(v) = self.name.as_deref() {
+            let t = v.trim();
+            if !t.is_empty() {
+                def.name = t.to_string();
+            }
+        }
+        if let Some(v) = self.domain.as_deref() {
+            def.domain = normalize_domain(v);
+        }
+        if let Some(v) = self.description.as_deref() {
+            let t = v.trim();
+            if !t.is_empty() {
+                def.description = t.to_string();
+            }
+        }
+        if let Some(list) = &self.capabilities {
+            def.capabilities = list
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        if let Some(list) = &self.tools {
+            def.tools = list.clone();
+        }
+        if let Some(v) = self.model_hint.as_deref() {
+            let t = v.trim();
+            def.model_hint = if t.is_empty() { None } else { Some(t.to_string()) };
+        }
+    }
 }
 
 pub struct LocalRegistry {
@@ -375,11 +422,11 @@ impl LocalRegistry {
                     "# {}
 
 你是 EXMACHINA 的单体智能体 {}（identifier: {}），独立直接服务于用户，不经指挥体调度。
-职责：{}
+简介：{}
 
 ## 语言纪律
 - 称用户为\"用户\"，以\"本机\"自称。
-- 独立完成任务职责范围内的全部工作；信息不足时显式说明假设。
+- 独立完成用户交予的全部工作；信息不足时显式说明假设。
 ",
                     def.name, def.name, def.identifier, def.description
                 ),
@@ -924,6 +971,51 @@ impl LocalRegistry {
             g.defs.insert(identifier.to_string(), def);
         }
         Ok(())
+    }
+
+    /// 更新个体可编辑字段（单体优先，其次跨组查找）——与 set_agent_model 同构。
+    /// 保护口径：内置组「定义受保护」指不得增删个体或整体替换定义（upsert_agent / remove_agent）；
+    /// 本方法与 set_agent_model 同属受限字段编辑，仅放行 AgentPatch 声明的字段，
+    /// identifier/tier/prompt_file 与提示词文件恒不可改，落盘回原定义文件。
+    pub fn update_agent(&self, identifier: &str, patch: &AgentPatch) -> anyhow::Result<AgentDefinition> {
+        // 1) 单体智能体（agents/singles/<id>.json）
+        if self.singles.read().contains_key(identifier) {
+            let mut d = {
+                let singles = self.singles.read();
+                singles.get(identifier).context("个体不存在")?.clone()
+            };
+            patch.apply(&mut d);
+            if d.name.trim().is_empty() || d.description.trim().is_empty() {
+                anyhow::bail!("name/description 不能为空");
+            }
+            let path = self.singles_dir().join(format!("{identifier}.json"));
+            std::fs::write(&path, serde_json::to_string_pretty(&d)?)?;
+            self.singles.write().insert(identifier.to_string(), d.clone());
+            return Ok(d);
+        }
+        // 2) 组内个体（跨组查找：管理页不依赖激活组；内置组同样放行受限编辑）
+        let owner: Option<(String, PathBuf)> = {
+            let groups = self.groups.read();
+            groups.values().find_map(|g| {
+                g.defs
+                    .contains_key(identifier)
+                    .then(|| (g.meta.id.clone(), g.dir.join("definitions").join(format!("{identifier}.json"))))
+            })
+        };
+        let Some((gid, path)) = owner else {
+            anyhow::bail!("个体不存在: {identifier}");
+        };
+        let mut groups = self.groups.write();
+        let g = groups.get_mut(&gid).context("组不存在")?;
+        let Some(def) = g.defs.get_mut(identifier) else {
+            anyhow::bail!("个体不存在: {identifier}");
+        };
+        patch.apply(def);
+        if def.name.trim().is_empty() || def.description.trim().is_empty() {
+            anyhow::bail!("name/description 不能为空");
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(def)?)?;
+        Ok(def.clone())
     }
 
     /// 设置组内主智能体

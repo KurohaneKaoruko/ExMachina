@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, InputNumber, message, Select, Switch } from "antd";
-import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, SafetyCertificateOutlined, SettingOutlined } from "@ant-design/icons";
+import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, GlobalOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
@@ -17,6 +17,11 @@ const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey:
   memory: { icon: <DatabaseOutlined />, titleKey: "sec.memory", descKey: "sec.memory.desc" },
   security: { icon: <SafetyCertificateOutlined />, titleKey: "sec.security", descKey: "sec.security.desc" },
   automation: { icon: <FieldTimeOutlined />, titleKey: "sec.automation", descKey: "sec.automation.desc" },
+  search: { icon: <GlobalOutlined />, titleKey: "sec.search", descKey: "sec.search.desc" },
+  sandbox: { icon: <SafetyOutlined />, titleKey: "sec.sandbox", descKey: "sec.sandbox.desc" },
+  browser: { icon: <RobotOutlined />, titleKey: "sec.browser", descKey: "sec.browser.desc" },
+  hooks: { icon: <ThunderboltOutlined />, titleKey: "sec.hooks", descKey: "sec.hooks.desc" },
+  tools: { icon: <ToolOutlined />, titleKey: "sec.tools", descKey: "sec.tools.desc" },
   ui: { icon: <BgColorsOutlined />, titleKey: "sec.ui", descKey: "sec.ui.desc" },
 };
 
@@ -33,10 +38,31 @@ const FIELD_I18N: Record<string, { label: TKey; help?: TKey }> = {
   "memory.halfLifeDays": { label: "cfg.halfLifeDays", help: "cfg.halfLifeDays.help" },
   "security.execApproval": { label: "cfg.execApproval", help: "cfg.execApproval.help" },
   "security.execAllowlist": { label: "cfg.execAllowlist", help: "cfg.execAllowlist.help" },
+  "security.authKey": { label: "cfg.authKey", help: "cfg.authKey.help" },
   "automation.heartbeatEnabled": { label: "cfg.heartbeatEnabled", help: "cfg.heartbeatEnabled.help" },
   "automation.heartbeatIntervalMinutes": { label: "cfg.heartbeatInterval", help: "cfg.heartbeatInterval.help" },
   "automation.heartbeatPrompt": { label: "cfg.heartbeatPrompt", help: "cfg.heartbeatPrompt.help" },
   "automation.autoAdapt": { label: "cfg.autoAdapt", help: "cfg.autoAdapt.help" },
+  "automation.unitMaxSteps": { label: "cfg.unitMaxSteps", help: "cfg.unitMaxSteps.help" },
+  "security.terminalTimeoutSecs": { label: "cfg.terminalTimeout", help: "cfg.terminalTimeout.help" },
+  "security.toolOutputSpillChars": { label: "cfg.spillChars", help: "cfg.spillChars.help" },
+  "search.provider": { label: "cfg.searchProvider", help: "cfg.searchProvider.help" },
+  "search.endpoint": { label: "cfg.searchEndpoint", help: "cfg.searchEndpoint.help" },
+  "search.apiKey": { label: "cfg.searchApiKey", help: "cfg.searchApiKey.help" },
+  "search.maxResults": { label: "cfg.searchMax", help: "cfg.searchMax.help" },
+  "sandbox.mode": { label: "cfg.sandboxMode", help: "cfg.sandboxMode.help" },
+  "sandbox.allowNetwork": { label: "cfg.sandboxNet", help: "cfg.sandboxNet.help" },
+  "sandbox.useBwrap": { label: "cfg.sandboxBwrap", help: "cfg.sandboxBwrap.help" },
+  "sandbox.memoryMb": { label: "cfg.sandboxMem", help: "cfg.sandboxMem.help" },
+  "sandbox.maxProcesses": { label: "cfg.sandboxProcs", help: "cfg.sandboxProcs.help" },
+  "browser.executable": { label: "cfg.browserExe", help: "cfg.browserExe.help" },
+  "browser.headless": { label: "cfg.browserHeadless", help: "cfg.browserHeadless.help" },
+  "browser.timeoutSecs": { label: "cfg.browserTimeout", help: "cfg.browserTimeout.help" },
+  "browser.maxChars": { label: "cfg.browserMaxChars", help: "cfg.browserMaxChars.help" },
+  "hooks.preTool": { label: "cfg.hookPre", help: "cfg.hookPre.help" },
+  "hooks.postTool": { label: "cfg.hookPost", help: "cfg.hookPost.help" },
+  "hooks.onRunEnd": { label: "cfg.hookRun", help: "cfg.hookRun.help" },
+  "tools.custom": { label: "cfg.toolsCustom", help: "cfg.toolsCustom.help" },
 };
 
 /** 特定字段用选择器而非自由文本（显示名走 i18n，值是发给后端的枚举） */
@@ -46,7 +72,15 @@ const ENUM_OVERRIDES: Record<string, { value: string; labelKey: TKey }[]> = {
     { value: "risky", labelKey: "cfg.approval.risky" },
     { value: "always", labelKey: "cfg.approval.always" },
   ],
+  "sandbox.mode": [
+    { value: "off", labelKey: "cfg.sandbox.off" },
+    { value: "workspace", labelKey: "cfg.sandbox.workspace" },
+    { value: "strict", labelKey: "cfg.sandbox.strict" },
+  ],
 };
+
+/** 钩子/列表类字段在 UI 里以「逗号分隔字符串」编辑，后端亦接受数组 */
+const listToText = (v: unknown): string => (Array.isArray(v) ? v.join(", ") : typeof v === "string" ? v : "");
 
 function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
   if (!cfg) return undefined;
@@ -61,10 +95,16 @@ function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
       return cfg.memory.recallLimit;
     case "memory.halfLifeDays":
       return cfg.memory.halfLifeDays;
+    case "memory.mdMaxChars":
+      return cfg.memory.mdMaxChars;
+    case "tools.custom":
+      return JSON.stringify(cfg.tools?.custom ?? [], null, 2);
     case "security.execApproval":
       return cfg.security.execApproval;
     case "security.execAllowlist":
       return cfg.security.execAllowlist;
+    case "security.authKey":
+      return cfg.security.authKey;
     case "automation.heartbeatEnabled":
       return cfg.automation.heartbeatEnabled;
     case "automation.heartbeatIntervalMinutes":
@@ -73,6 +113,44 @@ function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
       return cfg.automation.heartbeatPrompt;
     case "automation.autoAdapt":
       return cfg.automation.autoAdapt;
+    case "automation.unitMaxSteps":
+      return cfg.automation.unitMaxSteps;
+    case "security.terminalTimeoutSecs":
+      return cfg.security.terminalTimeoutSecs;
+    case "security.toolOutputSpillChars":
+      return cfg.security.toolOutputSpillChars;
+    case "search.provider":
+      return cfg.search?.provider;
+    case "search.endpoint":
+      return cfg.search?.endpoint;
+    case "search.apiKey":
+      return cfg.search?.apiKey;
+    case "search.maxResults":
+      return cfg.search?.maxResults;
+    case "sandbox.mode":
+      return cfg.sandbox?.mode;
+    case "sandbox.allowNetwork":
+      return cfg.sandbox?.allowNetwork;
+    case "sandbox.useBwrap":
+      return cfg.sandbox?.useBwrap;
+    case "sandbox.memoryMb":
+      return cfg.sandbox?.memoryMb;
+    case "sandbox.maxProcesses":
+      return cfg.sandbox?.maxProcesses;
+    case "browser.executable":
+      return cfg.browser?.executable;
+    case "browser.headless":
+      return cfg.browser?.headless;
+    case "browser.timeoutSecs":
+      return cfg.browser?.timeoutSecs;
+    case "browser.maxChars":
+      return cfg.browser?.maxChars;
+    case "hooks.preTool":
+      return listToText(cfg.hooks?.preTool);
+    case "hooks.postTool":
+      return listToText(cfg.hooks?.postTool);
+    case "hooks.onRunEnd":
+      return listToText(cfg.hooks?.onRunEnd);
     default:
       return undefined;
   }
@@ -110,13 +188,22 @@ export function SettingsView(): React.ReactElement {
     setSaving(true);
     try {
       const body: Record<string, unknown> = {};
+      const nested = ["memory", "security", "automation", "search", "sandbox", "browser", "hooks", "tools"];
       for (const [k, v] of Object.entries(values)) {
-        if (v === undefined || v === "") continue;
-        const [g, f] = k.split(".");
-        if (g === "memory") body.memory = { ...((body.memory as Record<string, unknown>) ?? {}), [f]: v };
-        else if (g === "security") body.security = { ...((body.security as Record<string, unknown>) ?? {}), [f]: v };
-        else if (g === "automation") body.automation = { ...((body.automation as Record<string, unknown>) ?? {}), [f]: v };
-        else body[k] = v;
+        if (v === undefined) continue;
+        const dot = k.indexOf(".");
+        if (dot < 0) {
+          if (v !== "") body[k] = v;
+          continue;
+        }
+        const g = k.slice(0, dot);
+        const f = k.slice(dot + 1);
+        if (!nested.includes(g)) {
+          if (v !== "") body[k] = v;
+          continue;
+        }
+        // 空串表示「清除该项」（hooks 用空串清列表）；搜索凭据留空 = 沿用旧值，由后端判定
+        body[g] = { ...((body[g] as Record<string, unknown>) ?? {}), [f]: v };
       }
       await saveConfig(body);
       message.success(t("settings.savedToast"));
@@ -209,7 +296,13 @@ export function SettingsView(): React.ReactElement {
                     value={value === undefined || value === "" ? Number(f.default) : Number(value)}
                     onChange={(v) => setField(f.key, v)}
                   />
-                ) : f.key === "automation.heartbeatPrompt" || f.key === "security.execAllowlist" ? (
+                ) : f.kind === "password" ? (
+                  <Input.Password
+                    style={{ width: 320 }}
+                    value={String(value ?? f.default)}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                  />
+                ) : f.key === "automation.heartbeatPrompt" || f.key === "security.execAllowlist" || f.key === "tools.custom" ? (
                   <Input.TextArea
                     style={{ width: 320 }}
                     rows={2}

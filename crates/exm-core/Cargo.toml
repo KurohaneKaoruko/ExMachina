@@ -18,8 +18,18 @@ uuid.workspace = true
 chrono.workspace = true
 parking_lot = "0.12"
 tokio-tungstenite.workspace = true
+# 仓库检索工具（grep/glob）：ignore 尊重 .gitignore，regex 提供正则匹配
+ignore = "0.4"
+regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 # MCP http 传输冒烟：测试内起最小 JSON-RPC 服务器
 axum.workspace = true
+
+# Windows 沙箱加固：作业对象（内存/进程数上限 + KILL_ON_JOB_CLOSE 整树终止）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+] }

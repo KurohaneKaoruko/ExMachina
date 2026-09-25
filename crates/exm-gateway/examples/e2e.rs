@@ -622,7 +622,7 @@ async fn main() -> anyhow::Result<()> {
     // 通道平台校验 + 掩码回显语义（supervisor 只在 serve() 拉起，e2e 内无适配器连接行为，全部确定性）
     let bad_plat: reqwest::Response = client
         .post(format!("{base}/channels"))
-        .json(&json!({ "id": "e2e-bad", "platform": "discord" }))
+        .json(&json!({ "id": "e2e-bad", "platform": "irc" }))
         .send()
         .await?;
     c.check("非法平台被拒 400", bad_plat.status().as_u16() == 400);
@@ -640,6 +640,77 @@ async fn main() -> anyhow::Result<()> {
         .send()
         .await?;
     c.check("napcat 缺 WS 地址被拒 400", nap_missing.status().as_u16() == 400);
+
+    // 新增内置适配器（discord / slack / matrix）的凭证校验
+    let dc_missing: reqwest::Response = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-dc", "platform": "discord" }))
+        .send()
+        .await?;
+    c.check("discord 缺 bot token 被拒 400", dc_missing.status().as_u16() == 400);
+
+    let sl_missing: reqwest::Response = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-sl", "platform": "slack", "token": "xoxb-x" }))
+        .send()
+        .await?;
+    c.check("slack 缺 appToken 被拒 400", sl_missing.status().as_u16() == 400);
+
+    let mx_missing: reqwest::Response = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-mx", "platform": "matrix", "token": "syt_x" }))
+        .send()
+        .await?;
+    c.check("matrix 缺 homeserver 被拒 400", mx_missing.status().as_u16() == 400);
+
+    let dc: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .json(&json!({ "id": "e2e-dc", "platform": "discord", "token": "MTIz.bot.token" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("discord 创建成功且 token 掩码回显", dc["type"] == "discord" && dc["token"] == "***已配置***");
+
+    let sl: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .json(&json!({
+            "id": "e2e-sl", "platform": "slack",
+            "token": "xoxb-secret", "config": { "appToken": "xapp-secret" }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "slack 创建成功：bot token 与 appToken 双双掩码",
+        sl["token"] == "***已配置***" && sl["config"]["appToken"] == "***已配置***",
+    );
+
+    let mx: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .json(&json!({
+            "id": "e2e-mx", "platform": "matrix",
+            "token": "syt_access", "config": { "homeserver": "https://matrix.org" }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "matrix 创建成功：homeserver 明示 + access token 掩码",
+        mx["config"]["homeserver"] == "https://matrix.org" && mx["token"] == "***已配置***",
+    );
+
+    // slack 掩码回传沿用旧 appToken（与提供商页同一三态语义）
+    let sl_upd: serde_json::Value = client
+        .put(format!("{base}/channels/e2e-sl"))
+        .json(&json!({ "config": { "appToken": "***已配置***" } }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("slack 掩码回传 appToken 不丢失", sl_upd["config"]["appToken"] == "***已配置***");
 
     let qq: serde_json::Value = client
         .post(format!("{base}/channels"))
@@ -709,6 +780,9 @@ async fn main() -> anyhow::Result<()> {
         a.iter().all(|ch| {
             ch["secret"].as_str().map(|s| s != "s3cret").unwrap_or(true)
                 && ch["token"].as_str().map(|s| s != "123456:abc").unwrap_or(true)
+                // 新平台敏感 config 键同样不得出明文
+                && ch["config"]["appToken"].as_str().map(|s| s != "xapp-secret").unwrap_or(true)
+                && ch["config"]["appSecret"].as_str().map(|s| s != "qq-secret").unwrap_or(true)
         })
     }).unwrap_or(false);
     c.check("列表接口无任何明文密钥", no_plaintext && ch_list.as_array().map(|a| a.len() >= 3).unwrap_or(false));
@@ -718,6 +792,10 @@ async fn main() -> anyhow::Result<()> {
 
     let _ = client.delete(format!("{base}/channels/e2e-qq")).send().await?;
     let _ = client.delete(format!("{base}/channels/e2e-tg")).send().await?;
+    let _ = client.delete(format!("{base}/channels/e2e-dc")).send().await?;
+    let _ = client.delete(format!("{base}/channels/e2e-sl")).send().await?;
+    let _ = client.delete(format!("{base}/channels/e2e-mx")).send().await?;
+    let _ = client.delete(format!("{base}/channels/e2e-nap")).send().await?;
 
     let _ = client.delete(format!("{base}/channels/e2e-hook")).send().await?;
 
@@ -910,6 +988,253 @@ async fn main() -> anyhow::Result<()> {
     c.check("切回默认档案", restore["ok"] == true);
     let _ = client.delete(format!("{base}/llm/profiles/e2e-vendor")).send().await;
 
+    // ---- 密钥掩码保全（docs/11）：掩码回显非明文、掩码回传不丢键、池增删不串位 ----
+    let _mask_new: serde_json::Value = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({
+            "id": "e2e-mask", "name": "E2E 掩码",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-mask-primary",
+            "apiKeys": ["sk-pool-a", "sk-pool-b"],
+            "model": "mask-large"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let mask_list0: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    let mask0 = mask_list0["profiles"]
+        .as_array()
+        .and_then(|a| a.iter().find(|p| p["id"] == "e2e-mask"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    c.check(
+        "主 Key 与 Key 池掩码回显（非明文）",
+        mask0["apiKey"] == "***已配置***"
+            && mask0["apiKeys"].as_array().map(|a| a.len() == 2 && a.iter().all(|k| k == "***已配置***")).unwrap_or(false),
+    );
+    // 模拟前端「追加一把池键」：明文在前 + 掩码保序在后（同位索引实现会在此丢首把池键）
+    let _mask_add: serde_json::Value = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({
+            "id": "e2e-mask", "name": "E2E 掩码",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "***已配置***",
+            "apiKeys": ["sk-pool-c", "***已配置***", "***已配置***"],
+            "model": "mask-large"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let mask_list1: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    let mask1 = mask_list1["profiles"]
+        .as_array()
+        .and_then(|a| a.iter().find(|p| p["id"] == "e2e-mask"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    c.check(
+        "掩码回传追加池键不丢键（池含 3 把）",
+        mask1["apiKey"] == "***已配置***"
+            && mask1["apiKeys"].as_array().map(|a| a.len() == 3).unwrap_or(false),
+    );
+    // 纯掩码回传（未改动密钥）：主 Key 与池全量保留、不落盘掩码字面量
+    let _mask_keep: serde_json::Value = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({
+            "id": "e2e-mask", "name": "E2E 掩码",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "***已配置***",
+            "apiKeys": ["***已配置***", "***已配置***", "***已配置***"],
+            "model": "mask-large"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let mask_list2: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    let mask2 = mask_list2["profiles"]
+        .as_array()
+        .and_then(|a| a.iter().find(|p| p["id"] == "e2e-mask"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    c.check(
+        "纯掩码回传保留全部密钥",
+        mask2["apiKey"] == "***已配置***"
+            && mask2["apiKeys"].as_array().map(|a| a.len() == 3).unwrap_or(false),
+    );
+    let _ = client.delete(format!("{base}/llm/profiles/e2e-mask")).send().await;
+
+    // ---- 智能体编辑（docs/09）：受限字段更新（name/domain/description/capabilities/tools/model_hint）；identifier/tier/prompt_file 不可改 ----
+    let orch_upd: serde_json::Value = client
+        .put(format!("{base}/agents/exmachina-orchestrator"))
+        .json(&serde_json::json!({
+            "name": "e2e-改名验证",
+            "capabilities": ["routing", "e2e-cap"]
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "内置组主智能体受限编辑放行（identifier/tier 不变）",
+        orch_upd["name"] == "e2e-改名验证"
+            && orch_upd["identifier"] == "exmachina-orchestrator"
+            && orch_upd["tier"] == "orchestrator"
+            && orch_upd["capabilities"].as_array().map(|a| a.contains(&json!("e2e-cap"))).unwrap_or(false),
+    );
+    let orch_restore: serde_json::Value = client
+        .put(format!("{base}/agents/exmachina-orchestrator"))
+        .json(&serde_json::json!({
+            "name": "指挥体",
+            "capabilities": ["routing", "decomposition", "dispatch", "arbitration", "convergence"]
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("内置组主智能体名称归位（指挥体）", orch_restore["name"] == "指挥体");
+    let _single_new: serde_json::Value = client
+        .post(format!("{base}/singles"))
+        .json(&serde_json::json!({
+            "name": "e2e 单体", "identifier": "e2e-single", "description": "e2e 单体描述"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let single_upd: serde_json::Value = client
+        .put(format!("{base}/singles/e2e-single"))
+        .json(&serde_json::json!({
+            "name": "e2e 单体·改", "domain": "测试域",
+            "capabilities": ["cap-a", "cap-b"]
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check(
+        "单体编辑：名称/领域/能力标签生效",
+        single_upd["name"] == "e2e 单体·改"
+            && single_upd["domain"] == "测试域"
+            && single_upd["capabilities"].as_array().map(|a| a.len() == 2).unwrap_or(false),
+    );
+    let _ = client.delete(format!("{base}/singles/e2e-single")).send().await;
+
+    // ---- 设置页保存兼容（D1/D6/D8）：execAllowlist 双形态、search key 三态、memory.mdMaxChars ----
+    let d1_put: serde_json::Value = client
+        .put(format!("{base}/config"))
+        .json(&serde_json::json!({
+            "security": { "execApproval": "risky", "execAllowlist": "git status, cargo test" }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("设置页保存 200（execAllowlist 逗号字符串）", d1_put["ok"] == true);
+    let d1_cfg: serde_json::Value = client.get(format!("{base}/config")).send().await?.json().await?;
+    c.check(
+        "execAllowlist 字符串已转数组生效",
+        d1_cfg["security"]["execAllowlist"].as_array().map(|a| a.len() == 2).unwrap_or(false),
+    );
+    let d1_arr: serde_json::Value = client
+        .put(format!("{base}/config"))
+        .json(&serde_json::json!({ "security": { "execApproval": "risky", "execAllowlist": ["echo hi"] } }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("设置页保存 200（execAllowlist 数组形态）", d1_arr["ok"] == true);
+    let d6_set: serde_json::Value = client
+        .put(format!("{base}/config"))
+        .json(&serde_json::json!({
+            "search": { "provider": "tavily", "endpoint": "", "apiKey": "sk-search-e2e", "maxResults": 5 }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("搜索 API Key 明文写入 200", d6_set["ok"] == true);
+    let _d6_clear: serde_json::Value = client
+        .put(format!("{base}/config"))
+        .json(&serde_json::json!({
+            "search": { "provider": "tavily", "endpoint": "", "apiKey": "", "maxResults": 5 }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let d6_cfg: serde_json::Value = client.get(format!("{base}/config")).send().await?.json().await?;
+    c.check("搜索 API Key 显式空串已清除", d6_cfg["search"]["apiKey"] == "");
+    let d8_put: serde_json::Value = client
+        .put(format!("{base}/config"))
+        .json(&serde_json::json!({ "memory": { "mdMaxChars": 6000 } }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    c.check("memory.mdMaxChars 写入 200", d8_put["ok"] == true);
+    let d8_cfg: serde_json::Value = client.get(format!("{base}/config")).send().await?.json().await?;
+    c.check("memory.mdMaxChars 回显运行值", d8_cfg["memory"]["mdMaxChars"] == 6000);
+    let d12_cron: serde_json::Value = client.get(format!("{base}/cron")).send().await?.json().await?;
+    c.check(
+        "cron 清单不含内部心跳条目",
+        d12_cron.as_array().map(|a| !a.iter().any(|j| j["id"] == "__heartbeat__")).unwrap_or(false),
+    );
+
+    // ---- 池掩码令牌（D3）：结构化 keep 引用，删行/插行与用户意图完全一致 ----
+    let _tok_new: serde_json::Value = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({
+            "id": "e2e-token", "name": "E2E 令牌", "baseUrl": "https://api.example.com/v1",
+            "apiKeys": ["sk-tok-a", "sk-tok-b"], "model": "tok-m"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let token_pool_len = |v: &serde_json::Value| -> usize {
+        v["profiles"]
+            .as_array()
+            .and_then(|a| a.iter().find(|p| p["id"] == "e2e-token"))
+            .and_then(|p| p["apiKeys"].as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
+    client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({ "id": "e2e-token", "name": "E2E 令牌", "apiKeys": [{ "keep": 1 }] }))
+        .send()
+        .await?;
+    let tok_del_first: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    c.check("池令牌：删首行仅保留旧池第 2 把", token_pool_len(&tok_del_first) == 1);
+    client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({ "id": "e2e-token", "name": "E2E 令牌", "apiKeys": ["sk-tok-a", "sk-tok-b"] }))
+        .send()
+        .await?;
+    client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({ "id": "e2e-token", "name": "E2E 令牌", "apiKeys": [{ "keep": 0 }] }))
+        .send()
+        .await?;
+    let tok_del_mid: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    c.check("池令牌：删中行仅保留旧池第 1 把", token_pool_len(&tok_del_mid) == 1);
+    // 中插明文：前端语义 = 按回读时的旧池生成 keep 令牌；先重置池为 [A,B] 再提交 [X, keep0, keep1]
+    client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({ "id": "e2e-token", "name": "E2E 令牌", "apiKeys": ["sk-tok-a", "sk-tok-b"] }))
+        .send()
+        .await?;
+    client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({ "id": "e2e-token", "name": "E2E 令牌", "apiKeys": ["sk-tok-c", { "keep": 0 }, { "keep": 1 }] }))
+        .send()
+        .await?;
+    let tok_insert: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    c.check("池令牌：中插明文池含 3 把", token_pool_len(&tok_insert) == 3);
+    let _ = client.delete(format!("{base}/llm/profiles/e2e-token")).send().await;
+
     // ---- 多 Key 粘性负载均衡（docs/11 §1）：k1 恒 429 → 切 k2 并粘住 ----
     let key_stats: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -1092,6 +1417,12 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let no_key: reqwest::Response = client.get(format!("{base}/agents")).send().await?;
     c.check("未带密钥访问 401", no_key.status().as_u16() == 401);
+    let no_key_cfg: reqwest::Response = client.get(format!("{base}/config")).send().await?;
+    c.check("未带密钥访问数据端点 /config 401", no_key_cfg.status().as_u16() == 401);
+    let mut wrong_key_req = client.get(format!("{base}/sessions")).build()?;
+    wrong_key_req.headers_mut().insert("x-auth-key", "bad-key".parse().unwrap());
+    let wrong_key_resp = client.execute(wrong_key_req).await?;
+    c.check("错误密钥访问数据端点 401", wrong_key_resp.status().as_u16() == 401);
     let wrong: serde_json::Value = client
         .post(format!("{base}/auth/verify"))
         .json(&serde_json::json!({ "key": "wrong" }))
@@ -1112,6 +1443,47 @@ async fn main() -> anyhow::Result<()> {
     with_key.headers_mut().insert("x-auth-key", "e2e-secret".parse().unwrap());
     let ok_resp = client.execute(with_key).await?;
     c.check("带密钥访问 200", ok_resp.status().as_u16() == 200);
+    // 通道入站豁免（D10）：有自有 secret 的 webhook 通道放行；无 secret 通道仍被全局鉴权拦截
+    let _mk_hook: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .header("x-auth-key", "e2e-secret")
+        .json(&serde_json::json!({ "id": "e2e-hook-auth", "platform": "webhook", "secret": "hook-secret" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let inbound_ok: reqwest::Response = client
+        .post(format!("{base}/channels/e2e-hook-auth/inbound"))
+        .json(&serde_json::json!({ "secret": "hook-secret", "text": "鉴权豁免验证" }))
+        .send()
+        .await?;
+    c.check("带 secret 通道入站豁免全局鉴权（202）", inbound_ok.status().as_u16() == 202);
+    let inbound_bad: reqwest::Response = client
+        .post(format!("{base}/channels/e2e-hook-auth/inbound"))
+        .json(&serde_json::json!({ "secret": "wrong", "text": "错密钥" }))
+        .send()
+        .await?;
+    c.check("secret 错误入站仍被拒 401", inbound_bad.status().as_u16() == 401);
+    let _mk_plain: serde_json::Value = client
+        .post(format!("{base}/channels"))
+        .header("x-auth-key", "e2e-secret")
+        .json(&serde_json::json!({ "id": "e2e-nosecret", "platform": "webhook" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let inbound_no: reqwest::Response = client
+        .post(format!("{base}/channels/e2e-nosecret/inbound"))
+        .json(&serde_json::json!({ "text": "无凭据通道" }))
+        .send()
+        .await?;
+    c.check("无 secret 通道入站仍被全局鉴权拦截 401", inbound_no.status().as_u16() == 401);
+    let mut rm_hook = client.delete(format!("{base}/channels/e2e-hook-auth")).build()?;
+    rm_hook.headers_mut().insert("x-auth-key", "e2e-secret".parse().unwrap());
+    let _ = client.execute(rm_hook).await;
+    let mut rm_plain = client.delete(format!("{base}/channels/e2e-nosecret")).build()?;
+    rm_plain.headers_mut().insert("x-auth-key", "e2e-secret".parse().unwrap());
+    let _ = client.execute(rm_plain).await;
     let ws_root = base.trim_end_matches("/api").to_string();
     let ws_no_key: reqwest::Response = client.get(format!("{ws_root}/ws")).send().await?;
     c.check("WS 无密钥 401", ws_no_key.status().as_u16() == 401);

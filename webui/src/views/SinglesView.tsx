@@ -1,7 +1,7 @@
 /** 智能体页（单体）：档案管理 —— 创建/删除/默认模型设置；交互切换在「对话」页左栏进行 */
 import React, { useCallback, useEffect, useState } from "react";
 import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { PlusOutlined, ReloadOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
+import { EditOutlined, FormOutlined, PlusOutlined, ReloadOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
 import { api, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { buildModelOptions, modelLabel } from "../models";
@@ -12,6 +12,7 @@ interface SingleInfo {
   name: string;
   description: string;
   domain: string;
+  capabilities?: string[];
   modelHint?: string | null;
 }
 
@@ -24,7 +25,9 @@ export function SinglesView(): React.ReactElement {
   const [modal, setModal] = useState(false);
   const [modelTarget, setModelTarget] = useState<SingleInfo | null>(null);
   const [modelDraft, setModelDraft] = useState<string>("");
+  const [editing, setEditing] = useState<SingleInfo | null>(null);
   const [form] = Form.useForm();
+  const [editForm] = Form.useForm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,6 +60,36 @@ export function SinglesView(): React.ReactElement {
       await load();
     } catch (e) {
       message.error(t("singles.createFailed", { err: String(e) }));
+    }
+  };
+
+  const openEdit = (s: SingleInfo) => {
+    setEditing(s);
+    editForm.setFieldsValue({
+      name: s.name,
+      description: s.description,
+      domain: s.domain,
+      capabilities: s.capabilities ?? [],
+      modelHint: s.modelHint ?? undefined,
+    });
+  };
+
+  const submitEdit = async () => {
+    if (!editing) return;
+    const v = await editForm.validateFields();
+    try {
+      await api.updateSingle(editing.identifier, {
+        name: v.name,
+        description: v.description,
+        domain: (v.domain ?? "").trim(),
+        capabilities: (v.capabilities ?? []).map((s: string) => s.trim()).filter(Boolean),
+        modelHint: v.modelHint ?? "",
+      });
+      message.success(t("singles.editSaved", { name: v.name }));
+      setEditing(null);
+      await load();
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
 
@@ -119,6 +152,13 @@ export function SinglesView(): React.ReactElement {
                 <Space>
                   <Button
                     size="small"
+                    icon={<FormOutlined />}
+                    onClick={() => openEdit(s)}
+                  >
+                    {t("singles.edit")}
+                  </Button>
+                  <Button
+                    size="small"
                     icon={<SettingOutlined />}
                     onClick={() => {
                       setModelTarget(s);
@@ -168,6 +208,39 @@ export function SinglesView(): React.ReactElement {
         />
       </Modal>
 
+      {/* 编辑档案（名称/简介/领域/能力标签/默认模型） */}
+      <Modal
+        open={editing !== null}
+        title={editing ? t("singles.editTitle", { name: editing.name }) : ""}
+        onCancel={() => setEditing(null)}
+        onOk={() => void submitEdit()}
+        okText={t("common.save")}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="name" label={t("singles.f.name")} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="description" label={t("singles.f.desc")} rules={[{ required: true }]}>
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="domain" label={t("agents.f.domain")}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="capabilities" label={t("agents.f.caps")}>
+            <Select mode="tags" open={false} placeholder={t("agents.f.capsPh")} />
+          </Form.Item>
+          <Form.Item name="modelHint" label={t("agents.f.model")} extra={t("agents.f.modelExtra")}>
+            <Select
+              allowClear
+              showSearch
+              style={{ width: "100%" }}
+              options={buildModelOptions(profiles)}
+              placeholder={t("agents.f.modelPh")}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       <Modal
         open={modal}
         title={t("singles.new")}
@@ -186,8 +259,8 @@ export function SinglesView(): React.ReactElement {
           >
             <Input placeholder={t("singles.f.identifierPh")} />
           </Form.Item>
-          <Form.Item name="description" label={t("singles.f.duty")} rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder={t("singles.f.dutyPh")} />
+          <Form.Item name="description" label={t("singles.f.desc")} rules={[{ required: true }]}>
+            <Input.TextArea rows={2} placeholder={t("singles.f.descPh")} />
           </Form.Item>
           <Form.Item name="prompt" label={t("singles.f.prompt")}>
             <Input.TextArea rows={4} placeholder={t("singles.f.promptPh")} />

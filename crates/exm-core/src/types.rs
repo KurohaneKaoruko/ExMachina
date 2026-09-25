@@ -106,6 +106,12 @@ pub enum ToolName {
     Read,
     Filesystem,
     Terminal,
+    /// 精确编辑：old_string → new_string（唯一命中校验，避免整文件覆盖）
+    Edit,
+    /// 仓库检索：按正则搜索文件内容（尊重 .gitignore）
+    Grep,
+    /// 按 glob 模式列出文件
+    Glob,
     #[serde(rename = "web_search")]
     WebSearch,
     /// 抓取网页并提取正文文本
@@ -114,6 +120,10 @@ pub enum ToolName {
     /// 智能体管理（仅组内主智能体可用：创建/修改/删除子个体、设置主智能体）
     #[serde(rename = "agent_manage")]
     AgentManage,
+    /// 自主排程：创建/查看/删除定时与一次性任务（AI 自驱工作）
+    Schedule,
+    /// 浏览器自动化：headless Chrome/Chromium + CDP（导航 / 取正文 / 执行 JS / 截图）
+    Browser,
 }
 
 impl ToolName {
@@ -122,10 +132,23 @@ impl ToolName {
             ToolName::Read => "read",
             ToolName::Filesystem => "filesystem",
             ToolName::Terminal => "terminal",
+            ToolName::Edit => "edit",
+            ToolName::Grep => "grep",
+            ToolName::Glob => "glob",
             ToolName::WebSearch => "web_search",
             ToolName::WebFetch => "web_fetch",
             ToolName::AgentManage => "agent_manage",
+            ToolName::Schedule => "schedule",
+            ToolName::Browser => "browser",
         }
+    }
+
+    /// 只读工具（无副作用）：同轮可并发执行
+    pub fn is_readonly(self) -> bool {
+        matches!(
+            self,
+            ToolName::Read | ToolName::Grep | ToolName::Glob | ToolName::WebSearch | ToolName::WebFetch
+        )
     }
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -133,9 +156,14 @@ impl ToolName {
             "read" => Some(ToolName::Read),
             "filesystem" => Some(ToolName::Filesystem),
             "terminal" => Some(ToolName::Terminal),
+            "edit" => Some(ToolName::Edit),
+            "grep" => Some(ToolName::Grep),
+            "glob" => Some(ToolName::Glob),
             "web_search" => Some(ToolName::WebSearch),
             "web_fetch" => Some(ToolName::WebFetch),
             "agent_manage" => Some(ToolName::AgentManage),
+            "schedule" => Some(ToolName::Schedule),
+            "browser" => Some(ToolName::Browser),
             _ => None,
         }
     }

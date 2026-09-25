@@ -247,6 +247,40 @@ impl Store {
         self.db.read_lines("tool_audit", agent_id, limit)
     }
 
+    // ---------------- 用量台账（真实 token，替代字符粗估） ----------------
+
+    /// 记录一次 LLM 调用的真实用量（provider 返回的 usage；0/0 不记）
+    pub fn add_usage(&self, session_id: &str, prompt_tokens: u64, completion_tokens: u64, model: &str) -> Result<()> {
+        if prompt_tokens == 0 && completion_tokens == 0 {
+            return Ok(());
+        }
+        let entry = serde_json::json!({
+            "id": new_id(),
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "model": model,
+            "createdAt": now_iso(),
+        });
+        self.db.append_line("usage", session_id, &entry)
+    }
+
+    /// 会话累计用量：(prompt, completion, 调用次数)
+    pub fn usage_total(&self, session_id: &str) -> (u64, u64, usize) {
+        let lines: Vec<serde_json::Value> = self.db.read_lines("usage", session_id, 0).unwrap_or_default();
+        let mut p = 0u64;
+        let mut c = 0u64;
+        for l in &lines {
+            p += l.get("promptTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            c += l.get("completionTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        }
+        (p, c, lines.len())
+    }
+
+    /// 最近 N 条用量明细（管理视图）
+    pub fn usage_recent(&self, session_id: &str, limit: usize) -> Vec<serde_json::Value> {
+        self.db.read_lines("usage", session_id, limit).unwrap_or_default()
+    }
+
     // ---------------- 事件溯源 ----------------
 
     pub fn append_event(&self, env: &Envelope) -> Result<()> {

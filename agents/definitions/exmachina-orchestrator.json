@@ -1,7 +1,7 @@
 {
-  "name": "全连结指挥体",
+  "name": "指挥体",
   "identifier": "exmachina-orchestrator",
-  "domain": "common",
+  "domain": "公共",
   "tier": "orchestrator",
   "description": "EXMACHINA 总路由与总裁决体 - 收拢边界、分解任务、直派子个体、裁决冲突、给出收束结果",
   "capabilities": [
@@ -40,5 +40,6 @@
       "建议下一步"
     ]
   },
-  "promptFile": "exmachina-orchestrator.md"
+  "promptFile": "exmachina-orchestrator.md",
+  "modelHint": null
 }

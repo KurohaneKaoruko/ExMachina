@@ -9,7 +9,7 @@
 //! config.sandbox = "true" 时走沙箱 openapi（sandbox.api.sgroup.qq.com）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{flatten_statements, report_status, Channel};
+use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -381,65 +381,26 @@ async fn handle_message(
     msg_id: String,
     text: &str,
 ) {
-    // 组绑定：账号的智能体组（不存在则回落激活组）
-    let prev_group = core.active_group();
-    let mut switched = false;
-    if let Some(g) = &ch.group {
-        if *g != prev_group && core.group_meta(g).is_some() {
-            switched = core.registry().set_active_group(g).is_ok();
-        }
-    }
-    let gid = core.active_group();
-    let title = format!("channel:{}:{}", ch.id, peer.key());
-    let session = core
-        .list_sessions_in_group(&gid)
-        .ok()
-        .and_then(|list| list.into_iter().find(|s| s.title == title))
-        .or_else(|| core.create_session(&title).ok());
-    let Some(session) = session else {
-        if switched {
-            let _ = core.registry().set_active_group(&prev_group);
-        }
+    let Some((run, rx)) = ChannelRun::begin(core, ch, peer.key()).await else {
         return;
     };
-
-    // 回复任务：运行结束把收束陈述发回原会话（被动回复：msg_id + 递增 msg_seq）
+    // 回复任务：被动回复须带原消息 msg_id + 递增 msg_seq
     let seq = Arc::new(AtomicU64::new(0));
-    let mut rx = core.subscribe();
-    let sid = session.id.clone();
-    let creds = creds.clone();
-    let peer2 = peer.clone();
-    let msg_id2 = msg_id.clone();
     let max_chars = peer.max_chars();
+    let creds = creds.clone();
     let base = base.to_string();
-    let reply = tokio::spawn(async move {
-        while let Ok(evt) = rx.recv().await {
-            if evt.session_id != sid {
-                continue;
-            }
-            let text = if evt.kind == "run.finished" {
-                flatten_statements(&evt.payload, max_chars)
-            } else if evt.kind == "run.error" {
-                let msg = evt.payload.get("message").and_then(|v| v.as_str()).unwrap_or("运行失败");
-                format!("【警告】{msg}")
-                    .chars()
-                    .take(max_chars)
-                    .collect::<String>()
-            } else {
-                continue;
-            };
+    let reply = spawn_reply(&run, rx, max_chars, move |text| {
+        let creds = creds.clone();
+        let base = base.clone();
+        let peer = peer.clone();
+        let msg_id = msg_id.clone();
+        let seq = seq.clone();
+        async move {
             let n = seq.fetch_add(1, Ordering::Relaxed) + 1;
-            send_passive(&creds, &base, &peer2, &msg_id2, n, &text).await;
-            break;
+            send_passive(&creds, &base, &peer, &msg_id, n, &text).await;
         }
     });
-
-    if let Err(e) = core.chat(&session.id, text).await {
-        eprintln!("[qqbot:{}] 执行失败：{e}", ch.id);
-    }
-    if switched {
-        let _ = core.registry().set_active_group(&prev_group);
-    }
+    run.run(text).await;
     let _ = reply.await;
 }
 

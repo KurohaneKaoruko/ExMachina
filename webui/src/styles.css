@@ -414,7 +414,7 @@ body {
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.agents-wrap { max-width: 1180px; margin: 0 auto; }
+.agents-wrap { width: 100%; }
 .mono { font-family: var(--mono); }
 .dim { color: var(--muted); }
 .hi { color: var(--text-hi); }
@@ -639,7 +639,7 @@ body {
 .settings-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
 
 /* ============ 记忆 ============ */
-.memory-wrap { max-width: 1100px; margin: 0 auto; }
+.memory-wrap { width: 100%; }
 .memory-card { margin-top: 16px; }
 .memory-hits { margin-top: 12px; max-height: 320px; overflow: auto; }
 .memory-reason { color: var(--muted); font-size: 12px; font-family: var(--mono); }

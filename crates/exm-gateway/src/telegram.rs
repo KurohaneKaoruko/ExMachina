@@ -2,7 +2,7 @@
 //! 每个启用的 telegram 通道 = 一个账号 = 一个独立轮询任务；账号绑定组后消息在该组上下文执行。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{report_status, Channel};
+use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
 use exm_core::Core;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -205,60 +205,14 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
 
 /// 一条用户消息：组绑定 → 会话复用 → 订阅回复 → 执行 → sendMessage
 async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, text: &str) {
-    // 组绑定：账号的智能体组（不存在则回落激活组）
-    let prev_group = core.active_group();
-    let mut switched = false;
-    if let Some(g) = &ch.group {
-        if *g != prev_group && core.group_meta(g).is_some() {
-            switched = core.registry().set_active_group(g).is_ok();
-        }
-    }
-    let gid = core.active_group();
-    let title = format!("channel:{}:{chat_id}", ch.id);
-    let session = core
-        .list_sessions_in_group(&gid)
-        .ok()
-        .and_then(|list| list.into_iter().find(|s| s.title == title))
-        .or_else(|| core.create_session(&title).ok());
-    let Some(session) = session else {
-        if switched {
-            let _ = core.registry().set_active_group(&prev_group);
-        }
+    let Some((run, rx)) = ChannelRun::begin(core, ch, &chat_id.to_string()).await else {
         return;
     };
-
-    // 回复任务：运行结束把收束陈述发回 Telegram
     let token = ch.token.clone().unwrap_or_default();
-    let mut rx = core.subscribe();
-    let sid = session.id.clone();
-    let reply = tokio::spawn(async move {
-        while let Ok(evt) = rx.recv().await {
-            if evt.session_id != sid {
-                continue;
-            }
-            if evt.kind == "run.finished" {
-                let text = crate::platform::flatten_statements(&evt.payload, 3800);
-                send_message(&token, chat_id, &text).await;
-                break;
-            }
-            if evt.kind == "run.error" {
-                let msg = evt
-                    .payload
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("运行失败");
-                send_message(&token, chat_id, &format!("【警告】{msg}")).await;
-                break;
-            }
-        }
+    let reply = spawn_reply(&run, rx, 3800, move |text| async move {
+        send_message(&token, chat_id, &text).await;
     });
-
-    if let Err(e) = core.chat(&session.id, text).await {
-        eprintln!("[telegram:{}] 执行失败：{e}", ch.id);
-    }
-    if switched {
-        let _ = core.registry().set_active_group(&prev_group);
-    }
+    run.run(text).await;
     let _ = reply.await;
 }
 
@@ -290,11 +244,21 @@ async fn send_message(token: &str, chat_id: i64, text: &str) {
     if token.trim().is_empty() {
         return;
     }
-    let api = format!("https://api.telegram.org/bot{}", token.trim());
-    let _ = reqwest::Client::new()
+    // ⚠️ Bot API 的方法名必须拼在路径上（/sendMessage）——曾漏掉，导致回帖静默失败
+    let api = format!("https://api.telegram.org/bot{}/sendMessage", token.trim());
+    match reqwest::Client::new()
         .post(&api)
         .json(&serde_json::json!({ "chat_id": chat_id, "text": text }))
         .timeout(std::time::Duration::from_secs(15))
         .send()
-        .await;
+        .await
+    {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            eprintln!("[telegram] 回复失败：HTTP {status} {body}");
+        }
+        Err(e) => eprintln!("[telegram] 回复网络错误：{e}"),
+    }
 }

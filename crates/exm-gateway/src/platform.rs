@@ -281,7 +281,17 @@ pub struct CronBody {
 }
 
 pub async fn list_cron(State(st): State<AppState>) -> impl IntoResponse {
-    Json(serde_json::to_value(st.core.cron.list().unwrap_or_default()).unwrap_or(Value::Null)).into_response()
+    // 内部心跳条目不外露：心跳由 automation 配置驱动（调度器自持 last_run_minute 防重），
+    // 非用户任务；外露会导致用户禁用/删除被下一个调度周期静默推翻
+    let jobs: Vec<_> = st
+        .core
+        .cron
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|j| j.id != "__heartbeat__")
+        .collect();
+    Json(serde_json::to_value(jobs).unwrap_or(Value::Null)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -510,8 +520,12 @@ pub async fn deny_request(State(st): State<AppState>, Path(id): Path<String>) ->
 /// - `webhook` / `qq` / `wechat`：webhook 桥接语义（社区桥把消息 POST 到 inbound，回复走回调）；
 /// - `telegram`：内置长轮询适配器（telegram.rs）；
 /// - `qqbot`：QQ 官方机器人（q.qq.com 开放平台，WebSocket 长连接，qqbot.rs）；
-/// - `napcat`：OneBot 11 实现（NapCat / Lagrange 等，正向 WebSocket，napcat.rs）。
-pub const CHANNEL_PLATFORMS: &[&str] = &["webhook", "telegram", "qqbot", "napcat", "qq", "wechat"];
+/// - `napcat`：OneBot 11 实现（NapCat / Lagrange 等，正向 WebSocket，napcat.rs）；
+/// - `discord`：Discord 机器人（Gateway WebSocket，discord.rs）；
+/// - `slack`：Slack 应用（Socket Mode，免公网回调，slack.rs）；
+/// - `matrix`：Matrix 房间（Client-Server API 长轮询 /sync，matrix.rs）。
+pub const CHANNEL_PLATFORMS: &[&str] =
+    &["webhook", "telegram", "qqbot", "napcat", "discord", "slack", "matrix", "qq", "wechat"];
 
 /// 通道定义：外部消息源接入点。平台 = `type`（webhook / telegram / qqbot / napcat …）。
 /// 多平台多账号：同类平台可并存多条（每条一个账号），每条可绑定不同智能体组。
@@ -602,6 +616,111 @@ pub(crate) fn flatten_statements(payload: &serde_json::Value, max_chars: usize) 
     text.chars().take(max_chars).collect()
 }
 
+// ---------------------------------------------------------------- 通道消息统一执行
+
+/// 通道入站消息的执行上下文：**组绑定 → 会话复用 → 事件订阅 → 执行 → 组还原**。
+/// 六个内置适配器（telegram / qqbot / napcat / discord / slack / matrix）共用这一段，
+/// 避免「切组」与「会话键复用」两处语义在各自的适配器里各写一遍而慢慢漂移。
+///
+/// 用法：`begin` 建立上下文并拿到事件订阅（**先订阅再执行**，确保不漏收束事件）
+/// → `spawn_reply` 挂回帖 → `run` 执行本轮 → await 回帖任务。
+///
+/// 注意：上下文本身可 Clone（回帖任务与执行方各持一份），
+/// 但 `broadcast::Receiver` 不可 Clone，故它由 `begin` 单独交出。
+#[derive(Clone)]
+pub(crate) struct ChannelRun {
+    core: std::sync::Arc<exm_core::Core>,
+    pub session_id: String,
+    prev_group: String,
+    switched: bool,
+}
+
+impl ChannelRun {
+    /// 账号绑定组切换 + 会话键复用（`channel:<通道id>:<会话键>`）；
+    /// 返回 (上下文, 运行事件订阅)
+    pub(crate) async fn begin(
+        core: &std::sync::Arc<exm_core::Core>,
+        ch: &Channel,
+        chat_key: &str,
+    ) -> Option<(Self, tokio::sync::broadcast::Receiver<CoreEvent>)> {
+        let prev_group = core.active_group();
+        let mut switched = false;
+        if let Some(g) = &ch.group {
+            if *g != prev_group && core.group_meta(g).is_some() {
+                switched = core.registry().set_active_group(g).is_ok();
+            }
+        }
+        let gid = core.active_group();
+        let title = format!("channel:{}:{chat_key}", ch.id);
+        let session = core
+            .list_sessions_in_group(&gid)
+            .ok()
+            .and_then(|list| list.into_iter().find(|s| s.title == title))
+            .or_else(|| core.create_session(&title).ok());
+        let Some(session) = session else {
+            // 会话建立失败也别把组上下文留在别人身上
+            if switched {
+                let _ = core.registry().set_active_group(&prev_group);
+            }
+            return None;
+        };
+        let rx = core.subscribe();
+        Some((
+            ChannelRun { core: core.clone(), session_id: session.id, prev_group, switched },
+            rx,
+        ))
+    }
+
+    /// 收束事件 → 回帖文本（非收束事件返回 None；已按平台上限截断）
+    pub(crate) fn take_reply(&self, evt: &CoreEvent, max_chars: usize) -> Option<String> {
+        match evt.kind.as_str() {
+            "run.finished" => Some(flatten_statements(&evt.payload, max_chars)),
+            "run.error" => {
+                let msg = evt.payload.get("message").and_then(|v| v.as_str()).unwrap_or("运行失败");
+                Some(format!("【警告】{msg}").chars().take(max_chars).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// 执行本轮；返回后组上下文已还原
+    pub(crate) async fn run(self, text: &str) {
+        if let Err(e) = self.core.chat(&self.session_id, text).await {
+            eprintln!("[channel:{}] 执行失败：{e}", self.session_id);
+        }
+        if self.switched {
+            let _ = self.core.registry().set_active_group(&self.prev_group);
+        }
+    }
+}
+
+/// 挂本轮回帖任务：订阅运行事件，收束即用 `send` 把文本发回原会话（发完或流断即退出）。
+/// 各适配器只需给出发送闭包（平台 API 差异全部封在这里面）。
+pub(crate) fn spawn_reply<F, Fut>(
+    run: &ChannelRun,
+    rx: tokio::sync::broadcast::Receiver<CoreEvent>,
+    max_chars: usize,
+    send: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: FnOnce(String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    let run = run.clone();
+    tokio::spawn(async move {
+        let mut rx = rx;
+        while let Ok(evt) = rx.recv().await {
+            if evt.session_id != run.session_id {
+                continue;
+            }
+            if let Some(text) = run.take_reply(&evt, max_chars) {
+                send(text).await;
+                break;
+            }
+        }
+    })
+}
+
 // ---------------------------------------------------------------- 通道运行状态
 
 /// 通道运行状态（内置适配器上报；webhook/qq/wechat 桥接无运行时，不产生状态）
@@ -646,6 +765,8 @@ fn secret_config_keys(kind: &str) -> &'static [&'static str] {
     match kind {
         "qqbot" => &["appSecret"],
         "napcat" => &["token"],
+        // Slack Socket Mode 应用级令牌（xapp-）；机器人令牌走顶层 token
+        "slack" => &["appToken"],
         _ => &[],
     }
 }
@@ -735,6 +856,30 @@ pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBod
     }
     if platform == "napcat" && config.get("url").map_or(true, |v| v.trim().is_empty()) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "napcat 通道需要 config.url（OneBot 11 正向 WebSocket 地址）" }))).into_response();
+    }
+    // discord / slack / matrix 的顶层 token 均为必填（bot token 或 access token）
+    if matches!(platform.as_str(), "discord" | "slack" | "matrix")
+        && b.token.as_deref().map(|t| t.trim().is_empty()).unwrap_or(true)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "该平台需要 token（Discord bot token / Slack bot token / Matrix access token）" })),
+        )
+            .into_response();
+    }
+    if platform == "slack" && config.get("appToken").map_or(true, |v| v.trim().is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "slack 通道需要 config.appToken（Socket Mode 应用级令牌）" })),
+        )
+            .into_response();
+    }
+    if platform == "matrix" && config.get("homeserver").map_or(true, |v| v.trim().is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "matrix 通道需要 config.homeserver（如 https://matrix.org）" })),
+        )
+            .into_response();
     }
     let mut channels = load_channels(&st.core);
     if channels.iter().any(|c| c.id == id) {

@@ -6,7 +6,7 @@
 //! 收发解耦：入站读取不阻塞（消息处理全部 spawn），动作经 mpsc 通道交给专职写任务，
 //! 避免长运行期间无法应答 WS 层 Ping 被服务端断开。
 
-use crate::platform::{flatten_statements, report_status, Channel};
+use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -219,76 +219,25 @@ async fn handle_message(
     user_id: Option<i64>,
     text: &str,
 ) {
-    // 组绑定：账号的智能体组（不存在则回落激活组）
-    let prev_group = core.active_group();
-    let mut switched = false;
-    if let Some(g) = &ch.group {
-        if *g != prev_group && core.group_meta(g).is_some() {
-            switched = core.registry().set_active_group(g).is_ok();
-        }
-    }
-    let gid = core.active_group();
+    // 会话键：群聊优先，无群号走私聊
     let peer = group_id.map(|g| g.to_string()).or(user_id.map(|u| u.to_string())).unwrap_or_default();
-    let title = format!("channel:{}:{peer}", ch.id);
-    let session = core
-        .list_sessions_in_group(&gid)
-        .ok()
-        .and_then(|list| list.into_iter().find(|s| s.title == title))
-        .or_else(|| core.create_session(&title).ok());
-    let Some(session) = session else {
-        if switched {
-            let _ = core.registry().set_active_group(&prev_group);
-        }
+    let Some((run, rx)) = ChannelRun::begin(core, ch, &peer).await else {
         return;
     };
-
-    // 回复任务：运行结束把收束陈述发回原会话（群聊优先，无群号走私聊）
-    let mut rx = core.subscribe();
-    let sid = session.id.clone();
     let tx = tx.clone();
-    let reply = tokio::spawn(async move {
-        while let Ok(evt) = rx.recv().await {
-            if evt.session_id != sid {
-                continue;
-            }
-            if evt.kind == "run.finished" {
-                let text = flatten_statements(&evt.payload, 3500);
-                let action = match group_id {
-                    Some(g) => serde_json::json!({
-                        "action": "send_group_msg",
-                        "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
-                    }),
-                    None => serde_json::json!({
-                        "action": "send_private_msg",
-                        "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
-                    }),
-                };
-                let _ = tx.send(action);
-                break;
-            }
-            if evt.kind == "run.error" {
-                let msg = evt.payload.get("message").and_then(|v| v.as_str()).unwrap_or("运行失败");
-                let action = match group_id {
-                    Some(g) => serde_json::json!({
-                        "action": "send_group_msg",
-                        "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": format!("【警告】{msg}") } }] },
-                    }),
-                    None => serde_json::json!({
-                        "action": "send_private_msg",
-                        "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": format!("【警告】{msg}") } }] },
-                    }),
-                };
-                let _ = tx.send(action);
-                break;
-            }
-        }
+    let reply = spawn_reply(&run, rx, 3500, move |text| async move {
+        let action = match group_id {
+            Some(g) => serde_json::json!({
+                "action": "send_group_msg",
+                "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
+            }),
+            None => serde_json::json!({
+                "action": "send_private_msg",
+                "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
+            }),
+        };
+        let _ = tx.send(action);
     });
-
-    if let Err(e) = core.chat(&session.id, text).await {
-        eprintln!("[napcat:{}] 执行失败：{e}", ch.id);
-    }
-    if switched {
-        let _ = core.registry().set_active_group(&prev_group);
-    }
+    run.run(text).await;
     let _ = reply.await;
 }

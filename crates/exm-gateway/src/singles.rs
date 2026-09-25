@@ -80,6 +80,7 @@ pub async fn list_singles(State(st): State<AppState>) -> impl IntoResponse {
             json!({
                 "identifier": d.identifier, "name": d.name, "description": d.description,
                 "domain": d.domain, "tier": d.tier, "modelHint": d.model_hint,
+                "capabilities": d.capabilities,
             })
         }).collect::<Vec<_>>(),
     }))
@@ -132,9 +133,25 @@ pub async fn delete_single(State(st): State<AppState>, Path(id): Path<String>) -
     }
 }
 
+/// 更新单体智能体可编辑字段（name/domain/description/capabilities/tools/model_hint）。
+/// 与 /api/agents/:identifier 共用 registry::update_agent（单体优先命中）；identifier 不可改。
+pub async fn update_single(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<crate::AgentUpdateBody>,
+) -> impl IntoResponse {
+    match st.core.registry().update_agent(&id, &b.into_patch()) {
+        Ok(saved) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/target", get(get_target).put(set_target))
         .route("/api/singles", get(list_singles).post(create_single))
-        .route("/api/singles/:id", axum::routing::delete(delete_single))
+        .route(
+            "/api/singles/:id",
+            axum::routing::put(update_single).delete(delete_single),
+        )
 }

@@ -1,4 +1,4 @@
-/** 通道网关：多平台多账号接入（QQ 官方机器人 / NapCat / Telegram / webhook 桥接），每个账号可绑定不同智能体组 */
+/** 通道网关：多平台多账号接入（QQ 官方机器人 / NapCat / Telegram / Discord / Slack / Matrix / webhook 桥接），每个账号可绑定不同智能体组 */
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Button, Collapse, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Tooltip, message,
@@ -69,6 +69,41 @@ const PLATFORMS: ChanPlat[] = [
     helpKey: "channels.platHelp.telegram",
     replyBuiltin: true,
     fields: [{ top: "token", key: "token", labelKey: "channels.f.token", secret: true, required: true, ph: "123456:ABC-DEF…" }],
+  },
+  {
+    key: "discord",
+    color: "purple",
+    tag: "Discord",
+    labelKey: "channels.plat.discord",
+    helpKey: "channels.platHelp.discord",
+    replyBuiltin: true,
+    fields: [
+      { top: "token", key: "token", labelKey: "channels.f.discordToken", secret: true, required: true, ph: "MTIz…（Bot Token）" },
+    ],
+  },
+  {
+    key: "slack",
+    color: "magenta",
+    tag: "Slack",
+    labelKey: "channels.plat.slack",
+    helpKey: "channels.platHelp.slack",
+    replyBuiltin: true,
+    fields: [
+      { top: "token", key: "token", labelKey: "channels.f.botToken", secret: true, required: true, ph: "xoxb-…" },
+      { key: "appToken", labelKey: "channels.f.appToken", secret: true, required: true, ph: "xapp-…", helpKey: "channels.f.appTokenHelp" },
+    ],
+  },
+  {
+    key: "matrix",
+    color: "gold",
+    tag: "Matrix",
+    labelKey: "channels.plat.matrix",
+    helpKey: "channels.platHelp.matrix",
+    replyBuiltin: true,
+    fields: [
+      { key: "homeserver", labelKey: "channels.f.homeserver", required: true, ph: "https://matrix.org", helpKey: "channels.f.homeserverHelp" },
+      { top: "token", key: "token", labelKey: "channels.f.accessToken", secret: true, required: true },
+    ],
   },
   {
     key: "webhook",

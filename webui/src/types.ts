@@ -105,6 +105,8 @@ export interface AgentDefinition {
   capabilities: string[];
   tools: string[];
   whenToCall: string;
+  /** 默认模型（"档案ID" 或 "档案ID/模型名"；空 = 跟随所属组/全局） */
+  modelHint?: string | null;
 }
 
 export interface EvidenceItem {

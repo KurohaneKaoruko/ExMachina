@@ -63,7 +63,13 @@ export function ChatView(): React.ReactElement {
   const [sessionFilter, setSessionFilter] = useState("");
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [recording, setRecording] = useState(false);
-  const [usage, setUsage] = useState<{ estimate: number; budget: number; unlimited: boolean } | null>(null);
+  const [usage, setUsage] = useState<{
+    estimate: number;
+    budget: number;
+    unlimited: boolean;
+    /** provider 上报的真实用量可用（否则为字符估算） */
+    measured?: boolean;
+  } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -284,9 +290,9 @@ export function ChatView(): React.ReactElement {
           {usage && (
             <span className="readout console-usage">
               <span className="k">TOKENS</span>
-              {/* 字符进度条：比数字更直观地表达「还剩多少预算」 */}
+              {/* 字符进度条：比数字更直观地表达「还剩多少预算」；实测用量不带 ~ 前缀 */}
               <AsciiMeter value={usage.estimate} total={usage.unlimited ? 0 : usage.budget} cells={14} />
-              <span className="v">~{usage.estimate}</span>
+              <span className="v">{usage.measured ? usage.estimate : `~${usage.estimate}`}</span>
             </span>
           )}
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />

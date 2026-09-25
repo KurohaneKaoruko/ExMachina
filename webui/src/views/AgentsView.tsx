@@ -13,9 +13,10 @@ import {
   Table,
   Tag,
 } from "antd";
-import { DeleteOutlined, EditOutlined, PlusOutlined, UndoOutlined } from "@ant-design/icons";
-import { api, type PersonaInfo } from "../api";
+import { DeleteOutlined, EditOutlined, FormOutlined, PlusOutlined, UndoOutlined } from "@ant-design/icons";
+import { api, type LlmProfile, type PersonaInfo } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { buildModelOptions } from "../models";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 import type { AgentDefinition } from "../types";
@@ -48,7 +49,20 @@ export function AgentsView(): React.ReactElement {
   const [personaDraft, setPersonaDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<AgentDefinition | null>(null);
+  const [profiles, setProfiles] = useState<LlmProfile[]>([]);
   const [form] = Form.useForm();
+  const [editForm] = Form.useForm();
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setProfiles((await api.llmProfiles()).profiles);
+      } catch {
+        /* 提供商未加载时保持空列表 */
+      }
+    })();
+  }, []);
 
   const meta = groups.find((g) => g.id === gid);
   const isBuiltin = meta?.builtin ?? true;
@@ -101,6 +115,36 @@ export function AgentsView(): React.ReactElement {
       await reload();
     } catch (e) {
       message.error(t("agents.deleteFailed", { err: String(e) }));
+    }
+  };
+
+  const openEdit = (a: AgentDefinition) => {
+    setEditing(a);
+    editForm.setFieldsValue({
+      name: a.name,
+      description: a.description,
+      domain: a.domain,
+      capabilities: a.capabilities ?? [],
+      modelHint: a.modelHint ?? undefined,
+    });
+  };
+
+  const submitEdit = async () => {
+    if (!editing) return;
+    const v = await editForm.validateFields();
+    try {
+      await api.updateAgent(editing.identifier, {
+        name: v.name,
+        description: v.description,
+        domain: (v.domain ?? "").trim(),
+        capabilities: (v.capabilities ?? []).map((s: string) => s.trim()).filter(Boolean),
+        modelHint: v.modelHint ?? "",
+      });
+      message.success(t("agents.editSaved", { name: v.name }));
+      setEditing(null);
+      await reload();
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
     }
   };
 
@@ -212,9 +256,12 @@ export function AgentsView(): React.ReactElement {
             {
               title: t("agents.colOps"),
               key: "ops",
-              width: 150,
+              width: 210,
               render: (_, a) => (
                 <Space>
+                  <Button size="small" icon={<FormOutlined />} onClick={() => openEdit(a)}>
+                    {t("agents.edit")}
+                  </Button>
                   <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
                     {t("agents.personaBtn")}
                   </Button>
@@ -256,6 +303,38 @@ export function AgentsView(): React.ReactElement {
           </Form.Item>
           <Form.Item name="prompt" label={t("agents.f.prompt")}>
             <Input.TextArea rows={4} placeholder={t("agents.f.promptPh")} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={editing !== null}
+        title={editing ? t("agents.editTitle", { name: editing.name }) : ""}
+        onCancel={() => setEditing(null)}
+        onOk={() => void submitEdit()}
+        okText={t("common.save")}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="name" label={t("agents.f.name")} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="description" label={t("agents.f.duty")} rules={[{ required: true }]}>
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="domain" label={t("agents.f.domain")}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="capabilities" label={t("agents.f.caps")}>
+            <Select mode="tags" open={false} placeholder={t("agents.f.capsPh")} />
+          </Form.Item>
+          <Form.Item name="modelHint" label={t("agents.f.model")} extra={t("agents.f.modelExtra")}>
+            <Select
+              allowClear
+              showSearch
+              style={{ width: "100%" }}
+              options={buildModelOptions(profiles)}
+              placeholder={t("agents.f.modelPh")}
+            />
           </Form.Item>
         </Form>
       </Modal>

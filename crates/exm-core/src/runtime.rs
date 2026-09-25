@@ -11,6 +11,15 @@ use tokio::sync::mpsc::unbounded_channel;
 
 pub const SYNC_REWRITE_LIMIT: u32 = 2;
 
+/// 工具结果 → 回填文本（【报告】成功 / 【警告】失败），语义与审计一致
+fn tool_feedback(name: &str, r: crate::tools::ToolResult) -> String {
+    if r.ok {
+        format!("【报告】工具 {name} 执行结果：\n{}", r.output)
+    } else {
+        format!("【警告】工具 {name} 执行失败：{}", r.error.unwrap_or_default())
+    }
+}
+
 /// 子个体执行器：持 Provider / 工具网关 / 注册表（注册表只读共享）
 pub struct AgentRuntime {
     registry: Arc<LocalRegistry>,
@@ -42,6 +51,7 @@ impl AgentRuntime {
         def: &AgentDefinition,
         order: &DispatchOrder,
         chain: crate::provider::ModelChain,
+        session_id: &str,
         mut on_token: F,
     ) -> anyhow::Result<SyncReport>
     where
@@ -66,49 +76,40 @@ impl AgentRuntime {
 
         let max_steps = order.constraints.max_steps.max(1);
         let mut rewrites: u32 = 0;
+        let mut usage_prompt: u64 = 0;
+        let mut usage_completion: u64 = 0;
+        let mut last_model = String::new();
         // 原生 function calling：按白名单生成工具 schema + 该个体可见的 MCP 工具
-        let mut specs = crate::tools::ToolGateway::tool_specs(&order.tool_allowlist);
+        // （web_search 仅在搜索后端已配置时下发——不承诺不存在的能力）
+        let mut specs = crate::tools::ToolGateway::tool_specs(
+            &order.tool_allowlist,
+            self.tools.search_ready(),
+            self.tools.browser_ready(),
+        );
+        // 声明式自定义工具（按 agents 可见性）与 MCP 第三方工具一并下发
+        specs.extend(self.tools.custom_specs_for(&def.identifier));
         specs.extend(self.tools.mcp().tool_snapshot_for(&def.identifier));
 
         for _step in 0..max_steps {
-            let (text, calls) = self
+            let (text, calls, usage) = self
                 .call_llm(&messages, &agent_hint, &chain, &specs, &mut on_token)
                 .await?;
+            usage_prompt += usage.0;
+            usage_completion += usage.1;
+            if let Some((_, _, m)) = chain.candidates.first() {
+                last_model = m.clone();
+            }
 
             // 1a) 原生 function calling：协议级工具调用
+            //     只读工具（read/grep/glob/web_fetch/web_search）并发执行；写工具按原顺序串行
             if !calls.is_empty() {
                 let mut assistant = ChatMessage::assistant(text.clone());
                 assistant.tool_calls = calls.clone();
                 messages.push(assistant);
-                for c in &calls {
-                    let feedback = if c.name.starts_with("mcp:") {
-                        // MCP 工具（第三方生态）：审计与错误语义与内置工具一致
-                        let result = self.tools.execute_mcp(&def.identifier, &c.name, &c.arguments).await;
-                        if result.ok {
-                            format!("【报告】工具 {} 执行结果：\n{}", c.name, result.output)
-                        } else {
-                            format!("【警告】工具 {} 执行失败：{}", c.name, result.error.unwrap_or_default())
-                        }
-                    } else {
-                        match ToolName::parse(&c.name) {
-                            Some(tool) => {
-                                let result = self
-                                    .tools
-                                    .execute(&def.identifier, &order.tool_allowlist, tool, &c.arguments)
-                                    .await;
-                                if result.ok {
-                                    format!("【报告】工具 {} 执行结果：\n{}", c.name, result.output)
-                                } else {
-                                    format!(
-                                        "【警告】工具 {} 执行失败：{}",
-                                        c.name,
-                                        result.error.unwrap_or_default()
-                                    )
-                                }
-                            }
-                            None => format!("【警告】未知工具：{}", c.name),
-                        }
-                    };
+                let feedbacks = self
+                    .run_tool_calls(&def.identifier, &order.tool_allowlist, &calls)
+                    .await;
+                for (c, feedback) in calls.iter().zip(feedbacks) {
                     let mut msg = ChatMessage::tool_result(&c.id, feedback);
                     msg.name = Some(c.name.clone());
                     messages.push(msg);
@@ -144,6 +145,7 @@ impl AgentRuntime {
                     // 归属强制校正
                     report.source_agent = def.identifier.clone();
                     report.task_node_id = order.task_node_id.clone();
+                    self.tools.record_usage(session_id, usage_prompt, usage_completion, &last_model);
                     return Ok(report);
                 }
                 Err(err) => {
@@ -161,7 +163,62 @@ impl AgentRuntime {
             }
         }
 
+        self.tools.record_usage(session_id, usage_prompt, usage_completion, &last_model);
         anyhow::bail!("个体 {} 超过最大步数 {max_steps} 仍未产出合法 SyncReport", def.identifier)
+    }
+
+    /// 同轮工具调用：只读工具并发（join_all），写工具与 MCP 按原顺序串行。
+    /// 返回与 `calls` 同序的回填文本（【报告】/【警告】），保证与 tool_call_id 配对。
+    async fn run_tool_calls(
+        &self,
+        agent_id: &str,
+        allowlist: &[ToolName],
+        calls: &[crate::provider::ToolCall],
+    ) -> Vec<String> {
+        let mut out: Vec<Option<String>> = vec![None; calls.len()];
+        let mut readonly: Vec<usize> = Vec::new();
+        let mut serial: Vec<usize> = Vec::new();
+        for (i, c) in calls.iter().enumerate() {
+            let ro = !c.name.starts_with("mcp:")
+                && ToolName::parse(&c.name).map(|t| t.is_readonly()).unwrap_or(false);
+            if ro {
+                readonly.push(i);
+            } else {
+                serial.push(i);
+            }
+        }
+        // 只读并发
+        if !readonly.is_empty() {
+            let futs = readonly.iter().map(|i| {
+                let c = &calls[*i];
+                async move {
+                    let tool = ToolName::parse(&c.name).unwrap_or(ToolName::Read);
+                    let r = self.tools.execute(agent_id, allowlist, tool, &c.arguments).await;
+                    tool_feedback(&c.name, r)
+                }
+            });
+            let results = futures_util::future::join_all(futs).await;
+            for (i, text) in readonly.iter().zip(results) {
+                out[*i] = Some(text);
+            }
+        }
+        // 写 / MCP / 自定义 / 未知：串行
+        for i in serial {
+            let c = &calls[i];
+            let text = if c.name.starts_with("mcp:") {
+                let r = self.tools.execute_mcp(agent_id, &c.name, &c.arguments).await;
+                tool_feedback(&c.name, r)
+            } else {
+                // 统一入口：内置按白名单放行，声明式自定义按 agents 可见性放行
+                let r = self
+                    .tools
+                    .execute_named(agent_id, allowlist, &c.name, &c.arguments)
+                    .await;
+                tool_feedback(&c.name, r)
+            };
+            out[i] = Some(text);
+        }
+        out.into_iter().map(|x| x.unwrap_or_default()).collect()
     }
 
     async fn call_llm<F>(
@@ -171,7 +228,7 @@ impl AgentRuntime {
         chain: &crate::provider::ModelChain,
         tools: &[crate::provider::ToolSpec],
         on_token: &mut F,
-    ) -> anyhow::Result<(String, Vec<crate::provider::ToolCall>)>
+    ) -> anyhow::Result<(String, Vec<crate::provider::ToolCall>, (u64, u64))>
     where
         F: FnMut(&str),
     {
@@ -209,9 +266,11 @@ impl AgentRuntime {
                         // 流式空响应退化非流式
                         let fallback = provider.chat(req).await?;
                         on_token(&fallback.content);
-                        return Ok((fallback.content, fallback.tool_calls));
+                        let usage = (fallback.prompt_tokens, fallback.completion_tokens);
+                        return Ok((fallback.content, fallback.tool_calls, usage));
                     }
-                    return Ok((resp.content, resp.tool_calls));
+                    let usage = (resp.prompt_tokens, resp.completion_tokens);
+                    return Ok((resp.content, resp.tool_calls, usage));
                 }
                 Ok(Err(e)) => {
                     // 已发出 token 的流不再重试（避免重复输出）；Mock 守卫错误直抛

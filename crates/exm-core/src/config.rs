@@ -79,12 +79,221 @@ pub struct SecurityConfig {
     pub exec_allowlist: Vec<String>,
     /// 后台访问密钥：非空时 /api/* 全部要求鉴权（env EXM_AUTH_KEY 最高优先）
     pub auth_key: String,
+    /// 终端命令超时（秒）；后台任务不受此限
+    pub terminal_timeout_secs: u32,
+    /// 工具结果超过该字符数时落盘并回填路径（0 = 不落盘，仅截断）
+    pub tool_output_spill_chars: usize,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
-        SecurityConfig { exec_approval: "off".into(), exec_allowlist: vec![], auth_key: String::new() }
+        SecurityConfig {
+            exec_approval: "off".into(),
+            exec_allowlist: vec![],
+            auth_key: String::new(),
+            terminal_timeout_secs: 120,
+            tool_output_spill_chars: 12000,
+        }
     }
+}
+
+/// 联网搜索配置（web_search 工具的真实后端）。
+/// **未配置时不向模型下发该工具** —— 不承诺不存在的能力。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchConfig {
+    /// 后端：tavily | brave | searxng | custom；空 = 未配置
+    pub provider: String,
+    /// 端点（brave/custom 必填；tavily 留空用官方端点）
+    pub endpoint: String,
+    pub api_key: String,
+    /// 返回条数上限
+    pub max_results: usize,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        SearchConfig { provider: String::new(), endpoint: String::new(), api_key: String::new(), max_results: 5 }
+    }
+}
+
+impl SearchConfig {
+    /// 是否已具备可用配置（provider 与所需凭据齐全）
+    pub fn ready(&self) -> bool {
+        match self.provider.trim().to_lowercase().as_str() {
+            "tavily" => !self.api_key.trim().is_empty(),
+            "brave" => !self.api_key.trim().is_empty(),
+            "searxng" => !self.endpoint.trim().is_empty(),
+            "custom" => !self.endpoint.trim().is_empty(),
+            _ => false,
+        }
+    }
+}
+
+/// 生命周期钩子：可执行命令列表；占位符/上下文经环境变量注入。
+/// preTool 非零退出 = **拦截**该次工具调用（返回拦截原因给模型）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksConfig {
+    #[serde(default)]
+    pub pre_tool: Vec<String>,
+    #[serde(default)]
+    pub post_tool: Vec<String>,
+    /// 一轮 run 收束（或失败）时触发
+    #[serde(default)]
+    pub on_run_end: Vec<String>,
+}
+
+impl HooksConfig {
+    pub fn is_empty(&self) -> bool {
+        self.pre_tool.is_empty() && self.post_tool.is_empty() && self.on_run_end.is_empty()
+    }
+}
+
+/// 沙箱执行配置：让 AI 在不扩大爆炸半径的前提下自行跑命令。
+/// - off：仅白名单 + 审批（历史行为）
+/// - workspace：**环境净化**（白名单环境变量 + HOME/TMP 重定向到 .exmachina/sandbox）
+/// - strict：净化 + 联网类命令一律走审批 + 更短超时；Linux/macOS 检测到 bubblewrap 时自动做系统级隔离
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxConfig {
+    /// off | workspace | strict
+    pub mode: String,
+    /// strict 模式下是否允许安装/下载类联网命令（false = 需审批）
+    pub allow_network: bool,
+    /// Linux/macOS：检测到 bwrap 时用它做文件系统隔离（工作区可写、根只读、默认断网）
+    pub use_bwrap: bool,
+    /// 子进程内存上限（MB；Linux 经 ulimit、Windows 经作业对象生效，0 = 不限）
+    pub memory_mb: usize,
+    /// 子进程数上限（Windows 作业对象生效，0 = 不限）
+    #[serde(default)]
+    pub max_processes: usize,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        SandboxConfig {
+            mode: "workspace".into(),
+            allow_network: false,
+            use_bwrap: true,
+            memory_mb: 0,
+            max_processes: 0,
+        }
+    }
+}
+
+impl SandboxConfig {
+    pub fn enabled(&self) -> bool {
+        !self.mode.trim().eq_ignore_ascii_case("off")
+    }
+    pub fn strict(&self) -> bool {
+        self.mode.trim().eq_ignore_ascii_case("strict")
+    }
+}
+
+/// 浏览器自动化配置（browser 工具：headless Chrome/Chromium + CDP）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserConfig {
+    /// 浏览器可执行文件路径；空 = 自动探测常见安装位置
+    pub executable: String,
+    /// 是否 headless（默认 true）
+    pub headless: bool,
+    /// 单次操作超时（秒）
+    pub timeout_secs: u64,
+    /// 单页正文提取上限（字符）
+    pub max_chars: usize,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        BrowserConfig {
+            executable: String::new(),
+            headless: true,
+            timeout_secs: 30,
+            max_chars: 8000,
+        }
+    }
+}
+
+/// 声明式自定义工具：把**外部 HTTP 接口**或**本机命令模板**包装成模型可调用的工具，
+/// 免去为每个集成单写一个 MCP 服务器。名字与内置工具同命名空间（同名时内置工具优先）。
+///
+/// 例（HTTP GET，参数以 `{参数名}` 占位）：
+/// `{ "name": "weather", "description": "查天气", "kind": "http", "method": "GET",
+///    "target": "https://api.example.com/now?city={city}",
+///    "parameters": { "type": "object", "properties": { "city": { "type": "string" } },
+///                    "required": ["city"] },
+///    "headers": { "Authorization": "Bearer …" }, "agents": [] }`
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTool {
+    /// 工具名（模型可见；字母开头，仅字母/数字/下划线/连字符）
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// 参数 JSON Schema（对象）；缺省 = 无参数
+    #[serde(default)]
+    pub parameters: serde_json::Value,
+    /// http（默认）| shell
+    #[serde(default)]
+    pub kind: String,
+    /// http：URL（`{参数名}` 占位 → URL 编码值）；shell：命令模板（占位 → 安全转义值）
+    #[serde(default)]
+    pub target: String,
+    /// http：GET | POST（默认 POST，全部实参作为 JSON body）
+    #[serde(default)]
+    pub method: String,
+    /// http：附加请求头（BTreeMap 保证序列化顺序稳定）
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// 可见个体（identifier 列表）；空 = 全部个体可用
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+impl CustomTool {
+    /// 名字合法（与内置工具命名风格一致，避免与 MCP 的 `mcp:` 前缀冲突）
+    pub fn valid(&self) -> bool {
+        let n = self.name.trim();
+        !n.is_empty()
+            && n.len() <= 48
+            && !n.contains(':')
+            && n.starts_with(|c: char| c.is_ascii_alphabetic())
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }
+
+    /// 归一化类型：http（默认）| shell
+    pub fn kind_norm(&self) -> String {
+        let k = self.kind.trim().to_ascii_lowercase();
+        if k == "shell" {
+            "shell".into()
+        } else {
+            "http".into()
+        }
+    }
+
+    /// 该个体是否可见（agents 为空 = 全部可见）
+    pub fn visible_to(&self, agent_id: &str) -> bool {
+        self.agents.is_empty() || self.agents.iter().any(|a| a == agent_id)
+    }
+
+    /// 参数 schema（缺省给空对象 schema，满足 function calling 契约）
+    pub fn param_schema(&self) -> serde_json::Value {
+        if self.parameters.is_null() {
+            serde_json::json!({ "type": "object", "properties": {} })
+        } else {
+            self.parameters.clone()
+        }
+    }
+}
+
+/// 工具面配置：目前只有声明式自定义工具列表
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsConfig {
+    #[serde(default)]
+    pub custom: Vec<CustomTool>,
 }
 
 /// 自动化配置：心跳巡检（docs/10）
@@ -96,6 +305,8 @@ pub struct AutomationConfig {
     pub heartbeat_prompt: String,
     /// 新教训达阈值时自动优化相关子个体（经验改进要点）
     pub auto_adapt: bool,
+    /// 子个体单次派发的最大工具步数（主流的 20-50 步为长任务口径，取中档）
+    pub unit_max_steps: usize,
 }
 
 impl Default for AutomationConfig {
@@ -105,6 +316,7 @@ impl Default for AutomationConfig {
             heartbeat_interval_minutes: 30,
             heartbeat_prompt: "系统心跳巡检：检查未决任务、受阻节点与风险账，无事项则简短报告正常。".into(),
             auto_adapt: true,
+            unit_max_steps: 16,
         }
     }
 }
@@ -145,6 +357,16 @@ pub struct ExmConfig {
     pub security: SecurityConfig,
     /// 自动化（心跳巡检）
     pub automation: AutomationConfig,
+    /// 联网搜索后端（web_search 工具；未配置则不下发该工具）
+    pub search: SearchConfig,
+    /// 生命周期钩子（pre/post tool、run 收束）
+    pub hooks: HooksConfig,
+    /// 工具面（声明式自定义工具）
+    pub tools: ToolsConfig,
+    /// 沙箱执行（子进程环境净化 / bubblewrap / strict 闸门）
+    pub sandbox: SandboxConfig,
+    /// 浏览器自动化（browser 工具）
+    pub browser: BrowserConfig,
     /// 厂商模型档案与当前生效档案（llm 字段 = 生效档案的解析结果）
     pub llm_profiles: Vec<LlmProfile>,
     pub active_profile: String,
@@ -179,6 +401,16 @@ struct ConfigFile {
     active_profile: Option<String>,
     #[serde(default)]
     capabilities: Option<CapabilitiesFile>,
+    #[serde(default)]
+    search: Option<SearchConfig>,
+    #[serde(default)]
+    hooks: Option<HooksConfig>,
+    #[serde(default)]
+    sandbox: Option<SandboxConfig>,
+    #[serde(default)]
+    browser: Option<BrowserConfig>,
+    #[serde(default)]
+    tools: Option<ToolsConfig>,
     #[serde(default)]
     mcp_servers: Option<Vec<crate::mcp::McpServerConfig>>,
 }
@@ -309,6 +541,10 @@ struct SecurityFile {
     exec_allowlist: Option<Vec<String>>,
     #[serde(default)]
     auth_key: Option<String>,
+    #[serde(default)]
+    terminal_timeout_secs: Option<u32>,
+    #[serde(default)]
+    tool_output_spill_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -322,6 +558,8 @@ struct AutomationFile {
     heartbeat_prompt: Option<String>,
     #[serde(default)]
     auto_adapt: Option<bool>,
+    #[serde(default)]
+    unit_max_steps: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -433,6 +671,12 @@ impl ExmConfig {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| file_sec.auth_key.clone().unwrap_or_default()),
+            terminal_timeout_secs: file_sec
+                .terminal_timeout_secs
+                .unwrap_or_else(|| SecurityConfig::default().terminal_timeout_secs),
+            tool_output_spill_chars: file_sec
+                .tool_output_spill_chars
+                .unwrap_or_else(|| SecurityConfig::default().tool_output_spill_chars),
         };
         let automation = AutomationConfig {
             heartbeat_enabled: file_auto.heartbeat_enabled
@@ -445,6 +689,9 @@ impl ExmConfig {
             auto_adapt: file_auto
                 .auto_adapt
                 .unwrap_or_else(|| AutomationConfig::default().auto_adapt),
+            unit_max_steps: file_auto
+                .unit_max_steps
+                .unwrap_or_else(|| AutomationConfig::default().unit_max_steps),
         };
 
         let mut llm = LlmConfig {
@@ -538,6 +785,16 @@ impl ExmConfig {
             use_mock,
             security,
             automation,
+            search: file.search.clone().unwrap_or_default(),
+            hooks: file.hooks.clone().unwrap_or_default(),
+            sandbox: file.sandbox.clone().unwrap_or_default(),
+            browser: file.browser.clone().unwrap_or_default(),
+            tools: {
+                let mut t = file.tools.clone().unwrap_or_default();
+                // 声明式工具的合法性兜底：名字不合法或 target 为空的条目直接丢弃（不承诺坏配置）
+                t.custom.retain(|c| c.valid() && !c.target.trim().is_empty());
+                t
+            },
             llm_profiles,
             active_profile,
             language: std::env::var("EXM_LANG").unwrap_or_else(|_| "zh".into()),
@@ -594,13 +851,21 @@ impl ExmConfig {
                 exec_approval: Some(self.security.exec_approval.clone()),
                 exec_allowlist: Some(self.security.exec_allowlist.clone()),
                 auth_key: Some(self.security.auth_key.clone()),
+                terminal_timeout_secs: Some(self.security.terminal_timeout_secs),
+                tool_output_spill_chars: Some(self.security.tool_output_spill_chars),
             }),
             automation: Some(AutomationFile {
                 heartbeat_enabled: Some(self.automation.heartbeat_enabled),
                 heartbeat_interval_minutes: Some(self.automation.heartbeat_interval_minutes),
                 heartbeat_prompt: Some(self.automation.heartbeat_prompt.clone()),
                 auto_adapt: Some(self.automation.auto_adapt),
+                unit_max_steps: Some(self.automation.unit_max_steps),
             }),
+            search: Some(self.search.clone()),
+            hooks: Some(self.hooks.clone()),
+            sandbox: Some(self.sandbox.clone()),
+            browser: Some(self.browser.clone()),
+            tools: Some(self.tools.clone()),
         };
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -710,7 +975,7 @@ pub fn config_schema() -> serde_json::Value {
                 "fields": [
                     { "key": "memory.enabled", "label": "深层记忆（数据库检索 + 自动写入）", "kind": "boolean",
                       "default": "true", "required": false,
-                      "help": "关闭后仅使用 memory.md 文件记忆（OpenClaw/Hermes 模式）：规划时注入该文件内容，可在记忆面板直接编辑；不写数据库、不做语义检索" },
+                      "help": "关闭后仅使用 memory.md 文件记忆（文件记忆模式）：规划时注入该文件内容，可在记忆面板直接编辑；不写数据库、不做语义检索" },
                     { "key": "memory.mdMaxChars", "label": "memory.md 字数上限", "kind": "number",
                       "default": "5000", "required": false, "min": 500, "max": 100000,
                       "help": "超过上限触发 AI 自主压缩简略；被精简的原文自动归档（深层开 = 存数据库，关 = 存工作区归档文件）" },
@@ -731,7 +996,16 @@ pub fn config_schema() -> serde_json::Value {
                       "help": "off=不拦截；risky=拦截高危命令（删除/强推/关机等）；always=全部终端命令需审批。白名单前缀可跳过" },
                     { "key": "security.execAllowlist", "label": "审批白名单前缀", "kind": "string",
                       "default": "", "required": false,
-                      "help": "逗号分隔的命令前缀，命中即免审批，如：git status,cargo test" }
+                      "help": "逗号分隔的命令前缀，命中即免审批，如：git status,cargo test" },
+                    { "key": "security.authKey", "label": "后台访问密钥", "kind": "password",
+                      "default": "", "required": false,
+                      "help": "非空时 WebUI 与全部 /api 请求需鉴权（浏览器出现登录门；程序调用带 X-Auth-Key 头）；留空 = 免鉴权。掩码表示沿用已配置密钥，清空保存 = 关闭鉴权" },
+                    { "key": "security.terminalTimeoutSecs", "label": "终端命令超时（秒）", "kind": "number",
+                      "default": "120", "required": false, "min": 10, "max": 1800,
+                      "help": "前台命令的最长执行时间；超时强杀进程树。长任务请让 AI 用后台模式（不受此限）" },
+                    { "key": "security.toolOutputSpillChars", "label": "工具结果落盘阈值（字符）", "kind": "number",
+                      "default": "12000", "required": false, "min": 1000, "max": 1000000,
+                      "help": "结果超过该长度即全文落盘（.exmachina/tool-output/），回填摘要与文件路径供按需回读；0 = 仅截断" }
                 ]
             },
             {
@@ -749,7 +1023,91 @@ pub fn config_schema() -> serde_json::Value {
                       "help": "子个体新教训累计达 3 条时自动提炼经验改进要点并注入其派发（不创建个体）" },
                     { "key": "automation.heartbeatPrompt", "label": "心跳提示词", "kind": "string",
                       "default": "系统心跳巡检：检查未决任务、受阻节点与风险账，无事项则简短报告正常。", "required": false,
-                      "help": "每次心跳注入给指挥体的提示词" }
+                      "help": "每次心跳注入给指挥体的提示词" },
+                    { "key": "automation.unitMaxSteps", "label": "子个体单次派发步数上限", "kind": "number",
+                      "default": "16", "required": false, "min": 3, "max": 60,
+                      "help": "一次派发内允许的「思考-调工具」轮次；复杂任务（多文件改动）需要更大的步数预算" }
+                ]
+            },
+            {
+                "key": "search",
+                "label": "联网搜索",
+                "fields": [
+                    { "key": "search.provider", "label": "搜索后端", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "tavily | brave | searxng | custom；留空 = 未配置 —— 此时 web_search 工具不下发给模型（不承诺不存在的能力）" },
+                    { "key": "search.endpoint", "label": "搜索端点", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "searxng 填实例地址（如 https://searx.example.com）；custom 填你自己的 JSON 搜索接口" },
+                    { "key": "search.apiKey", "label": "搜索 API Key", "kind": "password",
+                      "default": "", "required": false,
+                      "help": "tavily / brave 需要；searxng 与自建通常留空" },
+                    { "key": "search.maxResults", "label": "返回条数上限", "kind": "number",
+                      "default": "5", "required": false, "min": 1, "max": 20,
+                      "help": "单次搜索注入上下文的结果条数" }
+                ]
+            },
+            {
+                "key": "sandbox",
+                "label": "沙箱执行",
+                "fields": [
+                    { "key": "sandbox.mode", "label": "沙箱级别", "kind": "string",
+                      "default": "workspace", "required": false,
+                      "help": "off=仅白名单+审批；workspace=子进程环境净化（敏感环境变量不外泄，HOME/TMP 重定向到 .exmachina/sandbox）；strict=净化 + 联网类命令走审批 + Linux/macOS 检测到 bubblewrap 时做系统级隔离" },
+                    { "key": "sandbox.allowNetwork", "label": "strict 下允许联网安装", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "开启后 pip/npm install、curl/wget 等在 strict 模式无需审批" },
+                    { "key": "sandbox.useBwrap", "label": "使用 bubblewrap（Linux/macOS）", "kind": "boolean",
+                      "default": "true", "required": false,
+                      "help": "检测到 bwrap 时用其做文件系统隔离：根只读、工作区可写、按需断网" },
+                    { "key": "sandbox.memoryMb", "label": "子进程内存上限（MB）", "kind": "number",
+                      "default": "0", "required": false, "min": 0, "max": 1048576,
+                      "help": "Linux 经 ulimit、Windows 经作业对象生效；0 = 不限" },
+                    { "key": "sandbox.maxProcesses", "label": "子进程数上限（Windows）", "kind": "number",
+                      "default": "0", "required": false, "min": 0, "max": 4096,
+                      "help": "Windows 作业对象的活动进程上限，防 fork 炸弹；0 = 不限" }
+                ]
+            },
+            {
+                "key": "browser",
+                "label": "浏览器自动化",
+                "fields": [
+                    { "key": "browser.executable", "label": "浏览器可执行文件", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "留空自动探测 Chrome/Chromium/Edge 常见安装位置（含 Playwright 缓存）" },
+                    { "key": "browser.headless", "label": "无头模式", "kind": "boolean",
+                      "default": "true", "required": false,
+                      "help": "默认无头；调试时可关掉看真实窗口" },
+                    { "key": "browser.timeoutSecs", "label": "单次操作超时（秒）", "kind": "number",
+                      "default": "30", "required": false, "min": 5, "max": 300,
+                      "help": "导航与脚本执行的等待上限" },
+                    { "key": "browser.maxChars", "label": "正文提取上限（字符）", "kind": "number",
+                      "default": "8000", "required": false, "min": 500, "max": 100000,
+                      "help": "browser text 单次返回的正文长度" }
+                ]
+            },
+            {
+                "key": "tools",
+                "label": "自定义工具",
+                "fields": [
+                    { "key": "tools.custom", "label": "声明式工具清单（JSON 数组）", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "把 HTTP 接口或命令模板包成模型可调用的工具，免写 MCP 服务器。JSON 数组，元素字段：name（字母开头）、description、kind（http|shell）、target（{参数名} 占位）、method（GET|POST，默认 POST）、headers、parameters（JSON Schema）、agents（可见个体，空=全部）。例：[{\"name\":\"weather\",\"description\":\"查天气\",\"kind\":\"http\",\"method\":\"GET\",\"target\":\"https://api.example.com/now?city={city}\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}]" }
+                ]
+            },
+            {
+                "key": "hooks",
+                "label": "生命周期钩子",
+                "fields": [
+                    { "key": "hooks.preTool", "label": "工具调用前钩子", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "逗号分隔的命令（每行一条亦可）；环境变量 EXM_TOOL / EXM_AGENT / EXM_ARGS / EXM_WORKSPACE 可用。**非零退出 = 拦截该次工具调用**并回报原因" },
+                    { "key": "hooks.postTool", "label": "工具调用后钩子", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "同上；额外有 EXM_TOOL_OK（true/false）。用于留痕、通知、指标采集" },
+                    { "key": "hooks.onRunEnd", "label": "运行收束钩子", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "一轮 run 结束（成功或失败）时触发；EXM_RUN_STATUS 给出终态" }
                 ]
             }
         ]
