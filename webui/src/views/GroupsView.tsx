@@ -7,7 +7,7 @@ import { PlusOutlined, SettingOutlined, UsergroupDeleteOutlined } from "@ant-des
 import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
-import { buildCapabilityOptions, buildModelOptions } from "../models";
+import { buildCapabilityOptions, buildModelOptions, groupIdEn } from "../models";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 
@@ -194,7 +194,7 @@ export function GroupsView(): React.ReactElement {
                 <b>{g.name}</b>
                 {g.builtin ? <Tag>{t("groups.builtin")}</Tag> : <Tag color="purple">{t("groups.custom")}</Tag>}
               </div>
-              <div className="list-row-sub mono">{g.id}</div>
+              <div className="list-row-sub mono">{groupIdEn(g.id)}</div>
               {g.description && <div className="list-row-sub">{g.description}</div>}
             </div>
           ))}
@@ -211,7 +211,7 @@ export function GroupsView(): React.ReactElement {
               title={
                 <Space>
                   <span>{meta.name}</span>
-                  <span className="mono dim">{meta.id}</span>
+                  <span className="mono dim">{groupIdEn(meta.id)}</span>
                   {meta.builtin ? <Tag>{t("groups.builtinProtected")}</Tag> : <Tag color="purple">{t("groups.customGroup")}</Tag>}
                 </Space>
               }

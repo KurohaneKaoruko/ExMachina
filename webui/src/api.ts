@@ -384,6 +384,12 @@ export const api = {
     }),
   resetPersona: (identifier: string) =>
     req<{ ok: boolean }>(`/agents/${identifier}/persona`, { method: "DELETE" }),
+  /** 单体智能体人设（agents/singles/personas/<id>.md，与组内个体同语义） */
+  singlePersona: (id: string) => req<PersonaInfo>(`/singles/${id}/persona`),
+  singlesSetPersona: (id: string, persona: string) =>
+    req<{ ok: boolean }>(`/singles/${id}/persona`, { method: "PUT", body: JSON.stringify({ persona }) }),
+  singlesResetPersona: (id: string) =>
+    req<{ ok: boolean }>(`/singles/${id}/persona`, { method: "DELETE" }),
   graph: (id: string) => req<TaskGraph>(`/sessions/${id}/graph`),
   evidence: (id: string) => req<EvidenceItem[]>(`/sessions/${id}/evidence`),
 

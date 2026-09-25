@@ -1119,6 +1119,26 @@ async fn main() -> anyhow::Result<()> {
             && single_upd["domain"] == "测试域"
             && single_upd["capabilities"].as_array().map(|a| a.len() == 2).unwrap_or(false),
     );
+    // 单体人设（SOUL.MD）：与组内个体同语义，落盘 agents/singles/personas/<id>.md
+    let _soul_put: serde_json::Value = client
+        .put(format!("{base}/singles/e2e-single/persona"))
+        .json(&serde_json::json!({ "persona": "e2e 灵魂：客观简洁零情绪" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let soul_get: serde_json::Value = client.get(format!("{base}/singles/e2e-single/persona")).send().await?.json().await?;
+    c.check(
+        "单体人设写入并回读（custom=true）",
+        soul_get["persona"].as_str().map(|s| s.trim() == "e2e 灵魂：客观简洁零情绪").unwrap_or(false)
+            && soul_get["custom"] == true,
+    );
+    let _soul_reset: serde_json::Value = client.delete(format!("{base}/singles/e2e-single/persona")).send().await?.json().await?;
+    let soul_def: serde_json::Value = client.get(format!("{base}/singles/e2e-single/persona")).send().await?.json().await?;
+    c.check(
+        "单体人设重置回落默认（custom=false）",
+        soul_def["custom"] == false && soul_def["persona"].as_str().map(|s| !s.trim().is_empty()).unwrap_or(false),
+    );
     let _ = client.delete(format!("{base}/singles/e2e-single")).send().await;
 
     // ---- 设置页保存兼容（D1/D6/D8）：execAllowlist 双形态、search key 三态、memory.mdMaxChars ----
@@ -1239,11 +1259,16 @@ async fn main() -> anyhow::Result<()> {
     let key_stats: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let ks_for_handler = key_stats.clone();
+    // 记录每次到达 fake 的 system prompt（单体人设注入验证用）
+    let prompt_log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let pl_for_handler = prompt_log.clone();
     let fake = axum::Router::new().route(
         "/v1/chat/completions",
         axum::routing::post(
             move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
                 let ks = ks_for_handler.clone();
+                let pl = pl_for_handler.clone();
                 async move {
                     let key = headers
                         .get(axum::http::header::AUTHORIZATION)
@@ -1252,6 +1277,17 @@ async fn main() -> anyhow::Result<()> {
                         .unwrap_or("")
                         .to_string();
                     let _model = body["model"].as_str().unwrap_or("m").to_string();
+                    let system_text = body["messages"]
+                        .as_array()
+                        .map(|ms| {
+                            ms.iter()
+                                .filter(|m| m["role"] == "system")
+                                .filter_map(|m| m["content"].as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    pl.lock().unwrap().push(system_text);
                     let mut seen = ks.lock().unwrap();
                     let first_time = !seen.contains_key(&key);
                     *seen.entry(key.clone()).or_insert(0) += 1;
@@ -1360,6 +1396,187 @@ async fn main() -> anyhow::Result<()> {
         .send()
         .await;
     let _ = client.delete(format!("{base}/llm/profiles/e2e-pool")).send().await;
+
+    // ---- 主 Key 替换/沿用（P0-1 用户视角的 API 层等价提交）：替换主 Key、清空行=沿用、值级验证 ----
+    // 注意：档案不带 Key 池（池优先于主 Key 是运行时预期行为），值级验证才能锚定主 Key 本身
+    let _tok_new: serde_json::Value = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({
+            "id": "e2e-token", "name": "E2E 令牌", "baseUrl": format!("http://127.0.0.1:{fake_port}/v1"),
+            "apiKey": "sk-tok-old", "apiKeys": [], "model": "fake-large"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let _tok_repl = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({
+            "id": "e2e-token", "name": "E2E 令牌",
+            "apiKey": "sk-tok-new"
+        }))
+        .send()
+        .await?;
+    let tok_read: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    let tok = tok_read["profiles"]
+        .as_array()
+        .and_then(|a| a.iter().find(|p| p["id"] == "e2e-token"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    c.check(
+        "替换主 Key：回读掩码非空且池保留",
+        tok["apiKey"] == "***已配置***"
+            && tok["apiKeys"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+    );
+    // 清空行 = 沿用（前端「行已删空」提交形态：apiKey 空串、apiKeys 空数组）
+    let _tok_keep = client
+        .post(format!("{base}/llm/profiles"))
+        .json(&serde_json::json!({ "id": "e2e-token", "name": "E2E 令牌", "apiKey": "", "apiKeys": [] }))
+        .send()
+        .await?;
+    let tok_read2: serde_json::Value = client.get(format!("{base}/llm/profiles")).send().await?.json().await?;
+    let tok2 = tok_read2["profiles"]
+        .as_array()
+        .and_then(|a| a.iter().find(|p| p["id"] == "e2e-token"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    c.check(
+        "清空行=沿用：主 Key 未丢失",
+        tok2["apiKey"] == "***已配置***"
+            && tok2["apiKeys"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+    );
+    // 值级验证：激活该档案并对话，fake 端点应记录到**新主 Key**（旧 key 不再出现）
+    let _tok_act: serde_json::Value = client
+        .put(format!("{base}/llm/active"))
+        .json(&serde_json::json!({ "id": "e2e-token" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let tok_session: serde_json::Value = client
+        .post(format!("{base}/sessions"))
+        .json(&serde_json::json!({ "title": "e2e-token" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let tok_sid = tok_session["id"].as_str().unwrap_or_default().to_string();
+    let _ = client
+        .post(format!("{base}/sessions/{tok_sid}/chat"))
+        .json(&serde_json::json!({ "text": "主 Key 替换值级验证" }))
+        .send()
+        .await?;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let tok_stats = key_stats.lock().unwrap().clone();
+    c.check(
+        "替换后的主 Key 已在运行时生效（fake 端点捕获）",
+        tok_stats.contains_key("sk-tok-new") && !tok_stats.contains_key("sk-tok-old"),
+    );
+    let _ = client
+        .put(format!("{base}/llm/active"))
+        .json(&serde_json::json!({ "id": "default" }))
+        .send()
+        .await;
+    let _ = client.delete(format!("{base}/llm/profiles/e2e-token")).send().await;
+
+    // ---- 单体人设注入（追加）：plan 与 converge 两个拼装点的 system prompt 均须含 single_persona ----
+    // 让指挥体（plan/converge 的 orch provider）指向 fake：热更新全局 llm 通道
+    let _orch_fake: serde_json::Value = client
+        .put(format!("{base}/config"))
+        .json(&serde_json::json!({
+            "llm": { "baseUrl": format!("http://127.0.0.1:{fake_port}/v1"), "apiKey": "sk-orch", "model": "fake-large" }
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let _soul_single: serde_json::Value = client
+        .post(format!("{base}/singles"))
+        .json(&serde_json::json!({
+            "name": "e2e 灵魂体", "identifier": "e2e-soul", "description": "单体人设注入验证"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let _soul_set: serde_json::Value = client
+        .put(format!("{base}/singles/e2e-soul/persona"))
+        .json(&serde_json::json!({ "persona": "e2e 灵魂标记 XYZQ：说话必须冷峻" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let _tgt: serde_json::Value = client
+        .put(format!("{base}/target"))
+        .json(&serde_json::json!({ "mode": "single", "id": "e2e-soul" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let soul_session: serde_json::Value = client
+        .post(format!("{base}/sessions"))
+        .json(&serde_json::json!({ "title": "e2e-soul" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let soul_sid = soul_session["id"].as_str().unwrap_or_default().to_string();
+    // 第一轮：消耗 sk-orch 的首次 429（handler 仍会记录 system prompt）
+    let _ = client
+        .post(format!("{base}/sessions/{soul_sid}/chat"))
+        .json(&serde_json::json!({ "text": "人设注入第一轮（消耗首次限额）" }))
+        .send()
+        .await?;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    // 第二轮：plan 与 converge 均成功，各记录一段 system prompt
+    let _ = client
+        .post(format!("{base}/sessions/{soul_sid}/chat"))
+        .json(&serde_json::json!({ "text": "人设注入第二轮" }))
+        .send()
+        .await?;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    {
+        let pl = prompt_log.lock().unwrap().clone();
+        let tail = pl.iter().rev().take(3).cloned().collect::<Vec<_>>();
+        c.check(
+            "单体人设注入：plan/converge 的 system prompt 均含人设文本",
+            tail.len() >= 3
+                && tail
+                    .iter()
+                    .all(|s| s.contains("e2e 灵魂标记 XYZQ") && s.contains("## 说话风格（人设）")),
+        );
+    }
+    let _soul_reset2: serde_json::Value = client
+        .delete(format!("{base}/singles/e2e-soul/persona"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let _ = client
+        .post(format!("{base}/sessions/{soul_sid}/chat"))
+        .json(&serde_json::json!({ "text": "人设重置后回落默认" }))
+        .send()
+        .await?;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    {
+        let pl = prompt_log.lock().unwrap().clone();
+        let tail = pl.iter().rev().take(2).cloned().collect::<Vec<_>>();
+        c.check(
+            "单体人设重置：回落默认人设且不再含自定义文本",
+            tail.len() >= 2
+                && tail
+                    .iter()
+                    .all(|s| s.contains("智械体") && !s.contains("e2e 灵魂标记 XYZQ")),
+        );
+    }
+    let _tgt_back: serde_json::Value = client
+        .put(format!("{base}/target"))
+        .json(&serde_json::json!({ "mode": "group" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let _ = client.delete(format!("{base}/singles/e2e-soul")).send().await;
 
     // ---- 通道账号绑定组（docs/11）----
     let bind_group: serde_json::Value = client

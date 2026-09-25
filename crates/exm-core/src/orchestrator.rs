@@ -896,6 +896,14 @@ impl Orchestrator {
             format!("# {}\n\n你是本组的主智能体，直接对接用户并调度组内个体。", primary.name)
         });
         if self.registry.single_mode() {
+            // 单体模式：追加人设段（热读取：修改后下一次对话即生效），再叠加单体契约
+            if let Some(id) = self.registry.active_single() {
+                let persona = self.registry.single_persona(&id).unwrap_or_else(|e| {
+                    eprintln!("[orchestrator] 读取单体人设失败（{id}）：{e}，使用默认");
+                    LocalRegistry::DEFAULT_PERSONA.to_string()
+                });
+                system_prompt.push_str(&format!("\n\n## 说话风格（人设）\n{persona}"));
+            }
             // 单体模式：单体智能体直接完成，禁止派发
             system_prompt.push_str(SINGLE_CONTRACT);
         } else if !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true) {
@@ -1088,10 +1096,20 @@ impl Orchestrator {
             .registry
             .primary()
             .ok_or_else(|| anyhow::anyhow!("当前组未设置主智能体，无法收束"))?;
-        let system_prompt = self
+        let mut system_prompt = self
             .registry
             .load_prompt(&primary.prompt_file)
             .unwrap_or_else(|_| format!("# {}\n\n你是本组的主智能体。", primary.name));
+        if self.registry.single_mode() {
+            // 单体模式：收束提示同样注入人设段（热读取；与 plan() 的最终 system prompt 保持一致覆盖）
+            if let Some(id) = self.registry.active_single() {
+                let persona = self.registry.single_persona(&id).unwrap_or_else(|e| {
+                    eprintln!("[orchestrator] 读取单体人设失败（{id}）：{e}，使用默认");
+                    LocalRegistry::DEFAULT_PERSONA.to_string()
+                });
+                system_prompt.push_str(&format!("\n\n## 说话风格（人设）\n{persona}"));
+            }
+        }
         let digest = graph
             .list()
             .iter()

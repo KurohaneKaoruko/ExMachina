@@ -146,6 +146,49 @@ pub async fn update_single(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SinglePersonaBody {
+    pub persona: String,
+}
+
+/// 单体智能体人设读取（与组内个体同语义；无自定义文件回落默认人设）
+pub async fn get_single_persona(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.registry().single_persona(&id) {
+        Ok(persona) => {
+            let custom = st.core.registry().single_persona_is_custom(&id).unwrap_or(false);
+            Json(json!({
+                "identifier": id,
+                "persona": persona,
+                "custom": custom,
+                "default": exm_core::registry::LocalRegistry::DEFAULT_PERSONA,
+            }))
+            .into_response()
+        }
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 保存单体智能体人设（agents/singles/personas/<id>.md）
+pub async fn put_single_persona(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<SinglePersonaBody>,
+) -> impl IntoResponse {
+    match st.core.registry().single_set_persona(&id, &b.persona) {
+        Ok(_) => Json(json!({ "ok": true, "custom": true })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 重置单体智能体人设为默认
+pub async fn delete_single_persona(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.registry().single_reset_persona(&id) {
+        Ok(_) => Json(json!({ "ok": true, "custom": false })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/target", get(get_target).put(set_target))
@@ -153,5 +196,9 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/singles/:id",
             axum::routing::put(update_single).delete(delete_single),
+        )
+        .route(
+            "/api/singles/:id/persona",
+            get(get_single_persona).put(put_single_persona).delete(delete_single_persona),
         )
 }

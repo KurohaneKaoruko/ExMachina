@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
 import { AudioOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
+import { agentIdEn } from "../models";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 
@@ -201,10 +202,10 @@ export function ChatView(): React.ReactElement {
             ]}
           />
           {target.mode === "single" ? (
-            <div className="rail-hint">{t("chat.soloMode")} · <span className="mono">{target.id}</span></div>
+            <div className="rail-hint">{t("chat.soloMode")} · <span className="mono">{agentIdEn(target.id)}</span></div>
           ) : (
             activeMeta && (
-              <div className="rail-hint">{t("chat.primary")}：<span className="mono">{activeMeta.primary ?? t("chat.unset")}</span></div>
+              <div className="rail-hint">{t("chat.primary")}：<span className="mono">{activeMeta.primary ? agentIdEn(activeMeta.primary) : t("chat.unset")}</span></div>
             )
           )}
         </div>

@@ -110,7 +110,7 @@ export function ModelsView(): React.ReactElement {
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ preset: "openai", apiFormat: "openai", keys: [{}], models: [] });
+    form.setFieldsValue({ preset: "openai", apiFormat: "openai", keys: [{ value: "" }], models: [] });
     setModal(true);
   };
 
@@ -156,11 +156,14 @@ export function ModelsView(): React.ReactElement {
   };
 
   const submit = async () => {
+    // 校验规则用 validateFields；取值用 getFieldsValue(true)——
+    // 掩码行的 keep 无控件绑定，validateFields 只返回已注册字段会把它丢掉
     const v = await form.validateFields();
+    const all = form.getFieldsValue(true) as KeyForm & Record<string, unknown>;
     const existing = editing;
     // 行序即语义：首行 = 主 Key 位（掩码 = 沿用旧值，明文 = 设置/替换主 Key），
     // 其余行按原序进 Key 池；掩码行以结构化 { keep: 旧池索引 } 提交，删行/插行后不串位。
-    const rows = liveRows((v as KeyForm).keys);
+    const rows = liveRows(all.keys);
     const fresh = rows.filter((r) => r.value !== KEY_MASK).map((r) => r.value);
     const poolEntries: (string | { keep: number })[] = rows
       .slice(1)
@@ -453,7 +456,7 @@ export function ModelsView(): React.ReactElement {
                 <>
                   {fields.map(({ key, name, ...rest }) => (
                     <div key={key} className="key-row">
-                      <Form.Item {...rest} name={name} noStyle>
+                      <Form.Item {...rest} name={[name, "value"]} noStyle>
                         <Input.Password placeholder={editing ? "******" : "sk-…"} />
                       </Form.Item>
                       {fields.length > 1 && (

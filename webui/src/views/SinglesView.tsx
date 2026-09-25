@@ -1,8 +1,8 @@
-/** 智能体页（单体）：档案管理 —— 创建/删除/默认模型设置；交互切换在「对话」页左栏进行 */
+/** 智能体页（单体）：档案管理 —— 创建/删除/卡片菜单（切换模型 / 编辑描述 / 编辑 SOUL.MD）；交互切换在「对话」页左栏 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { EditOutlined, FormOutlined, PlusOutlined, ReloadOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
-import { api, type LlmProfile } from "../api";
+import { Button, Card, Dropdown, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { MoreOutlined, PlusOutlined, ReloadOutlined, UndoOutlined, UserOutlined } from "@ant-design/icons";
+import { api, type LlmProfile, type PersonaInfo } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { buildModelOptions, modelLabel } from "../models";
 import { useT } from "../i18n/core";
@@ -25,9 +25,13 @@ export function SinglesView(): React.ReactElement {
   const [modal, setModal] = useState(false);
   const [modelTarget, setModelTarget] = useState<SingleInfo | null>(null);
   const [modelDraft, setModelDraft] = useState<string>("");
-  const [editing, setEditing] = useState<SingleInfo | null>(null);
+  const [descTarget, setDescTarget] = useState<SingleInfo | null>(null);
+  const [descDraft, setDescDraft] = useState<string>("");
+  const [soulOf, setSoulOf] = useState<SingleInfo | null>(null);
+  const [soulInfo, setSoulInfo] = useState<PersonaInfo | null>(null);
+  const [soulDraft, setSoulDraft] = useState<string>("");
+  const [soulSaving, setSoulSaving] = useState(false);
   const [form] = Form.useForm();
-  const [editForm] = Form.useForm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -63,36 +67,6 @@ export function SinglesView(): React.ReactElement {
     }
   };
 
-  const openEdit = (s: SingleInfo) => {
-    setEditing(s);
-    editForm.setFieldsValue({
-      name: s.name,
-      description: s.description,
-      domain: s.domain,
-      capabilities: s.capabilities ?? [],
-      modelHint: s.modelHint ?? undefined,
-    });
-  };
-
-  const submitEdit = async () => {
-    if (!editing) return;
-    const v = await editForm.validateFields();
-    try {
-      await api.updateSingle(editing.identifier, {
-        name: v.name,
-        description: v.description,
-        domain: (v.domain ?? "").trim(),
-        capabilities: (v.capabilities ?? []).map((s: string) => s.trim()).filter(Boolean),
-        modelHint: v.modelHint ?? "",
-      });
-      message.success(t("singles.editSaved", { name: v.name }));
-      setEditing(null);
-      await load();
-    } catch (e) {
-      message.error(t("common.saveFailed", { err: String(e) }));
-    }
-  };
-
   const remove = async (id: string) => {
     try {
       await api.deleteSingle(id);
@@ -114,6 +88,86 @@ export function SinglesView(): React.ReactElement {
       message.error(t("singles.setFailed", { err: String(e) }));
     }
   };
+
+  const saveDesc = async () => {
+    if (!descTarget) return;
+    if (!descDraft.trim()) {
+      message.warning(t("singles.f.descPh"));
+      return;
+    }
+    try {
+      await api.updateSingle(descTarget.identifier, { description: descDraft.trim() });
+      message.success(t("singles.descSaved", { name: descTarget.name }));
+      setDescTarget(null);
+      await load();
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    }
+  };
+
+  const openSoul = async (s: SingleInfo) => {
+    setSoulOf(s);
+    setSoulInfo(null);
+    setSoulDraft("");
+    try {
+      const info = await api.singlePersona(s.identifier);
+      setSoulInfo(info);
+      setSoulDraft(info.persona);
+    } catch (e) {
+      message.error(t("agents.personaReadFailed", { err: String(e) }));
+      setSoulOf(null);
+    }
+  };
+
+  const saveSoul = async () => {
+    if (!soulOf) return;
+    setSoulSaving(true);
+    try {
+      await api.singlesSetPersona(soulOf.identifier, soulDraft);
+      message.success(t("singles.soulSaved"));
+      setSoulInfo(await api.singlePersona(soulOf.identifier));
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    } finally {
+      setSoulSaving(false);
+    }
+  };
+
+  const resetSoul = async () => {
+    if (!soulOf) return;
+    try {
+      await api.singlesResetPersona(soulOf.identifier);
+      setSoulInfo(await api.singlePersona(soulOf.identifier));
+      setSoulDraft((await api.singlePersona(soulOf.identifier)).persona);
+      message.success(t("agents.resetBtn"));
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    }
+  };
+
+  const cardMenu = (s: SingleInfo) => [
+    {
+      key: "model",
+      label: t("singles.menuModel"),
+      onClick: () => {
+        setModelTarget(s);
+        setModelDraft(s.modelHint ?? "");
+      },
+    },
+    {
+      key: "desc",
+      label: t("singles.menuDesc"),
+      onClick: () => {
+        setDescTarget(s);
+        setDescDraft(s.description);
+      },
+    },
+    {
+      key: "soul",
+      label: t("singles.menuSoul"),
+      onClick: () => void openSoul(s),
+    },
+  ];
 
   return (
     <div className="pane-wrap">
@@ -150,28 +204,14 @@ export function SinglesView(): React.ReactElement {
               }
               extra={
                 <Space>
-                  <Button
-                    size="small"
-                    icon={<FormOutlined />}
-                    onClick={() => openEdit(s)}
-                  >
-                    {t("singles.edit")}
-                  </Button>
-                  <Button
-                    size="small"
-                    icon={<SettingOutlined />}
-                    onClick={() => {
-                      setModelTarget(s);
-                      setModelDraft(s.modelHint ?? "");
-                    }}
-                  >
-                    {t("singles.settings")}
-                  </Button>
                   <Popconfirm title={t("singles.deleteConfirm")} onConfirm={() => void remove(s.identifier)}>
                     <Button size="small" danger>
                       {t("common.delete")}
                     </Button>
                   </Popconfirm>
+                  <Dropdown menu={{ items: cardMenu(s) }} trigger={["click"]} placement="bottomRight">
+                    <Button size="small" icon={<MoreOutlined />} aria-label={t("singles.cardMenu")} />
+                  </Dropdown>
                 </Space>
               }
             >
@@ -188,7 +228,7 @@ export function SinglesView(): React.ReactElement {
         )}
       </Spin>
 
-      {/* 默认模型设置（跟随全局 / 指定提供商与模型） */}
+      {/* 切换模型（跟随全局 / 指定提供商与模型）——卡片菜单唯一默认模型入口 */}
       <Modal
         open={modelTarget !== null}
         title={t("singles.modelTitle", { name: modelTarget?.name ?? "" })}
@@ -208,37 +248,61 @@ export function SinglesView(): React.ReactElement {
         />
       </Modal>
 
-      {/* 编辑档案（名称/简介/领域/能力标签/默认模型） */}
+      {/* 编辑描述（轻量：仅简介字段） */}
       <Modal
-        open={editing !== null}
-        title={editing ? t("singles.editTitle", { name: editing.name }) : ""}
-        onCancel={() => setEditing(null)}
-        onOk={() => void submitEdit()}
+        open={descTarget !== null}
+        title={descTarget ? t("singles.descTitle", { name: descTarget.name }) : ""}
+        onCancel={() => setDescTarget(null)}
+        onOk={() => void saveDesc()}
         okText={t("common.save")}
+        width={480}
       >
-        <Form form={editForm} layout="vertical">
-          <Form.Item name="name" label={t("singles.f.name")} rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="description" label={t("singles.f.desc")} rules={[{ required: true }]}>
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <Form.Item name="domain" label={t("agents.f.domain")}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="capabilities" label={t("agents.f.caps")}>
-            <Select mode="tags" open={false} placeholder={t("agents.f.capsPh")} />
-          </Form.Item>
-          <Form.Item name="modelHint" label={t("agents.f.model")} extra={t("agents.f.modelExtra")}>
-            <Select
-              allowClear
-              showSearch
-              style={{ width: "100%" }}
-              options={buildModelOptions(profiles)}
-              placeholder={t("agents.f.modelPh")}
-            />
-          </Form.Item>
-        </Form>
+        <Input.TextArea
+          rows={3}
+          value={descDraft}
+          onChange={(e) => setDescDraft(e.target.value)}
+          placeholder={t("singles.f.descPh")}
+        />
+      </Modal>
+
+      {/* 编辑 SOUL.MD（人设：自定义状态 + 恢复默认 + 文本编辑） */}
+      <Modal
+        open={soulOf !== null}
+        title={soulOf ? t("singles.soulTitle", { name: soulOf.name }) : ""}
+        onCancel={() => setSoulOf(null)}
+        width={640}
+        footer={
+          <Space>
+            <Popconfirm title={t("agents.resetConfirm")} onConfirm={() => void resetSoul()} disabled={soulInfo ? !soulInfo.custom : false}>
+              <Button icon={<UndoOutlined />} disabled={soulInfo ? !soulInfo.custom : false}>
+                {t("agents.resetBtn")}
+              </Button>
+            </Popconfirm>
+            <Button onClick={() => setSoulOf(null)}>{t("common.close")}</Button>
+            <Button type="primary" loading={soulSaving} onClick={() => void saveSoul()}>
+              {t("agents.saveHot")}
+            </Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size="small">
+          {soulInfo && (
+            <div className="persona-status">
+              {soulInfo.custom ? (
+                <Tag color="gold">{t("agents.customPersona")}</Tag>
+              ) : (
+                <Tag>{t("agents.defaultPersona")}</Tag>
+              )}
+              <span className="persona-hint">{t("singles.soulHint", { id: soulOf?.identifier ?? "" })}</span>
+            </div>
+          )}
+          <Input.TextArea
+            rows={10}
+            value={soulDraft}
+            onChange={(e) => setSoulDraft(e.target.value)}
+            placeholder={t("singles.soulPh")}
+          />
+        </Space>
       </Modal>
 
       <Modal

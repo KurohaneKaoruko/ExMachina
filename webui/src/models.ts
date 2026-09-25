@@ -38,3 +38,15 @@ export function modelLabel(hint: string | null | undefined, profiles: LlmProfile
   if (!p) return hint;
   return explicit ? `${p.name} · ${explicit}` : `${p.name} · ${p.model || pid}`;
 }
+
+/** 组 id 的英文标注（纯展示映射，数据 identifier 不变）：内置默认组用品牌标注 */
+export function groupIdEn(id: string): string {
+  if (id === "default") return tr("enGroup.default");
+  return id.toUpperCase();
+}
+
+/** 个体 identifier 的英文标注（纯展示映射）：指挥体去 EXMACHINA- 冗余前缀 */
+export function agentIdEn(identifier: string): string {
+  if (identifier === "exmachina-orchestrator") return tr("enAgent.orchestrator");
+  return identifier.toUpperCase();
+}

@@ -1089,4 +1089,47 @@ impl LocalRegistry {
             Ok(false)
         }
     }
+
+    // ---------------- 单体智能体人设（agents/singles/personas/，与组内个体同语义） ----------------
+
+    fn single_persona_path(&self, id: &str) -> Option<PathBuf> {
+        self.singles
+            .read()
+            .contains_key(id)
+            .then(|| self.singles_dir().join("personas").join(format!("{id}.md")))
+    }
+
+    pub fn single_persona(&self, id: &str) -> anyhow::Result<String> {
+        let path = self.single_persona_path(id).context("单体不存在")?;
+        match std::fs::read_to_string(path) {
+            Ok(text) if !text.trim().is_empty() => Ok(text),
+            _ => Ok(Self::DEFAULT_PERSONA.to_string()),
+        }
+    }
+
+    pub fn single_persona_is_custom(&self, id: &str) -> anyhow::Result<bool> {
+        let path = self.single_persona_path(id).context("单体不存在")?;
+        Ok(path.exists())
+    }
+
+    pub fn single_set_persona(&self, id: &str, text: &str) -> anyhow::Result<()> {
+        let path = self.single_persona_path(id).context("单体不存在")?;
+        let text = text.trim();
+        if text.is_empty() {
+            anyhow::bail!("人设内容不能为空（如需恢复默认请使用 reset）");
+        }
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, format!("{text}\n"))?;
+        Ok(())
+    }
+
+    pub fn single_reset_persona(&self, id: &str) -> anyhow::Result<bool> {
+        let path = self.single_persona_path(id).context("单体不存在")?;
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
