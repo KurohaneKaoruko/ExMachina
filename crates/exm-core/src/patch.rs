@@ -103,7 +103,7 @@ pub fn parse_unified_diff(text: &str) -> Result<Vec<FilePatch>> {
     let mut seen = HunkSeen::default();
     let mut in_hunk = false;
 
-    let mut flush_hunk = |cur: &mut Option<FilePatch>, hunk: &mut Option<Hunk>, seen: &mut HunkSeen| {
+    let flush_hunk = |cur: &mut Option<FilePatch>, hunk: &mut Option<Hunk>, seen: &mut HunkSeen| {
         if let Some(h) = hunk.take() {
             if let Some(p) = cur.as_mut() {
                 p.hunks.push(h);

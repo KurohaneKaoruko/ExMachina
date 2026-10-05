@@ -732,8 +732,30 @@ impl Core {
         Ok(req)
     }
 
-    fn emit_approval_resolved(&self, req: &ApprovalRequest) {
+    /// 创建 WebUI 发起的 git 破坏性操作审批单：command 为精确 git 命令，
+    /// 批准后由 approval_decide 代执行（与工具审批同一执行与审计路径）
+    pub async fn request_git_approval(&self, command: &str) -> anyhow::Result<ApprovalRequest> {
+        let req = ApprovalRequest {
+            id: crate::types::new_id(),
+            session_id: String::new(),
+            node_id: None,
+            agent_id: "webui".into(),
+            command: command.to_string(),
+            status: "pending".into(),
+            result: None,
+            created_at: now_iso(),
+            decided_at: None,
+        };
+        self.store.add_approval(&req)?;
         let _ = self.events.send(CoreEvent {
+            kind: "approval.required".into(),
+            session_id: String::new(),
+            payload: serde_json::json!({ "approvalId": req.id, "agentId": "webui", "command": command }),
+        });
+        Ok(req)
+    }
+
+    fn emit_approval_resolved(&self, req: &ApprovalRequest) {        let _ = self.events.send(CoreEvent {
             kind: "approval.resolved".into(),
             session_id: req.session_id.clone(),
             payload: serde_json::json!({ "approvalId": req.id, "status": req.status, "command": req.command }),

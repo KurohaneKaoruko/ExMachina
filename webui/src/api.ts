@@ -593,3 +593,56 @@ export function fsList(path: string): Promise<{ path: string; entries: FsEntry[]
 export function fsFile(path: string): Promise<{ path: string; size: number; truncated: boolean; content: string }> {
   return req(`/fs/file?path=${encodeURIComponent(path)}`);
 }
+
+export interface WorkspaceChangeFile {
+  path: string;
+  /** M=修改 A=新增 D=删除 */
+  status: string;
+  staged: boolean;
+  /** 未跟踪文件无 diff（内容走 fsFile 预览） */
+  diff: { text: string; truncated: boolean } | null;
+}
+
+export interface WorkspaceChanges {
+  /** git = HEAD 对比口径；checkpoint = 检查点口径（非 git 仓库回退） */
+  source: "git" | "checkpoint";
+  branch: string | null;
+  files: WorkspaceChangeFile[];
+}
+
+/** 工作区变更清单（编码页变更视图） */
+export function workspaceChanges(): Promise<WorkspaceChanges> {
+  return req(`/workspace/changes`);
+}
+
+/** 工作区文件保存（编码页编辑器）：服务端走检查点 + 审计同口径 */
+export function fsSave(path: string, content: string): Promise<{ ok: boolean; message: string }> {
+  return req(`/fs/file`, { method: "PUT", body: JSON.stringify({ path, content }) });
+}
+
+export interface GitOverview {
+  repo: boolean;
+  branch?: string;
+  log?: string[];
+  branches?: string[];
+}
+
+export interface GitOpResult {
+  ok: boolean;
+  output?: string;
+  /** 破坏性操作：true = 已生成审批单（批准后执行） */
+  pending?: boolean;
+  approvalId?: string;
+  command?: string;
+  error?: string;
+}
+
+/** Git 面板概览（分支 / 最近提交） */
+export function gitOverview(): Promise<GitOverview> {
+  return req(`/git/overview`);
+}
+
+/** Git 操作：常规操作直发；push/reset/discard 走审批单 */
+export function gitOp(op: string, extra?: { path?: string; message?: string; branch?: string }): Promise<GitOpResult> {
+  return req(`/git/op`, { method: "POST", body: JSON.stringify({ op, ...extra }) });
+}
