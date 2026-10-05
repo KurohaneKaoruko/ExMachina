@@ -239,6 +239,52 @@ fn lines_match(expected: &str, actual: &str) -> bool {
     expected.trim_end() == actual.trim_end()
 }
 
+/// 极简统一 diff 生成器：掐头去尾找公共前后缀，中间整体替换为一个 hunk。
+/// 不是最小 LCS diff，但格式合法、可被 `patch` 工具回放，适用于检查点对比等
+/// "两份已知内容的差异展示"场景（git 口径的精确 diff 由 git 自身产出）。
+pub fn simple_unified_diff(old: &str, new: &str, path: &str, context: usize) -> String {
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    if a == b {
+        return String::new();
+    }
+    // 公共前缀
+    let mut prefix = 0usize;
+    while prefix < a.len() && prefix < b.len() && a[prefix] == b[prefix] {
+        prefix += 1;
+    }
+    // 公共后缀（不与前缀重叠）
+    let mut suffix = 0usize;
+    while suffix < a.len() - prefix && suffix < b.len() - prefix
+        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let old_mid = &a[prefix..a.len() - suffix];
+    let new_mid = &b[prefix..b.len() - suffix];
+    let ctx = context.min(prefix.min(suffix));
+
+    let old_start = prefix + 1 - ctx; // 1 起
+    let new_start = prefix + 1 - ctx;
+    let old_count = ctx + old_mid.len() + ctx;
+    let new_count = ctx + new_mid.len() + ctx;
+
+    let mut out = format!("--- a/{path}\n+++ b/{path}\n@@ -{old_start},{old_count} +{new_start},{new_count} @@\n");
+    for line in &a[prefix - ctx..prefix] {
+        out.push_str(&format!(" {line}\n"));
+    }
+    for line in old_mid {
+        out.push_str(&format!("-{line}\n"));
+    }
+    for line in new_mid {
+        out.push_str(&format!("+{line}\n"));
+    }
+    for line in &b[b.len() - suffix..b.len() - suffix + ctx] {
+        out.push_str(&format!(" {line}\n"));
+    }
+    out
+}
+
 /// 把单个文件补丁应用到旧内容上（纯计算；失败返回带行号上下文的错误描述）
 pub fn apply_file(old: &str, fp: &FilePatch) -> std::result::Result<String, String> {
     if fp.new_file && !old.is_empty() {
@@ -433,6 +479,23 @@ deleted file mode 100644
         assert_eq!(patches[1].path, "y.txt");
         assert_eq!(apply_file("old\n", &patches[0]).unwrap(), "new\n");
         assert_eq!(apply_file("alpha\n", &patches[1]).unwrap(), "beta\n");
+    }
+
+    #[test]
+    fn 生成_极简统一diff可回放() {
+        let old = "fn main() {\n    println!(\"a\");\n    let x = 1;\n    let y = 2;\n    let z = 3;\n}\n";
+        let new = "fn main() {\n    println!(\"a\");\n    let x = 1;\n    let y = 20;\n    let z = 3;\n}\n";
+        let diff = simple_unified_diff(old, new, "src/m.rs", 3);
+        assert!(diff.contains("--- a/src/m.rs"));
+        assert!(diff.contains("-    let y = 2;"));
+        assert!(diff.contains("+    let y = 20;"));
+        // 生成的 diff 必须能被自家解析器应用回放（新内容往返一致）
+        let patches = parse_unified_diff(&diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let applied = apply_file(old, &patches[0]).unwrap();
+        assert_eq!(applied, new);
+        // 相同内容 → 空 diff
+        assert_eq!(simple_unified_diff(old, old, "f", 3), "");
     }
 
     #[test]

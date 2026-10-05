@@ -324,6 +324,43 @@ impl Core {
         out
     }
 
+    /// 工作区文件保存（WebUI 编辑器写入口径）：路径防 `..` 兜底、写前检查点、工具审计。
+    /// 与写类工具同规则（当日首次改动前的版本落 `.exmachina/checkpoints/`，供回滚）。
+    /// 返回结果摘要；越界/非法路径报错。网关侧已做工作区规范化校验，此处兜底拒绝。
+    pub fn save_workspace_file(&self, rel: &str, content: &str) -> anyhow::Result<String> {
+        let norm = rel.replace('\\', "/").trim_matches('/').to_string();
+        if norm.is_empty()
+            || std::path::Path::new(rel.trim()).is_absolute()
+            || norm.split('/').any(|seg| seg == "..")
+        {
+            anyhow::bail!("路径越界（仅允许工作区内的相对路径）: {rel}");
+        }
+        let root = self.config().workspace_root.clone();
+        let target = root.join(&norm);
+        if target.is_file() {
+            let day: String = crate::types::now_iso().chars().take(10).collect();
+            let dst = root.join(".exmachina").join("checkpoints").join(&day).join(&norm);
+            if !dst.exists() {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&target, &dst)?;
+            }
+        } else if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, content)?;
+        // 审计：agent_id = webui，与智能体审计同账本、来源可区分
+        let _ = self.store.audit_tool(
+            "webui",
+            "filesystem",
+            &serde_json::json!({ "op": "write", "path": norm, "via": "editor" }),
+            "编辑器保存",
+            0,
+        );
+        Ok(format!("已保存 {norm}（{} 字节，写前检查点已记录）", content.len()))
+    }
+
     /// 回滚检查点：`date` 为空取最近一份；返回被覆盖的文件相对路径
     pub fn restore_checkpoint(&self, date: Option<&str>, rel: &str) -> anyhow::Result<String> {
         let target = self.config().workspace_root.join(".exmachina").join("checkpoints");

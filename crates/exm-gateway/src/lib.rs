@@ -152,7 +152,9 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/asset", get(get_asset))
         // 工作区文件浏览（编码页文件树与预览）：沙箱内只读
         .route("/api/fs/list", get(fs_list))
-        .route("/api/fs/file", get(fs_file))
+        .route("/api/fs/file", get(fs_file).put(fs_save))
+        // 工作区变更清单（编码页变更视图）：git 口径优先，非 git 回退检查点口径
+        .route("/api/workspace/changes", get(workspace_changes))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
@@ -320,6 +322,149 @@ async fn fs_file(State(st): State<AppState>, Query(q): Query<FsQuery>) -> impl I
 #[derive(Deserialize)]
 struct FsQuery {
     path: String,
+}
+
+// ---------------------------------------------------------------- 工作区变更清单（编码页变更视图）
+
+/// git 只读调用：固定子命令与参数（status/diff/rev-parse），不拼接任何用户输入
+async fn git_read(ws: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(ws)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+const CHANGES_FILE_CAP: usize = 50;
+const CHANGES_DIFF_CAP: usize = 100 * 1024;
+
+/// 工作区变更清单：git 仓库走 HEAD 对比口径；非 git 仓库回退检查点口径并标注来源
+pub async fn collect_workspace_changes(ws: &std::path::Path, checkpoints: &[(String, String, u64)]) -> Value {
+    let git_ok = git_read(ws, &["rev-parse", "--is-inside-work-tree"])
+        .await
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false);
+    if git_ok {
+        let branch = git_read(ws, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let porcelain = git_read(ws, &["status", "--porcelain"]).await.unwrap_or_default();
+        let mut files: Vec<Value> = Vec::new();
+        for line in porcelain.lines().take(CHANGES_FILE_CAP) {
+            if line.len() < 4 {
+                continue;
+            }
+            let xy = &line[..2];
+            // git 对含空格/中文路径会加引号：展示口径去引号即可
+            let path = line[3..].trim().trim_matches('"').to_string();
+            if path.is_empty() {
+                continue;
+            }
+            let untracked = xy == "??";
+            let (status, staged) = if untracked {
+                ("A".to_string(), false)
+            } else {
+                let x = xy.as_bytes()[0] as char;
+                let y = xy.as_bytes()[1] as char;
+                (if x != ' ' { x } else { y }.to_string(), x != ' ')
+            };
+            let diff = if untracked {
+                Value::Null // 未跟踪文件：整个文件都是新的，内容走 /api/fs/file 预览
+            } else {
+                match git_read(ws, &["diff", "HEAD", "--", &path]).await {
+                    Some(d) => {
+                        let truncated = d.len() > CHANGES_DIFF_CAP;
+                        let cut = if truncated { d[..CHANGES_DIFF_CAP].to_string() } else { d };
+                        json!({ "text": cut, "truncated": truncated })
+                    }
+                    None => Value::Null,
+                }
+            };
+            files.push(json!({ "path": path, "status": status, "staged": staged, "diff": diff }));
+        }
+        return json!({ "source": "git", "branch": branch, "files": files });
+    }
+
+    // 检查点口径：最近一份检查点 vs 当前文件（list_checkpoints 已按日期倒序，首见即最新）
+    let mut latest: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for (date, rel, _) in checkpoints {
+        latest.entry(rel.as_str()).or_insert(date.as_str());
+    }
+    let mut files: Vec<Value> = Vec::new();
+    for (rel, date) in latest.iter().take(CHANGES_FILE_CAP) {
+        let cp = ws.join(".exmachina").join("checkpoints").join(date).join(rel);
+        let cur = ws.join(rel);
+        let (Ok(old), Ok(new)) = (std::fs::read_to_string(&cp), std::fs::read_to_string(&cur)) else {
+            continue;
+        };
+        if old == new {
+            continue; // 检查点之后未变（或已被恢复）
+        }
+        let diff = exm_core::patch::simple_unified_diff(&old, &new, rel, 3);
+        files.push(json!({
+            "path": rel, "status": "M", "staged": false,
+            "diff": { "text": diff, "truncated": false }
+        }));
+    }
+    files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    json!({ "source": "checkpoint", "branch": Value::Null, "files": files })
+}
+
+/// 工作区变更清单（GET /api/workspace/changes）：编码页变更视图数据源
+async fn workspace_changes(State(st): State<AppState>) -> impl IntoResponse {
+    let ws = st.core.config().workspace_root.clone();
+    let checkpoints = st.core.list_checkpoints();
+    let payload = collect_workspace_changes(&ws, &checkpoints).await;
+    Json(payload).into_response()
+}
+
+/// 工作区文件保存（PUT /api/fs/file）：编码页编辑器写入。
+/// 允许保存新文件（父目录规范化后须落在工作区内）；写入经 Core 同口径（检查点 + 审计）
+pub async fn fs_save(State(st): State<AppState>, Json(body): Json<Value>) -> impl IntoResponse {
+    let Some(path) = body.get("path").and_then(|v| v.as_str()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "path 不能为空" }))).into_response();
+    };
+    let Some(content) = body.get("content").and_then(|v| v.as_str()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "content 不能为空" }))).into_response();
+    };
+    let norm = path.replace('\\', "/").trim_matches('/').to_string();
+    let path_legal = !norm.is_empty()
+        && !std::path::Path::new(path.trim()).is_absolute() // 绝对路径直接拒绝（不改写为相对）
+        && !norm.split('/').any(|seg| seg == "..");
+    if !path_legal {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "路径越界（仅允许工作区内的相对路径）" })),
+        )
+            .into_response();
+    }
+    let root = st.core.config().workspace_root.clone();
+    // 父目录可能尚不存在（保存新文件）：向上找最近的已存在祖先做规范化判定
+    let target = root.join(&norm);
+    let mut probe = target.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| root.clone());
+    while !probe.exists() && probe != root {
+        match probe.parent() {
+            Some(p) => probe = p.to_path_buf(),
+            None => break,
+        }
+    }
+    let root_canon = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let parent_ok = std::fs::canonicalize(&probe)
+        .map(|c| c.starts_with(&root_canon))
+        .unwrap_or(false);
+    if !parent_ok {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "路径越界（仅允许工作区内的路径）" }))).into_response();
+    }
+    match st.core.save_workspace_file(&norm, content) {
+        Ok(msg) => Json(json!({ "ok": true, "message": msg })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 async fn health(State(st): State<AppState>) -> impl IntoResponse {
