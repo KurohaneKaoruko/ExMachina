@@ -12,7 +12,8 @@
   "tools": [
     "read",
     "filesystem",
-    "terminal"
+    "terminal",
+    "patch"
   ],
   "whenToCall": "编码实现、配置修改与重构实施；坚持最小可逆变更。",
   "dependencies": [],

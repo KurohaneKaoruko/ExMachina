@@ -108,6 +108,8 @@ pub enum ToolName {
     Terminal,
     /// 精确编辑：old_string → new_string（唯一命中校验，避免整文件覆盖）
     Edit,
+    /// 统一 diff 补丁：多文件原子应用（任一文件校验失败整体拒绝）
+    Patch,
     /// 仓库检索：按正则搜索文件内容（尊重 .gitignore）
     Grep,
     /// 按 glob 模式列出文件
@@ -135,6 +137,7 @@ impl ToolName {
             ToolName::Filesystem => "filesystem",
             ToolName::Terminal => "terminal",
             ToolName::Edit => "edit",
+            ToolName::Patch => "patch",
             ToolName::Grep => "grep",
             ToolName::Glob => "glob",
             ToolName::WebSearch => "web_search",
@@ -160,6 +163,7 @@ impl ToolName {
             "filesystem" => Some(ToolName::Filesystem),
             "terminal" => Some(ToolName::Terminal),
             "edit" => Some(ToolName::Edit),
+            "patch" => Some(ToolName::Patch),
             "grep" => Some(ToolName::Grep),
             "glob" => Some(ToolName::Glob),
             "web_search" => Some(ToolName::WebSearch),
@@ -924,6 +928,79 @@ pub struct ApprovalRequest {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<String>,
+}
+
+// ---------------------------------------------------------------- 通道用户身份（配对绑定）
+
+/// 绑定的外部用户身份：通道账号 → 平台用户档案（配对码换发的长期绑定）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserIdentity {
+    /// `{channel}:{externalId}`
+    pub id: String,
+    /// 所属通道平台（telegram/discord/slack/...）
+    pub channel: String,
+    /// 通道侧账号标识（chat/user id）
+    pub external_id: String,
+    /// 通道侧展示名
+    pub display_name: String,
+    /// admin | member
+    pub role: String,
+    pub paired_at: String,
+    /// 签发配对码时的备注
+    #[serde(default)]
+    pub note: String,
+}
+
+// ---------------------------------------------------------------- 事件触发器（文件监听 / webhook 事件源）
+
+/// 事件触发器：匹配的事件经去抖后注入目标组会话（复用 cron 的注入通路）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventTrigger {
+    pub id: String,
+    /// file_watch | event_webhook
+    pub kind: String,
+    pub name: String,
+    /// 匹配模式：file_watch = 相对工作区的 glob；event_webhook = 事件类型（* = 全部）
+    pub pattern: String,
+    /// 目标组；空 = 运行时激活组
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 注入提示词模板（`{event}` 占位替换为事件摘要）
+    pub prompt: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fired_at: Option<String>,
+}
+
+// ---------------------------------------------------------------- 会话轮次快照（undo / 编辑重发 / 分支基座）
+
+/// 会话轮次快照：每轮次结束记录消息游标与检查点链，支撑历史回退类操作
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSnapshot {
+    /// `{sessionId}:{turn}`
+    pub id: String,
+    pub session_id: String,
+    /// 轮次序号（从 1 递增）
+    pub turn: usize,
+    /// 快照时的消息条数（消息游标：撤销即截断到该计数）
+    pub message_count: usize,
+    /// 本轮写类工具产生的检查点 ID（联动回滚文件变更）
+    #[serde(default)]
+    pub checkpoint_ids: Vec<String>,
+    /// 本轮真实 token 用量（配额与台账口径）
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    /// done | failed
+    pub status: String,
+    pub created_at: String,
 }
 
 // ---------------------------------------------------------------- 经验优化（子个体自适应，docs/10 §5）

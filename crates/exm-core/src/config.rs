@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// 配置结构版本（新增字段时 +1，并在 `migrate_file` 中补默认值）
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
 
 /// 提供商下的模型条目：能力开关让平台知道该模型支持哪些多模态输入。
 /// 模型未列入清单（或档案无清单）视为能力未知，保持直通行为。
@@ -352,6 +352,141 @@ impl Default for AutomationConfig {
     }
 }
 
+/// 文件监听触发器（事件驱动主动行为）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileWatchConfig {
+    pub enabled: bool,
+    /// 去抖窗口（毫秒）：窗口内同路径连续变更合并为一次事件注入
+    pub debounce_ms: u64,
+    /// 排除的路径前缀（相对工作区；命中即不监听）
+    pub exclude: Vec<String>,
+}
+
+impl Default for FileWatchConfig {
+    fn default() -> Self {
+        FileWatchConfig {
+            enabled: false,
+            debounce_ms: 1000,
+            exclude: vec![".exmachina/".into(), "target/".into(), "node_modules/".into()],
+        }
+    }
+}
+
+/// 事件 webhook 源（通用事件入口；独立于通道 webhook）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventWebhookConfig {
+    pub enabled: bool,
+    /// HMAC 签名密钥；空 = 未配置（入口关闭）
+    pub secret: String,
+}
+
+impl Default for EventWebhookConfig {
+    fn default() -> Self {
+        EventWebhookConfig { enabled: false, secret: String::new() }
+    }
+}
+
+/// 触发器总段（事件驱动主动行为）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggersConfig {
+    pub file_watch: FileWatchConfig,
+    pub event_webhook: EventWebhookConfig,
+}
+
+/// 通道身份（配对绑定与群聊唤醒门控）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityConfig {
+    /// 配对码有效期（秒）
+    pub pairing_ttl_secs: u64,
+    /// 通道身份管控总开关：true = 白名单内用户也须配对方可执行；false = 维持白名单即全权
+    pub identity_required: bool,
+    /// 群聊唤醒门控的通道默认值（开 = 群内仅提及/回复触发；新装默认开，升级迁移显式置关）
+    pub group_gate_default: bool,
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        IdentityConfig { pairing_ttl_secs: 600, identity_required: false, group_gate_default: true }
+    }
+}
+
+/// 用量治理（速率限制与周期配额；维度：通道账号 / 绑定用户 / API key）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitsConfig {
+    pub enabled: bool,
+    /// 限流窗口（秒）
+    pub window_secs: u64,
+    /// 窗口内最大请求数（0 = 不限）
+    pub max_requests: u32,
+    /// 配额周期：daily | weekly | monthly
+    pub quota_period: String,
+    /// 周期 token 配额（0 = 不限；口径复用 token 台账）
+    pub quota_tokens: u64,
+    /// 周期请求数配额（0 = 不限）
+    pub quota_requests: u32,
+    /// 配额耗尽时进行中任务策略：finish = 完成当前；interrupt = 立即中断
+    pub quota_running_policy: String,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        LimitsConfig {
+            enabled: false,
+            window_secs: 60,
+            max_requests: 0,
+            quota_period: "daily".into(),
+            quota_tokens: 0,
+            quota_requests: 0,
+            quota_running_policy: "finish".into(),
+        }
+    }
+}
+
+/// MCP 服务端（把内置工具面按 ACL 暴露给外部客户端；与客户端接入段 mcpServers 解耦）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServeConfig {
+    pub enabled: bool,
+    /// HTTP 挂载路径（网关侧；stdio 模式不受此限）
+    pub http_path: String,
+    /// 允许的组清单（空 = 全部组）
+    pub allowed_groups: Vec<String>,
+    /// 允许的工具清单（空 = 全部启用工具）
+    pub allowed_tools: Vec<String>,
+}
+
+impl Default for McpServeConfig {
+    fn default() -> Self {
+        McpServeConfig {
+            enabled: false,
+            http_path: "/mcp".into(),
+            allowed_groups: Vec::new(),
+            allowed_tools: Vec::new(),
+        }
+    }
+}
+
+/// 推送（定时任务结果通道订阅的全局口径）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyConfig {
+    /// 推送总开关（逐任务仍须配置订阅；关 = 全部不推）
+    pub enabled: bool,
+    /// 推送摘要长度上限（字符）
+    pub max_chars: usize,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        NotifyConfig { enabled: true, max_chars: 500 }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExmConfig {
     pub config_version: u32,
@@ -407,6 +542,16 @@ pub struct ExmConfig {
     pub language: String,
     /// MCP 服务器（第三方工具生态，docs/架构与设计.md 扩展点）
     pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
+    /// 事件触发器（文件监听 / webhook 事件源）
+    pub triggers: TriggersConfig,
+    /// 通道身份（配对绑定与群聊唤醒门控）
+    pub identity: IdentityConfig,
+    /// 用量治理（速率限制与周期配额）
+    pub limits: LimitsConfig,
+    /// MCP 服务端（工具面对外暴露；默认关闭）
+    pub mcp_serve: McpServeConfig,
+    /// 推送（定时任务结果通道订阅）
+    pub notify: NotifyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -448,6 +593,16 @@ struct ConfigFile {
     tools: Option<ToolsConfig>,
     #[serde(default)]
     mcp_servers: Option<Vec<crate::mcp::McpServerConfig>>,
+    #[serde(default)]
+    triggers: Option<TriggersConfig>,
+    #[serde(default)]
+    identity: Option<IdentityConfig>,
+    #[serde(default)]
+    limits: Option<LimitsConfig>,
+    #[serde(default)]
+    mcp_serve: Option<McpServeConfig>,
+    #[serde(default)]
+    notify: Option<NotifyConfig>,
 }
 
 /// 能力模型槽位（模型设置页配置）：语音合成 / 语音识别 / 视觉转述。
@@ -850,6 +1005,11 @@ impl ExmConfig {
             active_profile,
             language: std::env::var("EXM_LANG").unwrap_or_else(|_| "zh".into()),
             mcp_servers: file.mcp_servers.unwrap_or_default(),
+            triggers: file.triggers.clone().unwrap_or_default(),
+            identity: file.identity.clone().unwrap_or_default(),
+            limits: file.limits.clone().unwrap_or_default(),
+            mcp_serve: file.mcp_serve.clone().unwrap_or_default(),
+            notify: file.notify.clone().unwrap_or_default(),
         }
     }
 
@@ -919,6 +1079,11 @@ impl ExmConfig {
             sandbox: Some(self.sandbox.clone()),
             browser: Some(self.browser.clone()),
             tools: Some(self.tools.clone()),
+            triggers: Some(self.triggers.clone()),
+            identity: Some(self.identity.clone()),
+            limits: Some(self.limits.clone()),
+            mcp_serve: Some(self.mcp_serve.clone()),
+            notify: Some(self.notify.clone()),
         };
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -969,6 +1134,27 @@ fn migrate_file(mut file: ConfigFile, path: &Path) -> ConfigFile {
     }
     if file.max_concurrency.is_none() {
         file.max_concurrency = Some(4);
+    }
+    // v<2：补齐六簇能力配置段。
+    // v0 = 全新初始化（无配置文件）：门控走 Default（默认开）；
+    // v1 = 既有安装升级：群聊门控显式置关（保持升级前行为）——迁移语义与全新语义在此分流。
+    if version < 2 {
+        if file.triggers.is_none() {
+            file.triggers = Some(TriggersConfig::default());
+        }
+        if file.identity.is_none() {
+            let gate_on = version == 0;
+            file.identity = Some(IdentityConfig { group_gate_default: gate_on, ..IdentityConfig::default() });
+        }
+        if file.limits.is_none() {
+            file.limits = Some(LimitsConfig::default());
+        }
+        if file.mcp_serve.is_none() {
+            file.mcp_serve = Some(McpServeConfig::default());
+        }
+        if file.notify.is_none() {
+            file.notify = Some(NotifyConfig::default());
+        }
     }
     file.config_version = Some(CONFIG_VERSION);
     if let Ok(s) = serde_json::to_string_pretty(&file) {
@@ -1183,7 +1369,172 @@ pub fn config_schema() -> serde_json::Value {
                       "default": "", "required": false,
                       "help": "一轮 run 结束（成功或失败）时触发；EXM_RUN_STATUS 给出终态" }
                 ]
+            },
+            {
+                "key": "identity",
+                "label": "通道身份",
+                "fields": [
+                    { "key": "identity.identityRequired", "label": "通道身份管控", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "开启后白名单内用户也须配对方可执行（未绑定仅能收到配对指引）；关闭 = 维持白名单即全权" },
+                    { "key": "identity.pairingTtlSecs", "label": "配对码有效期（秒）", "kind": "number",
+                      "default": "600", "required": false, "min": 60, "max": 86400,
+                      "help": "控制台签发的配对码有效时长；单次有效" },
+                    { "key": "identity.groupGateDefault", "label": "新通道群聊唤醒门控默认值", "kind": "boolean",
+                      "default": "true", "required": false,
+                      "help": "开启 = 群内仅 @提及 / 回复智能体时触发（私聊不受限）；逐通道可单独覆盖" }
+                ]
+            },
+            {
+                "key": "limits",
+                "label": "用量限制",
+                "fields": [
+                    { "key": "limits.enabled", "label": "启用限流与配额", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "按主体（通道账号 / 绑定用户 / API key）独立计数；仅作用于外部入口，组内派发不受限" },
+                    { "key": "limits.windowSecs", "label": "限流窗口（秒）", "kind": "number",
+                      "default": "60", "required": false, "min": 5, "max": 3600,
+                      "help": "滑动窗口时长" },
+                    { "key": "limits.maxRequests", "label": "窗口内最大请求数", "kind": "number",
+                      "default": "0", "required": false, "min": 0, "max": 100000,
+                      "help": "单主体在窗口内的请求上限；0 = 不限" },
+                    { "key": "limits.quotaPeriod", "label": "配额周期", "kind": "string",
+                      "default": "daily", "required": false,
+                      "help": "daily | weekly | monthly" },
+                    { "key": "limits.quotaTokens", "label": "周期 token 配额", "kind": "number",
+                      "default": "0", "required": false, "min": 0, "max": 1000000000,
+                      "help": "单主体周期内 token 用量上限（口径同 token 台账）；0 = 不限" },
+                    { "key": "limits.quotaRequests", "label": "周期请求数配额", "kind": "number",
+                      "default": "0", "required": false, "min": 0, "max": 1000000,
+                      "help": "单主体周期内请求次数上限；0 = 不限" },
+                    { "key": "limits.quotaRunningPolicy", "label": "配额耗尽时进行中任务", "kind": "string",
+                      "default": "finish", "required": false,
+                      "help": "finish = 完成当前再停；interrupt = 立即中断" }
+                ]
+            },
+            {
+                "key": "triggers",
+                "label": "事件触发器",
+                "fields": [
+                    { "key": "triggers.fileWatch.enabled", "label": "启用文件监听", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "工作区内匹配路径发生创建/修改/删除时注入会话事件" },
+                    { "key": "triggers.fileWatch.debounceMs", "label": "去抖窗口（毫秒）", "kind": "number",
+                      "default": "1000", "required": false, "min": 100, "max": 30000,
+                      "help": "窗口内同路径连续变更合并为一次注入" },
+                    { "key": "triggers.fileWatch.exclude", "label": "排除路径前缀", "kind": "string",
+                      "default": ".exmachina/,target/,node_modules/", "required": false,
+                      "help": "逗号分隔；命中前缀的路径不监听" },
+                    { "key": "triggers.eventWebhook.enabled", "label": "启用事件 webhook", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "通用事件入口（独立于通道 webhook 的路径与密钥）" },
+                    { "key": "triggers.eventWebhook.secret", "label": "事件 webhook 密钥", "kind": "password",
+                      "default": "", "required": false,
+                      "help": "HMAC 签名密钥；空 = 入口关闭" }
+                ]
+            },
+            {
+                "key": "mcpServe",
+                "label": "MCP 服务端",
+                "fields": [
+                    { "key": "mcpServe.enabled", "label": "启用工具对外暴露", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "把启用的内置工具以 MCP 协议暴露给外部客户端（stdio / HTTP）；调用与内部执行同过审批、沙箱、审计、限流" },
+                    { "key": "mcpServe.httpPath", "label": "HTTP 挂载路径", "kind": "string",
+                      "default": "/mcp", "required": false,
+                      "help": "网关侧 MCP 端点路径；stdio 模式不受此限" },
+                    { "key": "mcpServe.allowedGroups", "label": "允许的组", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "逗号分隔的组 ID；空 = 全部组" },
+                    { "key": "mcpServe.allowedTools", "label": "允许的工具", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "逗号分隔的工具名；空 = 全部启用工具" }
+                ]
+            },
+            {
+                "key": "notify",
+                "label": "结果推送",
+                "fields": [
+                    { "key": "notify.enabled", "label": "启用定时任务结果推送", "kind": "boolean",
+                      "default": "true", "required": false,
+                      "help": "总开关；逐任务仍须在任务上配置订阅通道，关闭 = 全部不推" },
+                    { "key": "notify.maxChars", "label": "推送摘要长度上限（字符）", "kind": "number",
+                      "default": "500", "required": false, "min": 100, "max": 8000,
+                      "help": "推送至通道的结果摘要截断长度" }
+                ]
             }
         ]
     })
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    /// 新装（无配置文件）：全部新段取 Default，群聊门控默认开
+    #[test]
+    fn 配置默认值_新装门控默认开() {
+        let dir = std::env::temp_dir().join(format!("exm-cfg-fresh-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".exmachina")).unwrap();
+        let cfg = ExmConfig::load(&dir);
+        assert_eq!(cfg.config_version, CONFIG_VERSION);
+        assert_eq!(cfg.identity.group_gate_default, true, "新装门控应默认开");
+        assert_eq!(cfg.identity.pairing_ttl_secs, 600);
+        assert!(!cfg.identity.identity_required, "身份管控默认关（白名单即全权）");
+        assert!(!cfg.triggers.file_watch.enabled, "文件监听默认关");
+        assert_eq!(cfg.triggers.file_watch.exclude.len(), 3, "默认排除清单");
+        assert!(!cfg.limits.enabled, "限流默认关");
+        assert_eq!(cfg.limits.quota_running_policy, "finish");
+        assert!(!cfg.mcp_serve.enabled, "MCP 服务端默认关");
+        assert_eq!(cfg.mcp_serve.http_path, "/mcp");
+        assert!(cfg.notify.enabled, "推送总开关默认开");
+        assert_eq!(cfg.notify.max_chars, 500);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// v1 → v2 迁移：补齐全部新段；既有安装群聊门控显式置关（保持升级前行为）；
+    /// 迁移结果回写配置文件（版本号 + 新段落盘）
+    #[test]
+    fn 配置迁移_v1补齐新段并关门控() {
+        let dir = std::env::temp_dir().join(format!("exm-cfg-mig-{}", uuid::Uuid::new_v4()));
+        let state = dir.join(".exmachina");
+        std::fs::create_dir_all(&state).unwrap();
+        // 一份 v1 时代的历史配置：不含任何新段
+        std::fs::write(
+            state.join("config.json"),
+            r#"{"configVersion":1,"maxConcurrency":4}"#,
+        )
+        .unwrap();
+
+        let cfg = ExmConfig::load(&dir);
+        assert_eq!(cfg.config_version, 2, "迁移后应为 v2");
+        assert_eq!(cfg.identity.group_gate_default, false, "升级迁移门控应置关");
+        assert_eq!(cfg.identity.pairing_ttl_secs, 600);
+        assert_eq!(cfg.max_concurrency, 4, "历史字段保留");
+        assert!(!cfg.triggers.file_watch.enabled);
+        assert!(!cfg.limits.enabled);
+        assert!(!cfg.mcp_serve.enabled);
+        assert!(cfg.notify.enabled);
+
+        // 回写校验：文件落盘为 v2 且新段可再读出
+        let raw = std::fs::read_to_string(state.join("config.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["configVersion"], 2);
+        assert_eq!(v["identity"]["groupGateDefault"], false);
+        assert!(v["triggers"]["fileWatch"].is_object());
+        assert!(v["mcpServe"].is_object());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// schema 驱动 UI：新段字段必须全部进入 config_schema（安装向导/设置页零改动渲染）
+    #[test]
+    fn 配置schema_覆盖全部新段() {
+        let schema = config_schema();
+        let groups = schema["groups"].as_array().unwrap();
+        let keys: Vec<&str> = groups.iter().filter_map(|g| g["key"].as_str()).collect();
+        for expected in ["identity", "limits", "triggers", "mcpServe", "notify"] {
+            assert!(keys.contains(&expected), "config_schema 缺少组 {}", expected);
+        }
+        assert_eq!(schema["configVersion"], CONFIG_VERSION);
+    }
 }

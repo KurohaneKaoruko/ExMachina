@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod memory;
 pub mod orchestrator;
 pub mod parse;
+pub mod patch;
 pub mod provider;
 pub mod registry;
 pub mod remote;
