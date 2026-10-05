@@ -81,9 +81,6 @@ cargo run -p exm-cli --release --bin exm -- chat "分析当前项目的架构风
 cargo run -p exm-cli --release --bin exm -- agents
 ```
 
-> **低性能设备**（淘汰笔记本 / 迷你主机 / 老台式机）：到 [Releases](https://github.com/KurohaneKaoruko/ExMachina/releases)
-> 下载预编译包，解压即得 `exm-gateway` + WebUI + 编成数据——免编译、免 Node、免 Docker，一个进程跑起整个集群。
->
 > Docker：`docker compose up --build`（编成与状态卷持久化，详见 [docker-compose.yml](./docker-compose.yml)）。
 
 ## 为什么需要"集群"，而不是再要一个助手
