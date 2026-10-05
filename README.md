@@ -334,4 +334,4 @@ npm run build:webui                     # WebUI 构建（tsc + vite）
 ---
 
 > 本项目的初始灵感来自于《游戏人生》的机凯种。
-> > The initial inspiration for this project came from Ex-Machina in *No Game No Life*.
+> The initial inspiration for this project came from Ex-Machina in *No Game No Life*.
