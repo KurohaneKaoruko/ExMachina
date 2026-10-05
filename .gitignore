@@ -21,6 +21,7 @@ agents/active_group
 !.dockerignore
 !.cargo/
 !.github/
+!.gitkeep
 
 # 杂项
 *.db
