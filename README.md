@@ -333,6 +333,5 @@ npm run build:webui                     # WebUI 构建（tsc + vite）
 
 ---
 
-> [!NOTE]
-> README 同样遵守 EXMACHINA 的语言纪律：能力描述以**已实现的契约**为准，
-> 未竟事项在 docs/ 各卷明确标注，不写入"即将支持"式承诺。
+> 本项目的初始灵感来自于《游戏人生》的机凯种。
+> > The initial inspiration for this project came from Ex-Machina in *No Game No Life*.
