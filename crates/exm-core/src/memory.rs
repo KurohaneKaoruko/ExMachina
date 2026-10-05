@@ -768,6 +768,107 @@ impl MemoryStore {
         Ok(pinned.len())
     }
 
+    /// 个体浅层记忆视图：`singles/<id>/MEMORY.md` = 该个体私有记忆 + 群体置顶（浅层，容量有限）。
+    /// 深层记忆始终在 MemoryStore（数据库检索/衰减/压缩），此处只是人读快照。
+    pub fn render_agent_memory_md(
+        &self,
+        agent: &str,
+        group: Option<&str>,
+        path: impl AsRef<Path>,
+    ) -> Result<usize> {
+        let mut entries: Vec<MemoryEntry> = self.list_filtered(None, Some(agent), 200, group)?;
+        // 该个体的私有记忆在前（新→旧），群体共享仅收录置顶
+        entries.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.created_at.cmp(&a.created_at))
+        });
+        let private: Vec<&MemoryEntry> = entries.iter().filter(|e| e.agent_id.as_deref() == Some(agent)).collect();
+        let pinned_shared: Vec<&MemoryEntry> = entries
+            .iter()
+            .filter(|e| e.agent_id.is_none() && e.pinned)
+            .take(10)
+            .collect();
+
+        let mut md = String::new();
+        md.push_str(&format!("# MEMORY · {agent}\n\n"));
+        md.push_str("<!-- 浅层记忆（自动渲染的人读快照，容量有限）：深层记忆在记忆库（检索/衰减/压缩），编辑请走记忆面板或 exm memory -->\n\n");
+        md.push_str(&format!("- 更新时间：{}\n", now_iso()));
+        md.push_str(&format!("- 私有记忆 {} 条；群体置顶 {} 条\n\n", private.len(), pinned_shared.len()));
+
+        md.push_str("## 个体私有记忆（浅层）\n\n");
+        if private.is_empty() {
+            md.push_str("_（暂无；受阻教训与个体经验沉淀在深层记忆库，可经检索召回）_\n\n");
+        }
+        for e in private.iter().take(50) {
+            md.push_str(&render_entry_md(e));
+        }
+
+        md.push_str("## 群体置顶（共享核心）\n\n");
+        if pinned_shared.is_empty() {
+            md.push_str("_（暂无）_\n\n");
+        }
+        for e in &pinned_shared {
+            md.push_str(&render_entry_md(e));
+        }
+
+        let md = truncate_shallow(md);
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, md)?;
+        Ok(private.len())
+    }
+
+    /// 组浅层记忆视图：`groups/<gid>/MEMORY.md` = 组域共享记忆（浅层，容量有限）。
+    /// 深层记忆在 MemoryStore；子个体不单独建文件，成员记忆经检索注入。
+    pub fn render_group_memory_md(
+        &self,
+        gid: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<usize> {
+        let entries: Vec<MemoryEntry> = self.list_filtered(None, None, 200, Some(gid))?;
+        let mut sorted = entries.clone();
+        sorted.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let pinned: Vec<&MemoryEntry> = sorted.iter().filter(|e| e.pinned).take(10).collect();
+        let recent: Vec<&MemoryEntry> = sorted.iter().filter(|e| !e.pinned).take(20).collect();
+
+        let mut md = String::new();
+        md.push_str(&format!("# MEMORY · {gid}\n\n"));
+        md.push_str("<!-- 组浅层记忆（自动渲染的人读快照，容量有限）：深层记忆在记忆库（检索/衰减/压缩），编辑请走记忆面板或 exm memory -->\n\n");
+        md.push_str(&format!("- 更新时间：{}\n", now_iso()));
+        md.push_str(&format!("- 组域记忆 {} 条（置顶 {}）\n\n", entries.len(), pinned.len()));
+
+        md.push_str("## 置顶（核心）\n\n");
+        if pinned.is_empty() {
+            md.push_str("_（暂无）_\n\n");
+        }
+        for e in &pinned {
+            md.push_str(&render_entry_md(e));
+        }
+
+        md.push_str("## 近期重要\n\n");
+        if recent.is_empty() {
+            md.push_str("_（暂无）_\n\n");
+        }
+        for e in &recent {
+            md.push_str(&render_entry_md(e));
+        }
+
+        let md = truncate_shallow(md);
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, md)?;
+        Ok(pinned.len())
+    }
+
     /// 生成注入给指挥体的「历史记忆」提示块
     pub fn render_prompt_block(hits: &[RecallHit]) -> String {
         if hits.is_empty() {
@@ -800,6 +901,18 @@ fn render_entry_md(e: &MemoryEntry) -> String {
         tags,
         e.body.replace('\n', " ")
     )
+}
+
+/// 浅层记忆容量上限（字符）：MEMORY.md 是人读快照，不允许膨胀——超出即截断（深层记忆在记忆库）
+const SHALLOW_CAP_CHARS: usize = 6000;
+
+fn truncate_shallow(md: String) -> String {
+    if md.chars().count() <= SHALLOW_CAP_CHARS {
+        return md;
+    }
+    let mut cut: String = md.chars().take(SHALLOW_CAP_CHARS).collect();
+    cut.push_str("\n\n_（浅层记忆已达容量上限，仅保留前段；完整记忆在深层记忆库）_\n");
+    cut
 }
 
 fn content_hash(title: &str, body: &str, group: Option<&str>) -> String {

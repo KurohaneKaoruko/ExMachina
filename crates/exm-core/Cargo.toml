@@ -21,6 +21,10 @@ tokio-tungstenite.workspace = true
 # 仓库检索工具（grep/glob）：ignore 尊重 .gitignore，regex 提供正则匹配
 ignore = "0.4"
 regex = "1"
+# Computer Use（computer 工具）：enigo 键鼠控制 + xcap 截屏；image 仅 PNG 编解码与缩放
+enigo = "0.3"
+xcap = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

@@ -17,14 +17,21 @@ pub struct ToolResult {
     pub ok: bool,
     pub output: String,
     pub error: Option<String>,
+    /// 副产物图像（如 computer 截图）的落盘路径：runtime 在目标模型具备视觉能力时
+    /// 作为图像输入回灌；渠道（WebUI）据此在工具卡里预览。
+    pub images: Vec<String>,
 }
 
 impl ToolResult {
     fn ok(output: impl Into<String>) -> Self {
-        ToolResult { ok: true, output: output.into(), error: None }
+        ToolResult { ok: true, output: output.into(), error: None, images: Vec::new() }
     }
     fn err(msg: impl Into<String>) -> Self {
-        ToolResult { ok: false, output: String::new(), error: Some(msg.into()) }
+        ToolResult { ok: false, output: String::new(), error: Some(msg.into()), images: Vec::new() }
+    }
+    fn with_images(mut self, images: Vec<String>) -> Self {
+        self.images = images;
+        self
     }
 }
 
@@ -502,7 +509,7 @@ pub async fn execute_shell_with(
                 text.push_str("\n[stderr] ");
                 text.push_str(&err.chars().take(2000).collect::<String>());
             }
-            ToolResult { ok: status.success(), output: text, error: None }
+            ToolResult { ok: status.success(), output: text, error: None, images: Vec::new() }
         }
     }
 }
@@ -578,6 +585,9 @@ pub struct ToolGateway {
     /// 浏览器配置与会话（懒启动常驻；串行化访问）
     browser_cfg: crate::config::BrowserConfig,
     browser: Arc<tokio::sync::Mutex<Option<crate::browser::BrowserSession>>>,
+    /// Computer Use 配置与机械执行器（懒初始化；串行化访问）
+    computer_cfg: crate::config::ComputerUseConfig,
+    computer: Arc<tokio::sync::Mutex<Option<crate::computer::ComputerSession>>>,
     /// MCP 服务器池（第三方工具：mcp:server:tool 全名空间）
     mcp: Arc<crate::mcp::McpRegistry>,
     /// 声明式自定义工具（配置驱动，免写 MCP 服务器；按 agents 可见性放行）
@@ -605,6 +615,8 @@ impl ToolGateway {
             background: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             browser_cfg: crate::config::BrowserConfig::default(),
             browser: Arc::new(tokio::sync::Mutex::new(None)),
+            computer_cfg: crate::config::ComputerUseConfig::default(),
+            computer: Arc::new(tokio::sync::Mutex::new(None)),
             mcp: crate::mcp::McpRegistry::shared(),
             custom: Vec::new(),
         }
@@ -662,9 +674,40 @@ impl ToolGateway {
         self
     }
 
+    /// 注入 Computer Use 配置（computer 工具；enabled=false 时不下发）
+    pub fn with_computer(mut self, computer: crate::config::ComputerUseConfig) -> Self {
+        self.computer_cfg = computer;
+        self
+    }
+
+    /// Computer Use 是否可用（总开关开启即下发——无交互桌面时调用会得到明确报错，
+    /// 而「承诺存在但配置关闭」与「不存在」是两回事）
+    pub fn computer_ready(&self) -> bool {
+        self.computer_cfg.enabled
+    }
+
     /// 浏览器是否可用（探测可执行文件；不可用时不下发 browser 工具，避免「承诺不存在的能力」）
     pub fn browser_ready(&self) -> bool {
         crate::browser::find_browser(&self.browser_cfg.executable).is_some()
+    }
+
+    /// 读取工作区内图片文件 → data URL（computer 截图回灌视觉模型用）。
+    /// 路径沙箱校验；仅支持常见图像格式，8MB 上限防误读。
+    pub fn read_image_data_url(&self, rel_path: &str) -> Option<String> {
+        let p = self.resolve_safe(rel_path).ok()?;
+        let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+        let mime = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            _ => return None,
+        };
+        let data = std::fs::read(&p).ok()?;
+        if data.len() > 8 * 1024 * 1024 {
+            return None;
+        }
+        Some(format!("data:{mime};base64,{}", crate::computer::b64_encode(&data)))
     }
 
     /// 子进程环境（净化后）：白名单透传 + HOME/TMP 重定向到工作区内沙箱目录。
@@ -798,14 +841,29 @@ impl ToolGateway {
         self.mcp.clone()
     }
 
-    /// 执行 MCP 工具（全名 mcp:server:tool）；审计与内置工具一致落库
-    pub async fn execute_mcp(&self, agent_id: &str, full_name: &str, args: &serde_json::Value) -> ToolResult {
+    /// 执行 MCP 工具（全名 mcp:server:tool）；审计与内置工具一致落库，事件流对用户可见
+    pub async fn execute_mcp(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        full_name: &str,
+        args: &serde_json::Value,
+    ) -> ToolResult {
         let started = Instant::now();
+        let call_id = format!("t{}", crate::types::new_id()[..12].to_string());
+        let _ = self.events.send(CoreEvent {
+            kind: "tool.call".into(),
+            session_id: session_id.to_string(),
+            payload: serde_json::json!({
+                "callId": call_id, "agentId": agent_id, "tool": full_name, "args": args,
+            }),
+        });
         let result = match self.mcp.call(full_name, agent_id, args).await {
             Some(r) => ToolResult {
                 ok: r.ok,
                 output: r.text.chars().take(8000).collect(),
                 error: if r.ok { None } else { Some(r.text.chars().take(2000).collect()) },
+                images: Vec::new(),
             },
             None => ToolResult::err(format!("MCP 工具不存在或未开放: {full_name}")),
         };
@@ -815,6 +873,7 @@ impl ToolGateway {
             result.error.clone().unwrap_or_default().chars().take(200).collect()
         };
         let _ = self.store.audit_tool(agent_id, full_name, args, &summary, started.elapsed().as_millis() as u64);
+        self.emit_tool_result(session_id, &call_id, agent_id, full_name, &result, &started);
         result
     }
 
@@ -846,6 +905,7 @@ impl ToolGateway {
         allowlist: &[ToolName],
         search_ready: bool,
         browser_ready: bool,
+        computer_ready: bool,
     ) -> Vec<crate::provider::ToolSpec> {
         let mut specs: Vec<crate::provider::ToolSpec> = Vec::new();
         let mut push = |name: ToolName, description: &str, parameters: serde_json::Value| {
@@ -857,6 +917,9 @@ impl ToolGateway {
             }
             if name == ToolName::Browser && !browser_ready {
                 return; // 未探测到浏览器：不下发
+            }
+            if name == ToolName::Computer && !computer_ready {
+                return; // Computer Use 未启用：不下发（整机输入权须显式交出）
             }
             specs.push(crate::provider::ToolSpec { name: name.key().to_string(), description: description.to_string(), parameters });
         };
@@ -958,6 +1021,22 @@ impl ToolGateway {
             },
             "required": ["op"]
         }));
+        push(ToolName::Computer, "Computer Use：控制本机桌面。screenshot 截屏（返回截图，视觉模型可直接看到屏幕画面）；click/move/scroll/type/key 操作鼠标键盘。坐标为截屏上的物理像素坐标。输入类动作可能需要人工审批", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "op": { "type": "string", "enum": ["screenshot", "click", "move", "scroll", "type", "key"], "description": "screenshot=截屏并回看画面；click=点击；move=移动鼠标；scroll=滚动；type=键入文本；key=按键/热键" },
+                "x": { "type": "integer", "description": "click/move：目标 X 坐标（截屏物理像素）" },
+                "y": { "type": "integer", "description": "click/move：目标 Y 坐标（截屏物理像素）" },
+                "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "click：鼠标键，默认 left" },
+                "double": { "type": "boolean", "description": "click：true = 双击" },
+                "dx": { "type": "integer", "description": "scroll：横向格数（正右负左）" },
+                "dy": { "type": "integer", "description": "scroll：纵向格数（正上负下）" },
+                "text": { "type": "string", "description": "type：要键入的文本" },
+                "combo": { "type": "string", "description": "key：按键组合，如 enter / ctrl+c / ctrl+shift+t / f5" },
+                "monitor": { "type": "integer", "description": "screenshot：显示器序号（默认 0 主屏）" }
+            },
+            "required": ["op"]
+        }));
         push(ToolName::AgentManage, "组内个体管理（仅主智能体）：create/update/remove/setPrimary", serde_json::json!({
             "type": "object",
             "properties": {
@@ -980,23 +1059,35 @@ impl ToolGateway {
     pub async fn execute(
         &self,
         agent_id: &str,
+        session_id: &str,
         allowlist: &[ToolName],
         tool: ToolName,
         args: &serde_json::Value,
     ) -> ToolResult {
-        self.execute_named(agent_id, allowlist, tool.key(), args).await
+        self.execute_named(agent_id, session_id, allowlist, tool.key(), args).await
     }
 
     /// 执行任意工具名：内置（按 `allowlist` 放行）或**声明式自定义工具**（按 `agents` 可见性放行）。
     /// 模型给出的工具名统一走这里，钩子 / 结果落盘 / 审计对两类工具一视同仁。
+    /// `session_id` 用于：工具执行事件（tool.call / tool.result）与审批单归属——渠道可按会话过滤呈现。
     pub async fn execute_named(
         &self,
         agent_id: &str,
+        session_id: &str,
         allowlist: &[ToolName],
         name: &str,
         args: &serde_json::Value,
     ) -> ToolResult {
         let started = Instant::now();
+        let call_id = format!("t{}", crate::types::new_id()[..12].to_string());
+        // 工具执行事件（call）：文件操作 / 终端命令 / 截屏对用户全程可见——编程软件式的过程透明
+        let _ = self.events.send(CoreEvent {
+            kind: "tool.call".into(),
+            session_id: session_id.to_string(),
+            payload: serde_json::json!({
+                "callId": call_id, "agentId": agent_id, "tool": name, "args": args,
+            }),
+        });
         // preTool 钩子：非零退出即拦截（返回原因给模型，计入审计）
         if !self.hooks.pre_tool.is_empty() {
             let args_json = serde_json::to_string(args).unwrap_or_default();
@@ -1025,6 +1116,7 @@ impl ToolGateway {
                         "preTool 钩子拦截",
                         started.elapsed().as_millis() as u64,
                     );
+                    self.emit_tool_result(session_id, &call_id, agent_id, name, &blocked, &started);
                     return blocked;
                 }
             }
@@ -1044,13 +1136,15 @@ impl ToolGateway {
                 {
                     // 纵深防御：allowlist 注入之外再校验调用者身份
                     ToolResult::err("agent_manage 仅限激活组主智能体使用")
+                } else if tool == ToolName::Computer {
+                    self.tool_computer(agent_id, session_id, args).await
                 } else {
-                    self.dispatch(agent_id, tool, args).await
+                    self.dispatch(agent_id, session_id, tool, args).await
                 }
             }
             // 非内置名：声明式自定义工具（可扩展工具面，免写 MCP 服务器）
             None => match self.custom.iter().find(|c| c.name == name) {
-                Some(ct) if ct.visible_to(agent_id) => self.run_custom(agent_id, ct, args).await,
+                Some(ct) if ct.visible_to(agent_id) => self.run_custom(agent_id, session_id, ct, args).await,
                 Some(_) => ToolResult::err(format!(
                     "工具 {name} 未对本个体开放（自定义工具的 agents 未包含 {agent_id}）"
                 )),
@@ -1098,7 +1192,36 @@ impl ToolGateway {
             result.error.clone().unwrap_or_default().chars().take(200).collect()
         };
         let _ = self.store.audit_tool(agent_id, name, args, &summary, started.elapsed().as_millis() as u64);
+        self.emit_tool_result(session_id, &call_id, agent_id, name, &result, &started);
         result
+    }
+
+    /// 工具执行事件（result）：状态 / 耗时 / 摘要 / 图像清单——渠道据此渲染工具卡与截图预览
+    fn emit_tool_result(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        agent_id: &str,
+        name: &str,
+        result: &ToolResult,
+        started: &Instant,
+    ) {
+        let text = if result.ok {
+            result.output.clone()
+        } else {
+            result.error.clone().unwrap_or_default()
+        };
+        let _ = self.events.send(CoreEvent {
+            kind: "tool.result".into(),
+            session_id: session_id.to_string(),
+            payload: serde_json::json!({
+                "callId": call_id, "agentId": agent_id, "tool": name,
+                "ok": result.ok,
+                "durationMs": started.elapsed().as_millis() as u64,
+                "summary": text.chars().take(400).collect::<String>(),
+                "images": result.images,
+            }),
+        });
     }
 
     /// 结果超阈值时全文落盘并回填「摘要 + 路径 + 行数」，供模型按需用 read 取回。
@@ -1142,19 +1265,20 @@ impl ToolGateway {
         }
     }
 
-    async fn dispatch(&self, agent_id: &str, tool: ToolName, args: &serde_json::Value) -> ToolResult {
+    async fn dispatch(&self, agent_id: &str, session_id: &str, tool: ToolName, args: &serde_json::Value) -> ToolResult {
         match tool {
             ToolName::Read => self.tool_read(args),
             ToolName::Edit => self.tool_edit(args),
             ToolName::Grep => self.tool_grep(args),
             ToolName::Glob => self.tool_glob(args),
             ToolName::Filesystem => self.tool_fs(args),
-            ToolName::Terminal => self.tool_terminal(agent_id, args).await,
+            ToolName::Terminal => self.tool_terminal(agent_id, session_id, args).await,
             ToolName::WebSearch => self.tool_web_search(args).await,
             ToolName::WebFetch => self.tool_web_fetch(args).await,
             ToolName::AgentManage => self.tool_agent_manage(args),
             ToolName::Schedule => self.tool_schedule(args),
             ToolName::Browser => self.tool_browser(args).await,
+            ToolName::Computer => self.tool_computer(agent_id, session_id, args).await,
         }
     }
 
@@ -1165,6 +1289,7 @@ impl ToolGateway {
     async fn run_custom(
         &self,
         agent_id: &str,
+        session_id: &str,
         tool: &crate::config::CustomTool,
         args: &serde_json::Value,
     ) -> ToolResult {
@@ -1196,7 +1321,7 @@ impl ToolGateway {
             }
         }
         if tool.kind_norm() == "shell" {
-            return self.run_custom_shell(agent_id, tool, &vals).await;
+            return self.run_custom_shell(agent_id, session_id, tool, &vals).await;
         }
         self.run_custom_http(tool, &vals, args).await
     }
@@ -1251,6 +1376,7 @@ impl ToolGateway {
     async fn run_custom_shell(
         &self,
         agent_id: &str,
+        session_id: &str,
         tool: &crate::config::CustomTool,
         vals: &std::collections::BTreeMap<String, String>,
     ) -> ToolResult {
@@ -1275,7 +1401,7 @@ impl ToolGateway {
                 .any(|p| !p.trim().is_empty() && lowered.starts_with(p.trim().to_lowercase().as_str()));
             let gated = mode == "always" || is_destructive_command(&lowered);
             if gated && !allowlisted {
-                return self.request_approval(agent_id, &cmd);
+                return self.gate_command(agent_id, session_id, &cmd).await;
             }
         }
         let opts = self.shell_opts(&cmd);
@@ -1744,7 +1870,7 @@ impl ToolGateway {
         }
     }
 
-    async fn tool_terminal(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
+    async fn tool_terminal(&self, agent_id: &str, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("run");
         // 后台任务轮询 / 终止（不经过白名单与审批：对象是已批准过的任务）
         match op {
@@ -1768,7 +1894,9 @@ impl ToolGateway {
                 "命令不在白名单: {cmd}（白名单按「命令 + 子命令」匹配，且不支持连接符）"
             ));
         }
-        // 审批闸门（docs/10）：risky 拦高危命令，always 全拦；白名单前缀放行
+        // 审批闸门（docs/10）：risky 拦高危命令，always 全拦；白名单前缀放行。
+        // 拦截后运行时原地等待人工决定（security.approvalWaitSecs）：
+        // 批准 → 系统代执行，输出直接回灌本工具结果，模型继续干活；拒绝/超时 → 受阻回流。
         let mode = self.security.exec_approval.as_str();
         if mode == "risky" || mode == "always" {
             let allowlisted = self
@@ -1778,12 +1906,12 @@ impl ToolGateway {
                 .any(|p| !p.trim().is_empty() && lowered.starts_with(p.trim().to_lowercase().as_str()));
             let gated = mode == "always" || is_destructive_command(&lowered);
             if gated && !allowlisted {
-                return self.request_approval(agent_id, &cmd);
+                return self.gate_command(agent_id, session_id, &cmd).await;
             }
         }
         // 沙箱 strict：联网类命令（安装/下载/克隆）默认需审批——把「外联」与「本地干活」分开
         if self.sandbox.strict() && !self.sandbox.allow_network && is_network_command(&lowered) {
-            return self.request_approval(agent_id, &cmd);
+            return self.gate_command(agent_id, session_id, &cmd).await;
         }
         // 后台模式：长任务（构建/测试/服务）不阻塞本轮，返回任务 id 供轮询
         if args.get("background").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -1932,11 +2060,121 @@ impl ToolGateway {
         }
     }
 
-    /// 命令拦截：落审批单 + 发事件，个体回流受阻等待用户决定
-    fn request_approval(&self, agent_id: &str, cmd: &str) -> ToolResult {
+    /// Computer Use 工具：截屏（只读）与键鼠动作（过审批闸门 + 动作节流）。
+    /// 截图落盘 `.exmachina/screenshots/`，路径随 `ToolResult.images` 带回——
+    /// 视觉模型直接看到屏幕画面；渠道在工具卡里同样可预览。
+    async fn tool_computer(&self, agent_id: &str, session_id: &str, args: &serde_json::Value) -> ToolResult {
+        if !self.computer_cfg.enabled {
+            return ToolResult::err("Computer Use 未启用：请到「设置 → Computer Use」开启（整机输入权须显式交出）");
+        }
+        let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("screenshot");
+        let mut guard = self.computer.lock().await;
+        // 懒初始化：首次调用才建立键鼠控制句柄
+        if guard.is_none() {
+            match crate::computer::ComputerSession::new() {
+                Ok(s) => *guard = Some(s),
+                Err(e) => return ToolResult::err(format!("Computer Use 初始化失败：{e}")),
+            }
+        }
+        let session = guard.as_mut().unwrap();
+        let interval = self.computer_cfg.action_interval_ms;
+
+        // 截屏：只读，不审批
+        if op == "screenshot" {
+            let index = args.get("monitor").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let stamp = crate::types::now_iso().replace(':', "").replace('-', "").replace('.', "");
+            let name = format!("computer-{stamp}");
+            let dir = self.workspace_root.join(".exmachina").join("screenshots");
+            let result = session.screenshot(index, self.computer_cfg.max_edge, &dir, &name);
+            return match result {
+                Ok(shot) => {
+                    let rel = std::path::Path::new(&shot.path)
+                        .strip_prefix(&self.workspace_root)
+                        .map(|p| p.display().to_string().replace('\\', "/"))
+                        .unwrap_or_else(|_| shot.path.clone());
+                    ToolResult::ok(format!(
+                        "【报告】截屏完成：{}，缩放后 {}x{}，文件 {rel}\n（截图已作为图像附带本轮回灌，可直接描述画面内容）",
+                        shot.monitor, shot.width, shot.height
+                    ))
+                    .with_images(vec![rel])
+                }
+                Err(e) => ToolResult::err(format!("截屏失败：{e}")),
+            };
+        }
+
+        // 输入类动作：统一审批闸门 + 节流
+        let (desc, action): (String, Box<dyn FnOnce(&mut crate::computer::ComputerSession) -> anyhow::Result<()> + Send>) = match op {
+            "move" => {
+                let x = args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let y = args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                (format!("move ({x}, {y})"), Box::new(move |s| s.move_mouse(x, y)))
+            }
+            "click" => {
+                let x = args.get("x").and_then(|v| v.as_i64());
+                let y = args.get("y").and_then(|v| v.as_i64());
+                let button = args.get("button").and_then(|v| v.as_str()).unwrap_or("left").to_string();
+                let double = args.get("double").and_then(|v| v.as_bool()).unwrap_or(false);
+                let label = format!(
+                    "click {}{}",
+                    if double { "double " } else { "" },
+                    button
+                );
+                let label = match (x, y) {
+                    (Some(x), Some(y)) => format!("{label} @ ({x}, {y})"),
+                    _ => label,
+                };
+                (label, Box::new(move |s| {
+                    if let (Some(x), Some(y)) = (x, y) {
+                        s.move_mouse(x as i32, y as i32)?;
+                    }
+                    s.click(&button, double)
+                }))
+            }
+            "scroll" => {
+                let dx = args.get("dx").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let dy = args.get("dy").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                (format!("scroll dx={dx} dy={dy}"), Box::new(move |s| s.scroll(dx, dy)))
+            }
+            "type" => {
+                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let label = format!("type「{}」", text.chars().take(40).collect::<String>());
+                (label, Box::new(move |s| s.type_text(&text)))
+            }
+            "key" => {
+                let combo = args.get("combo").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                (format!("key {combo}"), Box::new(move |s| s.hotkey(&combo)))
+            }
+            other => return ToolResult::err(format!(
+                "未知 computer 操作: {other}（支持 screenshot / click / move / scroll / type / key）"
+            )),
+        };
+
+        // 审批：human 输入权确认（computer.approval=true 时拦截；等待期间批准即放行）
+        if self.computer_cfg.approval {
+            let gated = self.gate_command(agent_id, session_id, &format!("[computer] {desc}")).await;
+            if !gated.ok {
+                return gated;
+            }
+        }
+
+        session.throttle(interval);
+        let result = action(session);
+        match result {
+            Ok(()) => ToolResult::ok(format!("【报告】Computer Use 动作已执行：{desc}。需要确认画面可再 screenshot。")),
+            Err(e) => ToolResult::err(format!("Computer Use 动作失败（{desc}）：{e}")),
+        }
+    }
+
+    /// 审批闸门：落审批单 → 发 `approval.required`（带会话归属，聊天页可内联裁决）→
+    /// 原地等待人工决定（`security.approvalWaitSecs`，0 = 不等待直接受阻）。
+    /// - 批准：`Core::approval_decide` 系统代执行并把输出写回审批单，本侧读回作为工具结果
+    ///   ——模型拿到真实执行输出，流程不断；
+    /// - 拒绝：把拒绝原因作为工具结果回灌；
+    /// - 超时：按「待人工审批」受阻回流（旧行为）。
+    async fn gate_command(&self, agent_id: &str, session_id: &str, cmd: &str) -> ToolResult {
         let req = ApprovalRequest {
             id: crate::types::new_id()[..8].to_string(),
-            session_id: String::new(),
+            session_id: session_id.to_string(),
             node_id: None,
             agent_id: agent_id.to_string(),
             command: cmd.to_string(),
@@ -1948,15 +2186,52 @@ impl ToolGateway {
         let _ = self.store.add_approval(&req);
         let _ = self.events.send(CoreEvent {
             kind: "approval.required".into(),
-            session_id: String::new(),
+            session_id: session_id.to_string(),
             payload: serde_json::json!({
                 "approvalId": req.id, "agentId": agent_id, "command": cmd,
             }),
         });
-        ToolResult::err(format!(
-            "命令已拦截待人工审批（审批单 {}）：{cmd}。回流受阻原因；用户批准后由系统代执行。",
-            req.id
-        ))
+        let wait = self.security.approval_wait_secs;
+        if wait == 0 {
+            return ToolResult::err(format!(
+                "命令已拦截待人工审批（审批单 {}）：{cmd}。回流受阻原因；用户批准后由系统代执行。",
+                req.id
+            ));
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            let Ok(Some(latest)) = self.store.get_approval(&req.id) else {
+                continue;
+            };
+            match latest.status.as_str() {
+                "executed" => {
+                    let out = latest.result.unwrap_or_default();
+                    return ToolResult::ok(format!(
+                        "【报告】命令已被用户批准并由系统代执行：{cmd}\n执行输出：\n{out}"
+                    ));
+                }
+                "failed" => {
+                    let out = latest.result.unwrap_or_default();
+                    return ToolResult::err(format!(
+                        "命令已被用户批准并代执行，但执行失败：{cmd}\n输出：\n{out}"
+                    ));
+                }
+                "denied" => {
+                    return ToolResult::err(format!(
+                        "用户拒绝执行该命令（审批单 {}）：{cmd}。请改用其他方案或向用户说明。",
+                        req.id
+                    ));
+                }
+                _ => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return ToolResult::err(format!(
+                    "命令已拦截待人工审批（审批单 {}）：{cmd}。等待用户决定超时（{wait}s），按受阻回流；批准后输出不会自动回灌本轮。",
+                    req.id
+                ));
+            }
+        }
     }
 
     /// 抓取网页并提取正文（大小/时长受限，标签与脚本剥离）

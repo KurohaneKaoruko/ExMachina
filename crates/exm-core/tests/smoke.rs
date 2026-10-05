@@ -25,16 +25,24 @@ fn test_config() -> ExmConfig {
     cfg.agents_dir = agents_copy;
     cfg.data_dir = std::env::temp_dir().join(format!("exm-test-{}", uuid::Uuid::new_v4()));
     cfg.use_mock = true;
+    // 密封性：屏蔽开发机的真实端点/密钥，强制 Mock 通道（README：测试不依赖真实模型与网络）
+    cfg.llm.api_key.clear();
+    cfg.llm.api_keys.clear();
+    cfg.llm.base_url.clear();
+    cfg.llm_profiles.clear();
+    cfg.active_profile.clear();
+    // 审批闸门：旧语义即时拦截（0 = 不等待），等待-回灌闭环由专属用例覆盖
+    cfg.security.approval_wait_secs = 0;
     cfg.max_concurrency = 4;
     cfg
 }
 
-/// 复制编成树到临时目录（跳过 groups/、active_group、active_single 等运行时文件）
+/// 复制编成树到临时目录（跳过运行时状态文件；groups/ 现含默认组，一并复制）
 fn copy_agents_tree(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap().filter_map(|e| e.ok()) {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == "groups" || name == "active_group" || name == "active_single" || name == "singles" && false {
+        if name == "active_group" || name == "active_single" {
             continue;
         }
         let target = dst.join(&name);
@@ -188,15 +196,21 @@ async fn 执行审批_高危命令拦截与批准放行() {
     let blocked = gw
         .execute(
             "coding-agent",
-            &[ToolName::Terminal],
+            "ses",
+                        &[ToolName::Terminal],
             ToolName::Terminal,
             &serde_json::json!({ "command": "echo blocked-test" }),
         )
         .await;
     assert!(!blocked.ok, "未放行命令应被拦截");
     assert!(blocked.error.unwrap_or_default().contains("待人工审批"), "拦截信息应含审批提示");
-    let evt = rx.try_recv().expect("应发出审批事件");
+    // 事件流：先 tool.call 再 approval.required（工具执行可视化事件与审批事件并存）
+    let mut evt = rx.try_recv().expect("应发出审批事件");
+    while evt.kind != "approval.required" {
+        evt = rx.try_recv().expect("应发出审批事件");
+    }
     assert_eq!(evt.kind, "approval.required");
+    assert_eq!(evt.session_id, "ses", "审批事件应携带会话归属（聊天内联裁决的前提）");
 
     let pending = core.approval_list(Some("pending"), 10).unwrap();
     assert_eq!(pending.len(), 1, "应产生一张待审批单");
@@ -227,7 +241,8 @@ async fn 执行审批_高危命令拦截与批准放行() {
     let allowed = gw_exempt
         .execute(
             "coding-agent",
-            &[ToolName::Terminal],
+            "ses",
+                        &[ToolName::Terminal],
             ToolName::Terminal,
             &serde_json::json!({ "command": "echo ok" }),
         )
@@ -246,7 +261,8 @@ async fn 执行审批_高危命令拦截与批准放行() {
     let free = gw_off
         .execute(
             "coding-agent",
-            &[ToolName::Terminal],
+            "ses",
+                        &[ToolName::Terminal],
             ToolName::Terminal,
             &serde_json::json!({ "command": "echo free" }),
         )
@@ -270,7 +286,8 @@ async fn 执行审批_高危命令拦截与批准放行() {
     let safe = gw_risky
         .execute(
             "coding-agent",
-            &[ToolName::Terminal],
+            "ses",
+                        &[ToolName::Terminal],
             ToolName::Terminal,
             &serde_json::json!({ "command": "echo safe" }),
         )
@@ -282,13 +299,133 @@ async fn 执行审批_高危命令拦截与批准放行() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn 执行审批_等待批准_结果回灌与拒绝短路() {
+    use std::sync::Arc;
+    let _serial = serial_guard();
+    let mut cfg = test_config();
+    // 等待窗口开启：拦截后原地等人工决定，批准即代执行并回灌，拒绝即短路
+    cfg.security.approval_wait_secs = 8;
+    let core = Arc::new(Core::with_config(cfg).expect("创建 Core 失败"));
+    let events = core.events.clone();
+    let ws_root = core.config().workspace_root.clone();
+    let ws_root2 = ws_root.clone();
+    let gw = exm_core::tools::ToolGateway::new(
+        ws_root2,
+        core.store.clone(),
+        core.registry().clone(),
+        events,
+        core.config().security.clone(),
+    );
+
+    // ---- 场景一：等待期间批准 → 代执行输出直接回灌 ----
+    // 命令向量：echo 在白名单内，子串 "del " 命中 destructive 闸门（risky 语义下高危命令审批）
+    let del_cmd = "echo del approval-wait-probe.txt";
+    let exec = tokio::spawn({
+        let core = core.clone();
+        let del_cmd = del_cmd.to_string();
+        async move {
+            let gw = exm_core::tools::ToolGateway::new(
+                core.config().workspace_root.clone(),
+                core.store.clone(),
+                core.registry().clone(),
+                core.events.clone(),
+                core.config().security.clone(),
+            );
+            gw.execute(
+                "coding-agent",
+                "ses-wait",
+                &[ToolName::Terminal],
+                ToolName::Terminal,
+                &serde_json::json!({ "command": del_cmd }),
+            )
+            .await
+        }
+    });
+    // 等审批单出现 → 批准（模拟用户在聊天里点「批准」）
+    let mut approved: Option<exm_core::types::ApprovalRequest> = None;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let list = core.approval_list(Some("pending"), 10).unwrap();
+        if let Some(p) = list.first() {
+            approved = Some(core.approval_decide(&p.id, true).await.unwrap());
+            break;
+        }
+    }
+    let decided = approved.expect("等待窗口内应出现审批单");
+    assert_eq!(decided.status, "executed", "echo 命令应代执行成功");
+    let r = exec.await.unwrap();
+    assert!(r.ok, "批准后工具结果应转为成功: {:?}", r.error);
+    assert!(
+        r.output.contains("已被用户批准") && r.output.contains("del"),
+        "回灌应含批准说明与原命令: {}",
+        r.output
+    );
+
+    // ---- 场景二：等待期间拒绝 → 工具结果短路为拒绝说明 ----
+    let exec2 = tokio::spawn({
+        let core = core.clone();
+        async move {
+            let gw = exm_core::tools::ToolGateway::new(
+                core.config().workspace_root.clone(),
+                core.store.clone(),
+                core.registry().clone(),
+                core.events.clone(),
+                core.config().security.clone(),
+            );
+            gw.execute(
+                "coding-agent",
+                "ses-wait",
+                &[ToolName::Terminal],
+                ToolName::Terminal,
+                &serde_json::json!({ "command": "echo del approval-deny-probe.txt" }),
+            )
+            .await
+        }
+    });
+    let mut denied = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let list = core.approval_list(Some("pending"), 10).unwrap();
+        if let Some(p) = list.first() {
+            let d = core.approval_decide(&p.id, false).await.unwrap();
+            assert_eq!(d.status, "denied");
+            denied = true;
+            break;
+        }
+    }
+    assert!(denied, "第二张审批单应出现并被拒绝");
+    let r2 = exec2.await.unwrap();
+    assert!(!r2.ok, "拒绝后工具应失败");
+    assert!(r2.error.unwrap_or_default().contains("拒绝"), "拒绝原因应回灌模型");
+
+    // ---- 场景三：无人处理 → 超时受阻回流（旧行为） ----
+    let t0 = std::time::Instant::now();
+    let r3 = gw
+        .execute(
+            "coding-agent",
+            "ses-wait",
+            &[ToolName::Terminal],
+            ToolName::Terminal,
+            &serde_json::json!({ "command": "echo del approval-timeout-probe.txt" }),
+        )
+        .await;
+    assert!(!r3.ok, "超时应受阻");
+    assert!(r3.error.unwrap_or_default().contains("超时"), "超时说明应回灌");
+    assert!(
+        t0.elapsed() >= Duration::from_secs(7) && t0.elapsed() < Duration::from_secs(20),
+        "应等待约 approvalWaitSecs 后返回，实际 {:?}",
+        t0.elapsed()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_agent_target_switch_and_l0_direct() {
     let cfg = test_config();
     // 残留清理（只清演练个体与目标状态；不得动 agents/singles 全目录——默认智能体种子在此）
     let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("agents");
     let _ = std::fs::remove_file(agents_root.join("active_single"));
-    let _ = std::fs::remove_file(agents_root.join("singles").join("lone-writer.json"));
-    let _ = std::fs::remove_file(agents_root.join("singles").join("prompts").join("lone-writer.md"));
+    let _ = std::fs::remove_file(agents_root.join("singles").join("lone-writer.json")); // 旧布局残留
+    let _ = std::fs::remove_dir_all(agents_root.join("singles").join("lone-writer"));
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     assert!(!core.registry().single_mode(), "默认为组模式");
     let group_agents = core.registry().list().len();
@@ -335,7 +472,7 @@ async fn single_agent_target_switch_and_l0_direct() {
     // 默认智能体 Machina（生成器预置）：存在、名为 Machina、提示词含「本机」自称
     let machina = core.registry().single("machina").expect("默认智能体 Machina 应预置");
     assert_eq!(machina.name, "Machina");
-    let prompt = core.registry().load_single_prompt("machina.md").unwrap();
+    let prompt = core.registry().load_single_prompt(&machina.prompt_file).unwrap();
     assert!(prompt.contains("本机"), "Machina 提示词应含「本机」自称");
     // 指挥体不叫 Machina（组指挥体 ≠ 默认智能体）
     let orch = core.agent("exmachina-orchestrator").expect("指挥体应存在");
@@ -440,7 +577,7 @@ async fn 端到端_对话到收束全链路() {
 /// 独立临时注册表（自带 default 组），不触碰仓库 agents/ 数据
 fn temp_registry(tag: &str) -> exm_core::registry::LocalRegistry {
     let dir = std::env::temp_dir().join(format!("exm-reg-test-{}-{tag}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(dir.join("definitions")).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
     let meta = GroupMeta {
         id: "default".into(),
         name: "测试组".into(),
@@ -728,12 +865,13 @@ async fn web_fetch工具与图片暂存() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     // 规格注册：白名单内含 web_fetch
-    let specs = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebFetch], false, false);
+    let specs = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebFetch], false, false, false);
     assert!(specs.iter().any(|s| s.name == "web_fetch"), "web_fetch 应在规格中");
 
     // 工具面（对标主流 agent）：edit / grep / glob 在白名单内即下发
     let full = exm_core::tools::ToolGateway::tool_specs(
         &[ToolName::Read, ToolName::Edit, ToolName::Grep, ToolName::Glob, ToolName::WebSearch],
+        false,
         false,
         false,
     );
@@ -745,13 +883,18 @@ async fn web_fetch工具与图片暂存() {
         !full.iter().any(|s| s.name == "web_search"),
         "搜索未配置时不得下发 web_search（不承诺不存在的能力）"
     );
-    let with_search = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebSearch], true, false);
+    let with_search = exm_core::tools::ToolGateway::tool_specs(&[ToolName::WebSearch], true, false, false);
     assert!(with_search.iter().any(|s| s.name == "web_search"), "搜索就绪时应下发 web_search");
     // 浏览器同理：探测不到浏览器可执行文件时不下发 browser
-    let no_browser = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Browser], false, false);
+    let no_browser = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Browser], false, false, false);
     assert!(!no_browser.iter().any(|s| s.name == "browser"), "无浏览器时不得下发 browser");
-    let with_browser = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Browser], false, true);
+    let with_browser = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Browser], false, true, false);
     assert!(with_browser.iter().any(|s| s.name == "browser"), "浏览器就绪时应下发 browser");
+    // Computer Use 同理：总开关关闭时不下发 computer（整机输入权须显式交出）
+    let no_computer = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Computer], false, false, false);
+    assert!(!no_computer.iter().any(|s| s.name == "computer"), "未启用时不得下发 computer");
+    let with_computer = exm_core::tools::ToolGateway::tool_specs(&[ToolName::Computer], false, false, true);
+    assert!(with_computer.iter().any(|s| s.name == "computer"), "启用后应下发 computer");
 
     let cfg = {
         let _serial = serial_guard();
@@ -768,7 +911,8 @@ async fn web_fetch工具与图片暂存() {
     let r = tools
         .execute(
             "machina",
-            &[ToolName::WebFetch],
+            "ses",
+                        &[ToolName::WebFetch],
             ToolName::WebFetch,
             &serde_json::json!({ "url": format!("http://{addr}/page") }),
         )
@@ -848,7 +992,8 @@ async fn 分布式执行_工作者节点全链() {
             _session_id: &str,
             def: &exm_core::types::AgentDefinition,
             order: &exm_core::types::DispatchOrder,
-            _on_token: &(dyn Fn(String) + Send + Sync),
+            _attach_images: bool,
+            _on_delta: &(dyn Fn(exm_core::provider::StreamDelta) + Send + Sync),
         ) -> anyhow::Result<exm_core::types::SyncReport> {
             let out = self.out.lock().await.clone().ok_or_else(|| anyhow::anyhow!("无工作者"))?;
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -857,6 +1002,7 @@ async fn 分布式执行_工作者节点全链() {
                 did: "d-test".into(),
                 def: def.clone(),
                 order: order.clone(),
+                attach_images: false,
             })?;
             out.send(axum::extract::ws::Message::Text(frame)).ok();
             match rx.await {
@@ -1048,7 +1194,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let w = tools
         .execute(
             "machina",
-            &[ToolName::Filesystem],
+            "ses",
+                        &[ToolName::Filesystem],
             ToolName::Filesystem,
             &serde_json::json!({ "op": "write", "path": "docs/demo.txt", "content": "第一行\n第二行 标记\n第三行 标记\n" }),
         )
@@ -1056,7 +1203,7 @@ async fn 工具面_编辑检索排程与安全边界() {
     assert!(w.ok, "写入应成功: {:?}", w.error);
 
     let r = tools
-        .execute("machina", &[ToolName::Read], ToolName::Read, &serde_json::json!({ "path": "docs/demo.txt" }))
+        .execute("machina", "ses", &[ToolName::Read], ToolName::Read, &serde_json::json!({ "path": "docs/demo.txt" }))
         .await;
     assert!(r.ok, "读取应成功: {:?}", r.error);
     assert!(r.output.contains("    1→第一行"), "应带行号: {}", r.output);
@@ -1065,7 +1212,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let page = tools
         .execute(
             "machina",
-            &[ToolName::Read],
+            "ses",
+                        &[ToolName::Read],
             ToolName::Read,
             &serde_json::json!({ "path": "docs/demo.txt", "offset": 2, "limit": 1 }),
         )
@@ -1077,7 +1225,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let e1 = tools
         .execute(
             "machina",
-            &[ToolName::Edit],
+            "ses",
+                        &[ToolName::Edit],
             ToolName::Edit,
             &serde_json::json!({ "path": "docs/demo.txt", "old_string": "第一行", "new_string": "首行（已改）" }),
         )
@@ -1089,7 +1238,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let e2 = tools
         .execute(
             "machina",
-            &[ToolName::Edit],
+            "ses",
+                        &[ToolName::Edit],
             ToolName::Edit,
             &serde_json::json!({ "path": "docs/demo.txt", "old_string": "标记", "new_string": "M" }),
         )
@@ -1099,7 +1249,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let e3 = tools
         .execute(
             "machina",
-            &[ToolName::Edit],
+            "ses",
+                        &[ToolName::Edit],
             ToolName::Edit,
             &serde_json::json!({ "path": "docs/demo.txt", "old_string": "不存在的文本", "new_string": "x" }),
         )
@@ -1110,7 +1261,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let g = tools
         .execute(
             "machina",
-            &[ToolName::Grep],
+            "ses",
+                        &[ToolName::Grep],
             ToolName::Grep,
             &serde_json::json!({ "pattern": "首行", "path": "docs" }),
         )
@@ -1118,7 +1270,7 @@ async fn 工具面_编辑检索排程与安全边界() {
     assert!(g.ok && g.output.contains("docs/demo.txt:"), "grep 应返回 文件:行:内容: {}", g.output);
 
     let gl = tools
-        .execute("machina", &[ToolName::Glob], ToolName::Glob, &serde_json::json!({ "pattern": "**/*.txt" }))
+        .execute("machina", "ses", &[ToolName::Glob], ToolName::Glob, &serde_json::json!({ "pattern": "**/*.txt" }))
         .await;
     assert!(gl.ok && gl.output.contains("docs/demo.txt"), "glob 应列出文件: {}", gl.output);
 
@@ -1126,7 +1278,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let esc = tools
         .execute(
             "machina",
-            &[ToolName::Filesystem],
+            "ses",
+                        &[ToolName::Filesystem],
             ToolName::Filesystem,
             &serde_json::json!({ "op": "write", "path": "../escaped.txt", "content": "x" }),
         )
@@ -1138,7 +1291,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let bad_sub = tools
         .execute(
             "machina",
-            &[ToolName::Terminal],
+            "ses",
+                        &[ToolName::Terminal],
             ToolName::Terminal,
             &serde_json::json!({ "command": "cargo install some-crate" }),
         )
@@ -1148,7 +1302,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let chained = tools
         .execute(
             "machina",
-            &[ToolName::Terminal],
+            "ses",
+                        &[ToolName::Terminal],
             ToolName::Terminal,
             &serde_json::json!({ "command": "git status && rm -rf docs" }),
         )
@@ -1170,21 +1325,23 @@ async fn 工具面_编辑检索排程与安全边界() {
     let s1 = tools
         .execute(
             "machina",
-            &[ToolName::Schedule],
+            "ses",
+                        &[ToolName::Schedule],
             ToolName::Schedule,
             &serde_json::json!({ "op": "create", "name": "每日巡检", "prompt": "检查未决任务", "cron": "0 9 * * *" }),
         )
         .await;
     assert!(s1.ok, "创建排程应成功: {:?}", s1.error);
     let s2 = tools
-        .execute("machina", &[ToolName::Schedule], ToolName::Schedule, &serde_json::json!({ "op": "list" }))
+        .execute("machina", "ses", &[ToolName::Schedule], ToolName::Schedule, &serde_json::json!({ "op": "list" }))
         .await;
     assert!(s2.ok && s2.output.contains("每日巡检"), "列表应含新任务: {}", s2.output);
     let job_id = core.cron.list().unwrap().first().map(|j| j.id.clone()).unwrap_or_default();
     let s3 = tools
         .execute(
             "machina",
-            &[ToolName::Schedule],
+            "ses",
+                        &[ToolName::Schedule],
             ToolName::Schedule,
             &serde_json::json!({ "op": "remove", "id": job_id }),
         )
@@ -1199,7 +1356,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let b = tools
         .execute(
             "machina",
-            &[ToolName::Filesystem],
+            "ses",
+                        &[ToolName::Filesystem],
             ToolName::Filesystem,
             &serde_json::json!({ "op": "write", "path": "docs/many.txt", "content": many }),
         )
@@ -1208,7 +1366,8 @@ async fn 工具面_编辑检索排程与安全边界() {
     let gb = tools
         .execute(
             "machina",
-            &[ToolName::Grep],
+            "ses",
+                        &[ToolName::Grep],
             ToolName::Grep,
             &serde_json::json!({ "pattern": "命中行", "path": "docs", "maxResults": 500 }),
         )
@@ -1253,7 +1412,7 @@ async fn 沙箱_环境净化与联网闸门_浏览器() {
     #[cfg(not(target_os = "windows"))]
     let probe = "echo $EXM_TEST_SECRET";
     let r = tools
-        .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": probe }))
+        .execute("machina", "ses", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": probe }))
         .await;
     assert!(r.ok, "白名单内命令应执行: {:?}", r.error);
     assert!(
@@ -1282,7 +1441,7 @@ async fn 沙箱_环境净化与联网闸门_浏览器() {
         )
         .with_sandbox(core3.config().sandbox.clone());
         let r2 = lim_tools
-            .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "echo job-ok" }))
+            .execute("machina", "ses", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "echo job-ok" }))
             .await;
         assert!(
             r2.ok && r2.output.contains("job-ok"),
@@ -1307,13 +1466,13 @@ async fn 沙箱_环境净化与联网闸门_浏览器() {
     )
     .with_sandbox(core2.config().sandbox.clone());
     let net = strict_tools
-        .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "git fetch" }))
+        .execute("machina", "ses", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "git fetch" }))
         .await;
     assert!(!net.ok, "strict 下联网命令应被拦截");
     let net_msg = net.error.clone().unwrap_or_default();
     assert!(net_msg.contains("审批") || net_msg.contains("拦截"), "应给出审批提示: {net_msg}");
     let local = strict_tools
-        .execute("machina", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "echo local-ok" }))
+        .execute("machina", "ses", &[ToolName::Terminal], ToolName::Terminal, &serde_json::json!({ "command": "echo local-ok" }))
         .await;
     assert!(local.ok && local.output.contains("local-ok"), "strict 下本地命令应放行: {:?}", local.error);
 
@@ -1338,7 +1497,8 @@ async fn 沙箱_环境净化与联网闸门_浏览器() {
     let open = tools
         .execute(
             "machina",
-            &[ToolName::Browser],
+            "ses",
+                        &[ToolName::Browser],
             ToolName::Browser,
             &serde_json::json!({ "op": "open", "url": format!("http://{addr}/page") }),
         )
@@ -1350,7 +1510,8 @@ async fn 沙箱_环境净化与联网闸门_浏览器() {
     let shot = tools
         .execute(
             "machina",
-            &[ToolName::Browser],
+            "ses",
+                        &[ToolName::Browser],
             ToolName::Browser,
             &serde_json::json!({ "op": "screenshot", "name": "smoke-page" }),
         )
@@ -1362,7 +1523,7 @@ async fn 沙箱_环境净化与联网闸门_浏览器() {
         shot.output
     );
     let closed = tools
-        .execute("machina", &[ToolName::Browser], ToolName::Browser, &serde_json::json!({ "op": "close" }))
+        .execute("machina", "ses", &[ToolName::Browser], ToolName::Browser, &serde_json::json!({ "op": "close" }))
         .await;
     assert!(closed.ok, "close 应成功");
 }
@@ -1480,34 +1641,39 @@ async fn 自定义工具_HTTP与命令模板() {
 
     // GET：query 插值 + URL 编码
     let r = tools
-        .execute_named("machina", &[], "weather", &serde_json::json!({ "city": "shanghai" }))
+        .execute_named("machina", "ses", &[], "weather", &serde_json::json!({ "city": "shanghai" }))
         .await;
     assert!(r.ok, "http 工具应成功: {:?}", r.error);
     assert!(r.output.contains("city=shanghai"), "query 应带上实参: {}", r.output);
 
     // POST：实参作为 JSON body
     let r = tools
-        .execute_named("machina", &[], "greet", &serde_json::json!({ "name": "exm" }))
+        .execute_named("machina", "ses", &[], "greet", &serde_json::json!({ "name": "exm" }))
         .await;
     assert!(r.ok && r.output.contains("name=exm"), "POST body 应带实参: {:?} {}", r.error, r.output);
 
-    // shell：模板插值
+    // shell：模板插值（Windows cmd 对简单实参可能剥/留引号，归一后断言）
     let r = tools
-        .execute_named("machina", &[], "shout", &serde_json::json!({ "word": "X" }))
+        .execute_named("machina", "ses", &[], "shout", &serde_json::json!({ "word": "X" }))
         .await;
-    assert!(r.ok && r.output.contains("hi-X"), "shell 模板应插值: {:?} {}", r.error, r.output);
+    assert!(
+        r.ok && r.output.replace(['"', '\\'], "").contains("hi-X"),
+        "shell 模板应插值: {:?} {}",
+        r.error,
+        r.output
+    );
 
     // 可见性：agents 未包含 → 拒绝
-    let r = tools.execute_named("machina", &[], "other-tool", &serde_json::json!({})).await;
+    let r = tools.execute_named("machina", "ses", &[], "other-tool", &serde_json::json!({})).await;
     assert!(!r.ok && r.error.clone().unwrap_or_default().contains("未对本个体开放"), "不可见工具应拒绝: {:?}", r.error);
 
     // 注入面：shell 实参带元字符 → 拒绝
     let r = tools
-        .execute_named("machina", &[], "shout", &serde_json::json!({ "word": "a&whoami" }))
+        .execute_named("machina", "ses", &[], "shout", &serde_json::json!({ "word": "a&whoami" }))
         .await;
     assert!(!r.ok && r.error.clone().unwrap_or_default().contains("不允许的字符"), "危险实参应拒绝: {:?}", r.error);
 
     // 未知工具
-    let r = tools.execute_named("machina", &[], "no-such-tool", &serde_json::json!({})).await;
+    let r = tools.execute_named("machina", "ses", &[], "no-such-tool", &serde_json::json!({})).await;
     assert!(!r.ok && r.error.clone().unwrap_or_default().contains("未知工具"), "未知工具应报错: {:?}", r.error);
 }

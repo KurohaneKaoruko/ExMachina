@@ -2,8 +2,9 @@
 //! 淘汰设备 / 迷你主机作为远程工作者接入网关，承接子个体派发。
 //! 协议（WebSocket，JSON 帧）：
 //!   worker → hub ：{"type":"hello","id","agents":[]}（agents 空 = 承接全部个体）
-//!   hub → worker ：{"type":"dispatch","did","def","order"}
-//!   worker → hub ：{"type":"tokens","did","delta"} / {"type":"report","did","report"} / {"type":"error","did","message"}
+//!   hub → worker ：{"type":"dispatch","did","def","order","attachImages"}
+//!   worker → hub ：{"type":"tokens","did","delta","kind"}（kind 缺省=正文 / "thinking"=思维链）
+//!                / {"type":"report","did","report"} / {"type":"error","did","message"}
 //! 失败或超时自动回落本地执行——集群是加速器，不是单点。
 
 use crate::types::{AgentDefinition, DispatchOrder, SyncReport};
@@ -15,13 +16,15 @@ use serde::{Deserialize, Serialize};
 pub trait RemoteExecutor: Send + Sync {
     /// 是否有在线工作者承接该个体（注册表查询，同步即答）
     fn accepts(&self, def: &AgentDefinition) -> bool;
-    /// 远程执行：成功返回 SyncReport；Err = 回落本地
+    /// 远程执行：成功返回 SyncReport；Err = 回落本地。
+    /// `attach_images` 随派发下发：工作者侧据此决定是否把截图作为视觉输入回灌。
     async fn execute(
         &self,
         session_id: &str,
         def: &AgentDefinition,
         order: &DispatchOrder,
-        on_token: &(dyn Fn(String) + Send + Sync),
+        attach_images: bool,
+        on_delta: &(dyn Fn(crate::provider::StreamDelta) + Send + Sync),
     ) -> anyhow::Result<SyncReport>;
 }
 
@@ -31,8 +34,9 @@ pub trait RemoteExecutor: Send + Sync {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum WorkerFrame {
     Hello { id: String, agents: Vec<String> },
-    Dispatch { did: String, def: AgentDefinition, order: DispatchOrder },
-    Tokens { did: String, delta: String },
+    Dispatch { did: String, def: AgentDefinition, order: DispatchOrder, #[serde(default)] attach_images: bool },
+    /// delta 增量帧：kind 缺省 = 正文；"thinking" = 思维链（双轨传输，渠道分别渲染）
+    Tokens { did: String, delta: String, #[serde(default)] kind: String },
     Report { did: String, report: SyncReport },
     Error { did: String, message: String },
 }
@@ -80,18 +84,18 @@ impl WorkerSession {
                 Ok(f) => f,
                 Err(_) => continue,
             };
-            let WorkerFrame::Dispatch { did, def, order } = frame else { continue };
+            let WorkerFrame::Dispatch { did, def, order, attach_images } = frame else { continue };
             let out = out_tx.clone();
             let core = core.clone();
             tokio::spawn(async move {
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                // 令牌回传泵：执行流 → 网关
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+                // 令牌回传泵：执行流 → 网关（kind: "" 正文 / "thinking" 思维链）
                 let pump = {
                     let did = did.clone();
                     let out = out.clone();
                     tokio::spawn(async move {
-                        while let Some(delta) = rx.recv().await {
-                            if let Ok(t) = serde_json::to_string(&WorkerFrame::Tokens { did: did.clone(), delta }) {
+                        while let Some((kind, delta)) = rx.recv().await {
+                            if let Ok(t) = serde_json::to_string(&WorkerFrame::Tokens { did: did.clone(), delta, kind }) {
                                 if out.send(Message::Text(t)).is_err() {
                                     break;
                                 }
@@ -101,8 +105,12 @@ impl WorkerSession {
                 };
                 let result = core
                     .orchestrator()
-                    .execute_unit(&def, &order, "", move |delta| {
-                        let _ = tx.send(delta.to_string());
+                    .execute_unit(&def, &order, "", attach_images, move |delta| {
+                        let kind = match delta {
+                            crate::provider::StreamDelta::Thinking(_) => "thinking".to_string(),
+                            crate::provider::StreamDelta::Text(_) => String::new(),
+                        };
+                        let _ = tx.send((kind, delta.text().to_string()));
                     })
                     .await;
                 pump.abort();

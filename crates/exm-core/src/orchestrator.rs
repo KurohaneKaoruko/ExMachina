@@ -3,7 +3,7 @@
 
 use crate::memory::{MemoryDraft, MemoryKind, MemoryStore};
 use crate::parse;
-use crate::provider::{ChatMessage, ChatRequest, FailoverState, LlmProvider, ModelChain, ModelPool};
+use crate::provider::{ChatMessage, ChatRequest, FailoverState, LlmProvider, ModelChain, ModelPool, StreamDelta};
 use crate::registry::LocalRegistry;
 use crate::runtime::AgentRuntime;
 use crate::store::Store;
@@ -226,13 +226,14 @@ impl Orchestrator {
         def: &AgentDefinition,
         order: &DispatchOrder,
         session_id: &str,
-        mut on_token: F,
+        attach_images: bool,
+        mut on_delta: F,
     ) -> anyhow::Result<SyncReport>
     where
-        F: FnMut(&str),
+        F: FnMut(StreamDelta),
     {
         let chain = self.unit_chain_for(def);
-        self.unit_runtime.execute(def, order, chain, session_id, |d| on_token(d)).await
+        self.unit_runtime.execute(def, order, chain, session_id, attach_images, |d| on_delta(d)).await
     }
 
     pub fn orch_id(&self) -> String {
@@ -895,15 +896,17 @@ impl Orchestrator {
         let mut system_prompt = self.registry.load_prompt(&primary.prompt_file).unwrap_or_else(|_| {
             format!("# {}\n\n你是本组的主智能体，直接对接用户并调度组内个体。", primary.name)
         });
+        // 主智能体人格（用户面 SOUL）：单体模式读 singles/<id>/SOUL.md，组模式读组根 SOUL.md（热读取）
+        let soul = if self.registry.single_mode() {
+            self.registry
+                .active_single()
+                .and_then(|id| self.registry.single_persona(&id).ok())
+        } else {
+            self.registry.persona(&primary.identifier).ok()
+        }
+        .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
+        system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
         if self.registry.single_mode() {
-            // 单体模式：追加人设段（热读取：修改后下一次对话即生效），再叠加单体契约
-            if let Some(id) = self.registry.active_single() {
-                let persona = self.registry.single_persona(&id).unwrap_or_else(|e| {
-                    eprintln!("[orchestrator] 读取单体人设失败（{id}）：{e}，使用默认");
-                    LocalRegistry::DEFAULT_PERSONA.to_string()
-                });
-                system_prompt.push_str(&format!("\n\n## 说话风格（人设）\n{persona}"));
-            }
             // 单体模式：单体智能体直接完成，禁止派发
             system_prompt.push_str(SINGLE_CONTRACT);
         } else if !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true) {
@@ -1100,15 +1103,19 @@ impl Orchestrator {
             .registry
             .load_prompt(&primary.prompt_file)
             .unwrap_or_else(|_| format!("# {}\n\n你是本组的主智能体。", primary.name));
+        // 主智能体人格（用户面 SOUL）：单体模式读 singles/<id>/SOUL.md，组模式读组根 SOUL.md
+        let soul = if self.registry.single_mode() {
+            self.registry
+                .active_single()
+                .and_then(|id| self.registry.single_persona(&id).ok())
+        } else {
+            self.registry.persona(&primary.identifier).ok()
+        }
+        .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
+        system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
         if self.registry.single_mode() {
-            // 单体模式：收束提示同样注入人设段（热读取；与 plan() 的最终 system prompt 保持一致覆盖）
-            if let Some(id) = self.registry.active_single() {
-                let persona = self.registry.single_persona(&id).unwrap_or_else(|e| {
-                    eprintln!("[orchestrator] 读取单体人设失败（{id}）：{e}，使用默认");
-                    LocalRegistry::DEFAULT_PERSONA.to_string()
-                });
-                system_prompt.push_str(&format!("\n\n## 说话风格（人设）\n{persona}"));
-            }
+            // 单体模式：禁止派发（单体直接完成）
+            system_prompt.push_str(SINGLE_CONTRACT);
         }
         let digest = graph
             .list()
@@ -1145,15 +1152,23 @@ impl Orchestrator {
         for (pid, provider, model) in candidates {
             let mut req = ChatRequest::new(model.clone(), messages.to_vec());
             req.key_hint = Some("__orch__".into());
-            let (tx, mut rx) = unbounded_channel::<String>();
+            let (tx, mut rx) = unbounded_channel::<StreamDelta>();
             let req_clone = req.clone();
             let stream_provider = provider.clone();
             let handle = tokio::spawn(async move { stream_provider.stream(req_clone, tx).await });
 
             let mut acc = String::new();
             while let Some(delta) = rx.recv().await {
-                acc.push_str(&delta);
-                self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": delta }));
+                match delta {
+                    // 思维链单独成轨：渠道折叠呈现「思考」，不与回答混流
+                    StreamDelta::Thinking(t) => {
+                        self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": t }));
+                    }
+                    StreamDelta::Text(t) => {
+                        acc.push_str(&t);
+                        self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": t }));
+                    }
+                }
             }
             match handle.await {
                 Ok(Ok(resp)) => {
@@ -1172,6 +1187,9 @@ impl Orchestrator {
                             fallback.completion_tokens,
                             &model,
                         );
+                        if !fallback.reasoning.is_empty() {
+                            self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": fallback.reasoning }));
+                        }
                         self.emit(
                             session_id,
                             "orchestrator.token",
@@ -1206,6 +1224,9 @@ impl Orchestrator {
             let mut req = ChatRequest::new(model, messages.to_vec());
             req.key_hint = Some("__orch__".into());
             if let Ok(resp) = provider.chat(req).await {
+                if !resp.reasoning.is_empty() {
+                    self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": resp.reasoning }));
+                }
                 self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": resp.content }));
                 return Ok(resp.content);
             }
@@ -1355,6 +1376,14 @@ impl ExecCtx {
         let node_id = node.id.clone();
         let agent_label = def.identifier.clone();
         let events = o.events.clone();
+        // 视觉能力检测：候选链首个模型明确标记不支持视觉时不回灌截图（computer use 降级为“盲操作”）
+        let attach_images = {
+            let vision = o
+                .unit_candidates(&def)
+                .first()
+                .and_then(|(pid, _, model)| o.model_pool.capability(pid, model, true));
+            vision != Some(false)
+        };
         // 远程工作者优先（失败/超时回落本地）；令牌流统一进事件总线
         let result = {
             let orch = o;
@@ -1362,6 +1391,19 @@ impl ExecCtx {
             let nid = node_id.clone();
             let label = agent_label.clone();
             let evts = events.clone();
+            let relay = move |delta: crate::provider::StreamDelta| {
+                let (kind, text) = match delta {
+                    crate::provider::StreamDelta::Thinking(t) => ("unit.thinking", t),
+                    crate::provider::StreamDelta::Text(t) => ("unit.token", t),
+                };
+                let _ = evts.send(CoreEvent {
+                    kind: kind.into(),
+                    session_id: sid.clone(),
+                    payload: serde_json::json!({
+                        "agentId": label, "nodeId": nid, "delta": text
+                    }),
+                });
+            };
             // 先判定远程可用性（注册表同步查询，避免闭包在分支间移动）
             let use_remote = orch.remote_enabled
                 && orch.remote.as_ref().map(|r| r.accepts(&def)).unwrap_or(false);
@@ -1369,21 +1411,14 @@ impl ExecCtx {
                 let remote = orch.remote.clone().unwrap();
                 let def2 = def.clone();
                 let order2 = order.clone();
-                let sid2 = sid.clone();
+                let sid2 = session_id.clone();
                 match remote
                     .execute(
                         &sid2,
                         &def2,
                         &order2,
-                        &move |delta: String| {
-                            let _ = evts.send(CoreEvent {
-                                kind: "unit.token".into(),
-                                session_id: sid.clone(),
-                                payload: serde_json::json!({
-                                    "agentId": label, "nodeId": nid, "delta": delta
-                                }),
-                            });
-                        },
+                        attach_images,
+                        &relay,
                     )
                     .await
                 {
@@ -1396,7 +1431,7 @@ impl ExecCtx {
                         });
                         let chain = orch.unit_chain_for(&def);
                         orch.unit_runtime
-                            .execute(&def, &order, chain, &self.session_id, |_delta| {})
+                            .execute(&def, &order, chain, &self.session_id, attach_images, |_delta| {})
                             .await
                     }
                 }
@@ -1404,15 +1439,7 @@ impl ExecCtx {
                 let chain = orch.unit_chain_for(&def);
                 let sid_for_usage = self.session_id.clone();
                 orch.unit_runtime
-                    .execute(&def, &order, chain, &sid_for_usage, move |delta| {
-                        let _ = evts.send(CoreEvent {
-                            kind: "unit.token".into(),
-                            session_id: sid.clone(),
-                            payload: serde_json::json!({
-                                "agentId": label, "nodeId": nid, "delta": delta
-                            }),
-                        });
-                    })
+                    .execute(&def, &order, chain, &sid_for_usage, attach_images, relay)
                     .await
             }
         };

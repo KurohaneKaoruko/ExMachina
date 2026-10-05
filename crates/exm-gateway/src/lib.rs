@@ -148,7 +148,13 @@ pub fn build_router(core: Arc<Core>) -> Router {
             axum::routing::delete(remove_agent_from_group),
         )
         .route("/api/auth/verify", post(verify_auth))
+        // 工作区资产（截图 / 工具输出落盘）：沙箱内只读，聊天工具卡内联预览
+        .route("/api/asset", get(get_asset))
+        // 工作区文件浏览（编码页文件树与预览）：沙箱内只读
+        .route("/api/fs/list", get(fs_list))
+        .route("/api/fs/file", get(fs_file))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
     // 静态托管 WebUI 构建产物（存在时）；根路径回落 index.html（SPA）
@@ -163,6 +169,158 @@ pub fn build_router(core: Arc<Core>) -> Router {
 }
 
 // ---------------------------------------------------------------- 健康与配置
+
+/// 工作区资产读取（GET /api/asset?path=）：截图 / 工具输出落盘的内联预览。
+/// 安全边界：拒绝绝对路径与 `..`；规范化后必须落在工作区内；扩展名白名单；8MB 上限。
+async fn get_asset(State(st): State<AppState>, Query(q): Query<AssetQuery>) -> impl IntoResponse {
+    use axum::response::AppendHeaders;
+    // 鉴权：中间件已校验请求头；此处补 <img> 标签场景的查询参数通道（与 /ws 同款）
+    let auth = st.core.config().security.auth_key.clone();
+    if !auth.is_empty() && q.key.as_deref() != Some(auth.as_str()) {
+        return (StatusCode::UNAUTHORIZED, "需要访问密钥").into_response();
+    }
+    let raw = q.path.trim();
+    if raw.is_empty() {
+        return (StatusCode::BAD_REQUEST, "path 不能为空").into_response();
+    }
+    let root = st.core.config().workspace_root.clone();
+    let candidate = root.join(raw);
+    // 词法 + 规范化双重校验（与工具面 resolve_safe 同口径）
+    let ok = std::path::Path::new(raw).is_relative()
+        && !raw.split(['/', '\\']).any(|seg| seg == "..")
+        && std::fs::canonicalize(&candidate)
+            .map(|c| c.starts_with(std::fs::canonicalize(&root).unwrap_or(root.clone())))
+            .unwrap_or(false);
+    if !ok {
+        return (StatusCode::FORBIDDEN, "路径越界（仅允许工作区内的资产）").into_response();
+    }
+    let ext = candidate
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" | "log" => "text/plain; charset=utf-8",
+        "json" => "application/json",
+        "md" => "text/markdown; charset=utf-8",
+        _ => return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "不支持的资产类型").into_response(),
+    };
+    match tokio::fs::read(&candidate).await {
+        Ok(bytes) => {
+            if bytes.len() > 8 * 1024 * 1024 {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "资产超过 8MB").into_response();
+            }
+            (AppendHeaders([(axum::http::header::CONTENT_TYPE, mime)]), bytes).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "资产不存在").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AssetQuery {
+    path: String,
+    /// <img> 无法携带请求头：与 /ws 同款查询参数密钥
+    #[serde(default)]
+    key: Option<String>,
+}
+
+/// 工作区内安全解析（与工具面 resolve_safe 同口径的只读版）：拒绝 `..`，规范化后须落在工作区内。
+/// 返回（绝对路径, 归一相对路径）
+fn resolve_ws_path(st: &AppState, raw: &str) -> Result<(std::path::PathBuf, String), (StatusCode, &'static str)> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "path 不能为空"));
+    }
+    let norm = raw.replace('\\', "/").trim_matches('/').to_string();
+    if norm.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "path 不能为空"));
+    }
+    let root = st.core.config().workspace_root.clone();
+    let candidate = root.join(&norm);
+    let ok = std::path::Path::new(&norm).is_relative()
+        && !norm.split('/').any(|seg| seg == "..")
+        && std::fs::canonicalize(&candidate)
+            .map(|c| c.starts_with(std::fs::canonicalize(&root).unwrap_or(root.clone())))
+            .unwrap_or(false);
+    if !ok {
+        return Err((StatusCode::FORBIDDEN, "路径越界（仅允许工作区内的路径）"));
+    }
+    Ok((candidate, norm))
+}
+
+/// 工作区目录清单（GET /api/fs/list?path=）：编码页文件树数据源（只读）
+async fn fs_list(State(st): State<AppState>, Query(q): Query<FsQuery>) -> impl IntoResponse {
+    let (dir, norm) = match resolve_ws_path(&st, &q.path) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
+    if !dir.is_dir() {
+        return (StatusCode::NOT_FOUND, "目录不存在").into_response();
+    }
+    let mut entries: Vec<Value> = Vec::new();
+    let mut rd = match tokio::fs::read_dir(&dir).await {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "目录读取失败").into_response(),
+    };
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue; // 隐藏目录/文件不入树（.git / .exmachina 等）
+        }
+        let Ok(meta) = ent.metadata().await else { continue };
+        let dir_flag = meta.is_dir();
+        entries.push(json!({
+            "name": name,
+            "dir": dir_flag,
+            "size": if dir_flag { 0 } else { meta.len() },
+            "path": format!("{norm}/{name}"),
+        }));
+        if entries.len() >= 500 {
+            break;
+        }
+    }
+    entries.sort_by(|a, b| {
+        let da = a["dir"].as_bool().unwrap_or(false);
+        let db = b["dir"].as_bool().unwrap_or(false);
+        db.cmp(&da).then(a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    Json(json!({ "path": norm, "entries": entries })).into_response()
+}
+
+/// 工作区文本文件预览（GET /api/fs/file?path=）：编码页查看代码用；200KB 截断
+async fn fs_file(State(st): State<AppState>, Query(q): Query<FsQuery>) -> impl IntoResponse {
+    let (file, norm) = match resolve_ws_path(&st, &q.path) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
+    if !file.is_file() {
+        return (StatusCode::NOT_FOUND, "文件不存在").into_response();
+    }
+    let bytes = match tokio::fs::read(&file).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "文件读取失败").into_response(),
+    };
+    const CAP: usize = 200 * 1024;
+    let truncated = bytes.len() > CAP;
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(CAP)]).to_string();
+    Json(json!({
+        "path": norm,
+        "size": bytes.len(),
+        "truncated": truncated,
+        "content": text,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct FsQuery {
+    path: String,
+}
 
 async fn health(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({
@@ -252,8 +410,12 @@ struct ConfigBody {
     max_session_tokens: Option<u64>,
     #[serde(default)]
     memory: Option<PartialMemory>,
+    /// 安全与审批
     #[serde(default)]
     security: Option<PartialSecurity>,
+    /// Computer Use
+    #[serde(default)]
+    computer: Option<PartialComputer>,
     #[serde(default)]
     automation: Option<PartialAutomation>,
     /// 联网搜索后端（web_search 工具）
@@ -345,6 +507,22 @@ struct PartialSecurity {
     terminal_timeout_secs: Option<u32>,
     #[serde(default)]
     tool_output_spill_chars: Option<usize>,
+    #[serde(default)]
+    approval_wait_secs: Option<u64>,
+}
+
+/// Computer Use（设置页）：部分更新语义——缺省字段沿用旧值
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PartialComputer {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    approval: Option<bool>,
+    #[serde(default)]
+    max_edge: Option<u32>,
+    #[serde(default)]
+    action_interval_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -414,6 +592,13 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
         auth_key: None,
         terminal_timeout_secs: None,
         tool_output_spill_chars: None,
+        approval_wait_secs: None,
+    });
+    let computer = body.computer.clone().unwrap_or(PartialComputer {
+        enabled: None,
+        approval: None,
+        max_edge: None,
+        action_interval_ms: None,
     });
     let auto = body.automation.unwrap_or(PartialAutomation {
         heartbeat_enabled: None,
@@ -502,6 +687,15 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
             tool_output_spill_chars: sec
                 .tool_output_spill_chars
                 .unwrap_or(current.security.tool_output_spill_chars),
+            approval_wait_secs: sec
+                .approval_wait_secs
+                .unwrap_or(current.security.approval_wait_secs),
+        },
+        computer: exm_core::config::ComputerUseConfig {
+            enabled: computer.enabled.unwrap_or(current.computer.enabled),
+            approval: computer.approval.unwrap_or(current.computer.approval),
+            max_edge: computer.max_edge.unwrap_or(current.computer.max_edge),
+            action_interval_ms: computer.action_interval_ms.unwrap_or(current.computer.action_interval_ms),
         },
         automation: exm_core::config::AutomationConfig {
             heartbeat_enabled: auto.heartbeat_enabled.unwrap_or(current.automation.heartbeat_enabled),

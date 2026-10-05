@@ -70,19 +70,29 @@ pub fn run_doctor(workspace_root: &Path) -> anyhow::Result<()> {
 
     d.check(
         "编成数据",
-        match std::fs::read_dir(cfg.agents_dir.join("definitions")) {
+        match std::fs::read_dir(cfg.agents_dir.join("groups")) {
             Ok(entries) => {
+                // 组目录制：groups/<gid>/agents/*.json（默认组 + 自定义组）
                 let n = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-                    .count();
+                    .filter(|e| e.path().join("group.json").is_file())
+                    .map(|e| {
+                        std::fs::read_dir(e.path().join("agents"))
+                            .map(|list| {
+                                list.filter_map(|x| x.ok())
+                                    .filter(|x| x.path().extension().map(|y| y == "json").unwrap_or(false))
+                                    .count()
+                            })
+                            .unwrap_or(0)
+                    })
+                    .sum::<usize>();
                 if n >= 13 {
-                    Ok(format!("{n} 份个体定义"))
+                    Ok(format!("{n} 份成员定义"))
                 } else {
-                    Err(format!("仅 {n} 份定义，期望 ≥42"))
+                    Err(format!("仅 {n} 份成员定义，期望 ≥42"))
                 }
             }
-            Err(_) => Err(format!("缺少目录 {}", cfg.agents_dir.join("definitions").display())),
+            Err(_) => Err(format!("缺少目录 {}", cfg.agents_dir.join("groups").display())),
         },
     );
 

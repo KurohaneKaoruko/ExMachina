@@ -22,7 +22,7 @@ struct WorkerConn {
 /// 待回流派发
 struct Pending {
     report_tx: oneshot::Sender<Result<SyncReport, String>>,
-    token_tx: mpsc::UnboundedSender<String>,
+    token_tx: mpsc::UnboundedSender<(String, String)>,
     session_id: String,
     agent_id: String,
 }
@@ -84,13 +84,14 @@ async fn worker_loop(mut socket: WebSocket, st: AppState) {
                         eprintln!("[worker-hub] 工作者接入：{id}");
                         my_id = Some(id);
                     }
-                    WorkerFrame::Tokens { did, delta } => {
+                    WorkerFrame::Tokens { did, delta, kind } => {
                         let evt = {
                             let pending = hub.pending.lock();
                             pending.get(&did).map(|p| {
-                                let _ = p.token_tx.send(delta.clone());
+                                let _ = p.token_tx.send((kind.clone(), delta.clone()));
+                                let event_kind = if kind == "thinking" { "unit.thinking" } else { "unit.token" };
                                 exm_core::types::CoreEvent {
-                                    kind: "unit.token".into(),
+                                    kind: event_kind.into(),
                                     session_id: p.session_id.clone(),
                                     payload: serde_json::json!({ "agentId": p.agent_id, "delta": delta }),
                                 }
@@ -156,7 +157,8 @@ impl RemoteExecutor for WorkerHub {
         session_id: &str,
         def: &AgentDefinition,
         order: &DispatchOrder,
-        on_token: &(dyn Fn(String) + Send + Sync),
+        attach_images: bool,
+        on_delta: &(dyn Fn(exm_core::provider::StreamDelta) + Send + Sync),
     ) -> anyhow::Result<SyncReport> {
         // 挑一个承接该个体的在线工作者（v1：首个；后续可负载分派）
         let out = {
@@ -169,7 +171,7 @@ impl RemoteExecutor for WorkerHub {
         let Some(out) = out else { anyhow::bail!("无在线工作者") };
         let did = format!("d{}", &exm_core::types::new_id()[..10]);
         let (report_tx, report_rx) = oneshot::channel();
-        let (token_tx, mut token_rx) = mpsc::unbounded_channel::<String>();
+        let (token_tx, mut token_rx) = mpsc::unbounded_channel::<(String, String)>();
         self.pending.lock().insert(
             did.clone(),
             Pending {
@@ -183,6 +185,7 @@ impl RemoteExecutor for WorkerHub {
             did: did.clone(),
             def: def.clone(),
             order: order.clone(),
+            attach_images,
         })?;
         out.send(Message::Text(frame)).map_err(|e| anyhow::anyhow!("工作者连接已断: {e}"))?;
 
@@ -195,8 +198,12 @@ impl RemoteExecutor for WorkerHub {
                     biased;
                     r = &mut report_rx => break r,
                     d = token_rx.recv() => {
-                        if let Some(delta) = d {
-                            on_token(delta);
+                        if let Some((kind, delta)) = d {
+                            on_delta(if kind == "thinking" {
+                                exm_core::provider::StreamDelta::Thinking(delta)
+                            } else {
+                                exm_core::provider::StreamDelta::Text(delta)
+                            });
                         }
                     }
                 }

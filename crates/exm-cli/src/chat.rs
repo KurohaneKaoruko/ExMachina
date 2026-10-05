@@ -39,6 +39,7 @@ pub async fn run_chat(core: Arc<Core>, text: &str, opts: &ChatOptions) -> anyhow
     let mut last_graph: Option<TaskGraph> = None;
     let mut current_unit = String::new();
     let mut orch_streaming = false;
+    let mut thinking_streaming = false;
     let session_id = session.id.clone();
     let quiet = opts.quiet;
     let orch_id_fallback = core.orchestrator_id();
@@ -88,6 +89,74 @@ pub async fn run_chat(core: Arc<Core>, text: &str, opts: &ChatOptions) -> anyhow
                                 use std::io::Write;
                                 let _ = std::io::stdout().flush();
                             }
+                        }
+                        // 思维链（分轨）：暗色内联呈现，不与回答混流
+                        "orchestrator.thinking" | "unit.thinking" => {
+                            if quiet {
+                                continue;
+                            }
+                            if let Some(d) = evt.payload.get("delta").and_then(|v| v.as_str()) {
+                                if !thinking_streaming {
+                                    if orch_streaming || !current_unit.is_empty() {
+                                        println!();
+                                        orch_streaming = false;
+                                        current_unit.clear();
+                                    }
+                                    println!("{}", dim("  ·思考·"));
+                                    thinking_streaming = true;
+                                }
+                                print!("{}", dim(d));
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
+                            }
+                        }
+                        // 工具执行（文件操作 / 终端 / 截屏全程可见）
+                        "tool.call" => {
+                            if quiet {
+                                continue;
+                            }
+                            if orch_streaming || !current_unit.is_empty() || thinking_streaming {
+                                println!();
+                                orch_streaming = false;
+                                thinking_streaming = false;
+                                current_unit.clear();
+                            }
+                            let tool = evt.payload.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+                            let args = evt.payload.get("args").cloned().unwrap_or_default();
+                            let brief = match tool {
+                                "read" | "edit" => args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                "terminal" => args.get("command").and_then(|v| v.as_str()).unwrap_or("").chars().take(120).collect(),
+                                "filesystem" => format!(
+                                    "{} {}",
+                                    args.get("op").and_then(|v| v.as_str()).unwrap_or(""),
+                                    args.get("path").and_then(|v| v.as_str()).unwrap_or("")
+                                ),
+                                "browser" | "computer" => args.get("op").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                other => other.to_string(),
+                            };
+                            println!("{}", format!("  ⚙ {tool} {brief}").yellow());
+                        }
+                        "tool.result" => {
+                            if quiet {
+                                continue;
+                            }
+                            let ok = evt.payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let ms = evt.payload.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(0);
+                            println!(
+                                "{}",
+                                dim(format!("  {} ({ms}ms)", if ok { "✔" } else { "✘ 失败" }))
+                            );
+                        }
+                        "approval.required" => {
+                            if orch_streaming || !current_unit.is_empty() {
+                                println!();
+                                orch_streaming = false;
+                                current_unit.clear();
+                            }
+                            let cmd = evt.payload.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                            let id = evt.payload.get("approvalId").and_then(|v| v.as_str()).unwrap_or("");
+                            println!("{}", err(format!("  ⏸ 待人工审批 [{id}]：{cmd}")));
+                            println!("{}", dim("     到 WebUI「审批」页或聊天里决定；批准后系统代执行并把输出回灌。"));
                         }
                         "graph.updated" => {
                             if let Ok(g) = serde_json::from_value::<TaskGraph>(evt.payload.clone()) {

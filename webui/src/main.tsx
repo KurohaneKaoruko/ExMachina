@@ -48,3 +48,12 @@ createRoot(document.getElementById("root")!).render(
     <Root />
   </React.StrictMode>,
 );
+
+// PWA：Service Worker（离线壳缓存；API/WS 永远走网络）
+if ("serviceWorker" in navigator && location.protocol !== "devtools:") {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      /* SW 不可用（如 http:// 局域网 IP 下部分浏览器限制）时静默降级为普通网页 */
+    });
+  });
+}

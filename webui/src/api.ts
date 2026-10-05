@@ -5,13 +5,25 @@ import { tr } from "./i18n/core";
 /** 密钥掩码哨兵（与后端 llm_admin::KEY_MASK / 通道脱敏同一契约）：提交时收到此值 = 沿用服务端旧值 */
 export const KEY_MASK = "***已配置***";
 
+/** 远程服务器基址（桌面/移动客户端连接任意网关；空 = 同源）。
+ *  同一份 WebUI 既能被本机网关托管（桌面/浏览器），也能作为客户端连远程网关（手机 PWA）。 */
+export function serverBase(): string {
+  return (localStorage.getItem("exm.server") ?? "").replace(/\/+$/, "");
+}
+
+export function setServerBase(url: string): void {
+  const v = url.trim().replace(/\/+$/, "");
+  if (v) localStorage.setItem("exm.server", v);
+  else localStorage.removeItem("exm.server");
+}
+
 function authHeaders(): Record<string, string> {
   const key = localStorage.getItem("exm.key") ?? "";
   return key ? { "X-Auth-Key": key } : {};
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`/api${path}`, {
+  const resp = await fetch(`${serverBase()}/api${path}`, {
     headers: { "Content-Type": "application/json", ...authHeaders() },
     ...init,
   });
@@ -53,7 +65,11 @@ export interface GatewayConfig {
     terminalTimeoutSecs?: number;
     /** 工具结果落盘阈值（字符） */
     toolOutputSpillChars?: number;
+    /** 审批等待（秒）：拦截后原地等待人工决定的时长；0 = 直接受阻 */
+    approvalWaitSecs?: number;
   };
+  /** Computer Use（截屏 + 键鼠控制本机；默认关闭） */
+  computer?: { enabled: boolean; approval: boolean; maxEdge: number; actionIntervalMs: number };
   automation: {
     heartbeatEnabled: boolean;
     heartbeatIntervalMinutes: number;
@@ -543,3 +559,37 @@ export const api = {
   setGroupWorkspace: (gid: string, workspace: string) =>
     req<{ ok: boolean }>(`/groups/${gid}/workspace`, { method: "PUT", body: JSON.stringify({ workspace }) }),
 };
+
+/** 工作区资产 URL（computer 截图 / 工具输出预览）：<img> 无法带请求头，密钥走查询参数 */
+export function assetUrl(relPath: string): string {
+  const key = localStorage.getItem("exm.key") ?? "";
+  return `${serverBase()}/api/asset?path=${encodeURIComponent(relPath)}&key=${encodeURIComponent(key)}`;
+}
+
+/** 校验远程网关连通性（高级用法：localStorage 手动设 exm.server 后探活） */
+export async function probeServer(base: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const resp = await fetch(`${base.replace(/\/+$/, "")}/api/health`, { headers: authHeaders() });
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export interface FsEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  path: string;
+}
+
+/** 工作区目录清单（编码页文件树） */
+export function fsList(path: string): Promise<{ path: string; entries: FsEntry[] }> {
+  return req(`/fs/list?path=${encodeURIComponent(path)}`);
+}
+
+/** 工作区文本文件预览（编码页代码查看） */
+export function fsFile(path: string): Promise<{ path: string; size: number; truncated: boolean; content: string }> {
+  return req(`/fs/file?path=${encodeURIComponent(path)}`);
+}

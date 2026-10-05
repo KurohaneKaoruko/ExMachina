@@ -1,5 +1,7 @@
 # Rust
 target/
+desktop/src-tauri/target/
+desktop/src-tauri/target-msvc/
 **/*.rs.bk
 
 # Node / WebUI
@@ -26,3 +28,5 @@ agents/active_group
 *.db-wal
 .DS_Store
 agents/dist/
+
+desktop/src-tauri/gen/

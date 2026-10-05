@@ -4,8 +4,11 @@ import { Menu, Tag } from "antd";
 import {
   ApartmentOutlined,
   BellOutlined,
+  CloseOutlined,
+  CodeOutlined,
   DatabaseOutlined,
   FileTextOutlined,
+  MenuOutlined,
   MessageOutlined,
   ApiOutlined,
   RobotOutlined,
@@ -25,6 +28,7 @@ import { CharStream } from "./components/CharStream";
 import { AsciiDivider } from "./components/Ascii";
 import { LoginView } from "./views/LoginView";
 import { ChatView } from "./views/ChatView";
+import { CodingView } from "./views/CodingView";
 import { ModelsView } from "./views/ModelsView";
 import { GraphView } from "./views/GraphView";
 import { AgentsView } from "./views/AgentsView";
@@ -41,6 +45,7 @@ import { ActivityView } from "./views/ActivityView";
 
 type ViewKey =
   | "chat"
+  | "code"
   | "graph"
   | "agent"
   | "groups"
@@ -63,6 +68,7 @@ export const NAV_ITEMS: {
   icon: React.ReactNode;
 }[] = [
   { key: "chat", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
+  { key: "code", en: "CODE", labelKey: "nav.code", icon: <CodeOutlined /> },
   { key: "agent", en: "AGENTS", labelKey: "nav.agent", icon: <UserOutlined /> },
   { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
   { key: "agents", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
@@ -87,6 +93,8 @@ export default function App(): React.ReactElement {
   const [view, setView] = useState<ViewKey>("chat");
   const [themeOpen, setThemeOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
+  /** 移动端侧栏抽屉（≤860px 时侧栏覆盖呈现） */
+  const [navOpen, setNavOpen] = useState(false);
   const t = useT();
   const lang = useLang((s) => s.lang);
   const setLang = useLang((s) => s.setLang);
@@ -137,7 +145,12 @@ export default function App(): React.ReactElement {
 
   return (
     <div className="app-shell">
-      <aside className="app-sider">
+      {/* 移动端抽屉开关（桌面隐藏） */}
+      <button className="mobile-nav-btn" onClick={() => setNavOpen(!navOpen)} aria-label="menu">
+        {navOpen ? <CloseOutlined /> : <MenuOutlined />}
+      </button>
+      {navOpen && <div className="nav-mask" onClick={() => setNavOpen(false)} />}
+      <aside className={`app-sider ${navOpen ? "open" : ""}`}>
         {/* 字符流放在侧栏背景里（见 styles.css 的层级说明） */}
         <CharStream />
         <div className="brand">
@@ -162,7 +175,10 @@ export default function App(): React.ReactElement {
               </>
             ),
           }))}
-          onClick={({ key }) => setView(key as ViewKey)}
+          onClick={({ key }) => {
+            setView(key as ViewKey);
+            setNavOpen(false); // 移动端：选中即收起抽屉
+          }}
         />
         <AsciiDivider label="CHANNEL" className="sider-divider" />
         <div className={`theme-switcher ${themeOpen ? "open" : ""}`}>
@@ -229,6 +245,7 @@ export default function App(): React.ReactElement {
         {view === "agents" && <AgentsView />}
         {view === "skills" && <SkillsView />}
         {view === "models" && <ModelsView />}
+        {view === "code" && <CodingView />}
         {view === "automations" && <AutomationsView />}
         {view === "approvals" && <ApprovalsView />}
         {view === "channels" && <ChannelsView />}

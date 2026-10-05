@@ -124,6 +124,8 @@ pub enum ToolName {
     Schedule,
     /// 浏览器自动化：headless Chrome/Chromium + CDP（导航 / 取正文 / 执行 JS / 截图）
     Browser,
+    /// Computer Use：截屏 + 鼠标 / 键盘控制本机桌面（配置开启后下发，输入类动作过审批闸门）
+    Computer,
 }
 
 impl ToolName {
@@ -140,6 +142,7 @@ impl ToolName {
             ToolName::AgentManage => "agent_manage",
             ToolName::Schedule => "schedule",
             ToolName::Browser => "browser",
+            ToolName::Computer => "computer",
         }
     }
 
@@ -164,6 +167,7 @@ impl ToolName {
             "agent_manage" => Some(ToolName::AgentManage),
             "schedule" => Some(ToolName::Schedule),
             "browser" => Some(ToolName::Browser),
+            "computer" => Some(ToolName::Computer),
             _ => None,
         }
     }

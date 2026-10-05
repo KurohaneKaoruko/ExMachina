@@ -1,4 +1,4 @@
-//! `exm persona` —— 智能体人设（说话风格）管理
+//! `exm persona` —— 智能体SOUL（灵魂·人格层）管理
 
 use crate::render::*;
 use exm_core::Core;

@@ -1,14 +1,17 @@
 /** 全局状态（Zustand）+ WS 事件处理 */
 import { create } from "zustand";
+import { message } from "antd";
 import type {
   AgentDefinition,
+  ApprovalItem,
   ChatMessage,
   Session,
   SessionLedger,
   Statement,
   TaskGraph,
+  ToolCallItem,
 } from "./types";
-import { api, type GatewayConfig, type GroupMeta, type RecallHit } from "./api";
+import { api, serverBase, type GatewayConfig, type GroupMeta, type RecallHit } from "./api";
 import { tr } from "./i18n/core";
 
 export interface TimelineItem {
@@ -35,7 +38,15 @@ interface ExmState {
   running: boolean;
   wsConnected: boolean;
   liveOrch: string;
+  /** 指挥体思维链（分轨流式，不与回答混流） */
+  liveThinking: string;
   liveUnits: Record<string, string>;
+  /** 子个体思维链 */
+  liveUnitThinking: Record<string, string>;
+  /** 当前轮工具执行轨迹（编程软件式过程透明；run.finished 后并入最终消息） */
+  runToolCalls: ToolCallItem[];
+  /** 待人工审批单（聊天内联裁决） */
+  approvals: ApprovalItem[];
   timeline: TimelineItem[];
   lastRecall: RecallHit[];
   memoryVersion: number;
@@ -52,6 +63,7 @@ interface ExmState {
   newSession: () => Promise<void>;
   send: (text: string, images?: string[]) => Promise<void>;
   saveConfig: (body: Record<string, unknown>) => Promise<void>;
+  decideApproval: (id: string, approve: boolean) => Promise<void>;
   handleEvent: (evt: WsEvent) => void;
   setWs: (ok: boolean) => void;
   bumpMemory: () => void;
@@ -67,8 +79,10 @@ function connectWs(get: () => ExmState): void {
   const gen = ++wsGen;
   // 主动关闭旧连接：其 onclose 携带旧 gen，不会触发重连
   ws?.close();
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws?sessionId=${sessionId}&key=${encodeURIComponent(localStorage.getItem("exm.key") ?? "")}`);
+  const base = serverBase();
+  const proto = base.startsWith("https") || (base === "" && location.protocol === "https:") ? "wss" : "ws";
+  const host = base ? base.replace(/^https?:\/\//, "") : location.host;
+  ws = new WebSocket(`${proto}://${host}/ws?sessionId=${sessionId}&key=${encodeURIComponent(localStorage.getItem("exm.key") ?? "")}`);
   let reconnected = false; // 本代际是否经历过断连重连（成功后补偿拉取丢失的事件）
   ws.onopen = () => {
     if (gen !== wsGen) return;
@@ -117,7 +131,11 @@ export const useExm = create<ExmState>((set, get) => ({
   running: false,
   wsConnected: false,
   liveOrch: "",
+  liveThinking: "",
   liveUnits: {},
+  liveUnitThinking: {},
+  runToolCalls: [],
+  approvals: [],
   timeline: [],
   lastRecall: [],
   memoryVersion: 0,
@@ -154,7 +172,11 @@ export const useExm = create<ExmState>((set, get) => ({
       graph: null,
       timeline: [],
       liveOrch: "",
+      liveThinking: "",
       liveUnits: {},
+      liveUnitThinking: {},
+      runToolCalls: [],
+      approvals: [],
       messages: [],
     });
     if (sessions.length > 0) {
@@ -176,7 +198,11 @@ export const useExm = create<ExmState>((set, get) => ({
       graph: null,
       timeline: [],
       liveOrch: "",
+      liveThinking: "",
       liveUnits: {},
+      liveUnitThinking: {},
+      runToolCalls: [],
+      approvals: [],
       messages: [],
     });
     await get().loadGroups();
@@ -208,8 +234,11 @@ export const useExm = create<ExmState>((set, get) => ({
       graph: graph.nodes?.length ? graph : null,
       ledger: session.ledger,
       liveOrch: "",
+      liveThinking: "",
       liveUnits: {},
-      timeline: [],
+      liveUnitThinking: {},
+      runToolCalls: [],
+      approvals: [],
       running: false,
     });
     connectWs(get);
@@ -228,7 +257,11 @@ export const useExm = create<ExmState>((set, get) => ({
     set({
       running: true,
       liveOrch: "",
+      liveThinking: "",
       liveUnits: {},
+      liveUnitThinking: {},
+      runToolCalls: [],
+      approvals: [],
       timeline: [],
       lastRecall: [],
       messages: [
@@ -253,12 +286,78 @@ export const useExm = create<ExmState>((set, get) => ({
   setWs: (ok) => set({ wsConnected: ok }),
   bumpMemory: () => set({ memoryVersion: get().memoryVersion + 1 }),
 
+  decideApproval: async (id, approve) => {
+    try {
+      await api.decideApproval(id, approve);
+      // 乐观移除（approval.resolved 事件到达时幂等）
+      set({ approvals: get().approvals.filter((a) => a.approvalId !== id) });
+    } catch (e) {
+      message.error(String(e));
+    }
+  },
+
   handleEvent: (evt) => {
     if (evt.sessionId !== get().sessionId) return;
     const p = evt.payload as Record<string, unknown>;
     switch (evt.type) {
       case "orchestrator.token":
         set({ liveOrch: get().liveOrch + String(p.delta ?? "") });
+        break;
+      case "orchestrator.thinking":
+        set({ liveThinking: get().liveThinking + String(p.delta ?? "") });
+        break;
+      case "unit.thinking": {
+        const agent = String(p.agentId ?? "");
+        set({
+          liveUnitThinking: {
+            ...get().liveUnitThinking,
+            [agent]: (get().liveUnitThinking[agent] ?? "") + String(p.delta ?? ""),
+          },
+        });
+        break;
+      }
+      case "tool.call": {
+        const call: ToolCallItem = {
+          callId: String(p.callId),
+          agentId: String(p.agentId ?? ""),
+          tool: String(p.tool ?? ""),
+          args: (p.args ?? {}) as Record<string, unknown>,
+          status: "running",
+        };
+        set({ runToolCalls: [...get().runToolCalls.filter((c) => c.callId !== call.callId), call] });
+        break;
+      }
+      case "tool.result": {
+        const callId = String(p.callId);
+        set({
+          runToolCalls: get().runToolCalls.map((c) =>
+            c.callId === callId
+              ? {
+                  ...c,
+                  status: p.ok ? "ok" : "error",
+                  durationMs: Number(p.durationMs ?? 0),
+                  summary: String(p.summary ?? "").slice(0, 400),
+                  images: (p.images ?? []) as string[],
+                }
+              : c,
+          ),
+        });
+        break;
+      }
+      case "approval.required":
+        set({
+          approvals: [
+            ...get().approvals.filter((a) => a.approvalId !== String(p.approvalId)),
+            {
+              approvalId: String(p.approvalId),
+              agentId: String(p.agentId ?? ""),
+              command: String(p.command ?? ""),
+            },
+          ],
+        });
+        break;
+      case "approval.resolved":
+        set({ approvals: get().approvals.filter((a) => a.approvalId !== String(p.approvalId)) });
         break;
       case "unit.token": {
         const agent = String(p.agentId ?? "");
@@ -345,10 +444,15 @@ export const useExm = create<ExmState>((set, get) => ({
       case "run.finished": {
         const statements = (p.statements ?? []) as Statement[];
         const id = get().sessionId!;
+        // 工具轨迹随最终消息留存（思维流与实时卡一并清场）
+        const toolCalls = get().runToolCalls;
         set({
           running: false,
           liveOrch: "",
+          liveThinking: "",
           liveUnits: {},
+          liveUnitThinking: {},
+          runToolCalls: [],
           messages: [
             ...get().messages,
             {
@@ -357,6 +461,7 @@ export const useExm = create<ExmState>((set, get) => ({
               role: "orchestrator",
               agentId: typeof p.agentId === "string" ? p.agentId : "orchestrator",
               statements,
+              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
               createdAt: new Date().toISOString(),
             },
           ],

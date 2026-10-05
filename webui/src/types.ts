@@ -18,6 +18,27 @@ export interface ChatMessage {
   agentId?: string;
   statements: Statement[];
   createdAt: string;
+  /** 本轮收束时附带执行的工具轨迹（本地组装，刷新后由审计页回看） */
+  toolCalls?: ToolCallItem[];
+}
+
+/** 工具执行轨迹（tool.call / tool.result 事件组装）：编程软件式过程透明 */
+export interface ToolCallItem {
+  callId: string;
+  agentId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: "running" | "ok" | "error";
+  durationMs?: number;
+  summary?: string;
+  images?: string[];
+}
+
+/** 待人工审批单（会话内联裁决） */
+export interface ApprovalItem {
+  approvalId: string;
+  agentId: string;
+  command: string;
 }
 
 export interface LedgerTask {

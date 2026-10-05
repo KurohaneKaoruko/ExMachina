@@ -91,10 +91,29 @@ impl ChatRequest {
 #[derive(Debug, Clone, Default)]
 pub struct ChatResponse {
     pub content: String,
+    /// 推理内容（思维链）：DeepSeek 系 reasoning_content / Anthropic thinking / Gemini thought
+    /// —— 能取到就随响应带回，供渠道单独呈现；不可用时为空串（不承诺所有端点都分离思维链）。
+    pub reasoning: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     /// 模型发起的工具调用（原生 function calling）
     pub tool_calls: Vec<ToolCall>,
+}
+
+/// 流式增量：正文与思维链分轨传输——渠道据此分别渲染「回答」与「思考」。
+#[derive(Debug, Clone)]
+pub enum StreamDelta {
+    Text(String),
+    Thinking(String),
+}
+
+impl StreamDelta {
+    pub fn text(&self) -> &str {
+        match self {
+            StreamDelta::Text(s) => s,
+            StreamDelta::Thinking(s) => s,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 模型档案运行池
@@ -280,7 +299,7 @@ pub trait LlmProvider: Send + Sync {
     async fn stream(
         &self,
         req: ChatRequest,
-        tx: UnboundedSender<String>,
+        tx: UnboundedSender<StreamDelta>,
     ) -> anyhow::Result<ChatResponse>;
 }
 
@@ -629,16 +648,20 @@ impl OpenAiCompatibleProvider {
         }
     }
 
-    /// 非流式响应 → 文本（多协议）
+    /// 非流式响应 → 文本（多协议；Gemini 的 thought 部分不算正文）
     fn parse_response(&self, v: &serde_json::Value) -> Option<String> {
         match self.api_format.as_str() {
             "anthropic" => v.get("content").and_then(|c| c.as_array()).map(|arr| {
                 arr.iter()
+                    .filter(|b| {
+                        b.get("type").and_then(|t| t.as_str()) != Some("thinking")
+                            && b.get("type").and_then(|t| t.as_str()) != Some("redacted_thinking")
+                    })
                     .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                     .collect::<Vec<_>>()
                     .join("")
             }),
-            "gemini" => Self::gemini_parts(v),
+            "gemini" => Self::gemini_parts(v, false),
             _ => v.get("choices").and_then(|c| c.get(0))
                 .and_then(|c| c.pointer("/message/content"))
                 .and_then(|t| t.as_str())
@@ -646,24 +669,80 @@ impl OpenAiCompatibleProvider {
         }
     }
 
-    /// 流式增量提取（多协议）
-    fn parse_delta(&self, v: &serde_json::Value) -> Option<String> {
+    /// 非流式响应 → 推理内容（多协议；与 parse_response 同源异轨）
+    fn parse_reasoning(&self, v: &serde_json::Value) -> Option<String> {
         match self.api_format.as_str() {
-            "anthropic" => v.pointer("/delta/text").and_then(|t| t.as_str()).map(String::from),
-            "gemini" => Self::gemini_parts(v),
+            "anthropic" => v.get("content").and_then(|c| c.as_array()).map(|arr| {
+                arr.iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+                    .filter_map(|b| b.get("thinking").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("")
+            }),
+            "gemini" => Self::gemini_parts(v, true),
+            // DeepSeek 系 reasoning_content / OpenRouter reasoning / GLM reasoning_content
             _ => v.get("choices").and_then(|c| c.get(0))
-                .and_then(|c| c.pointer("/delta/content"))
+                .and_then(|c| c.pointer("/message/reasoning_content").or_else(|| c.pointer("/message/reasoning")))
                 .and_then(|t| t.as_str())
                 .map(String::from),
         }
     }
 
-    /// Gemini：candidates[0].content.parts[*].text 拼接（非流式与流式分片同构）
-    fn gemini_parts(v: &serde_json::Value) -> Option<String> {
+    /// 流式增量提取（多协议）→（正文增量, 思维链增量）
+    fn parse_delta(&self, v: &serde_json::Value) -> (Option<String>, Option<String>) {
+        match self.api_format.as_str() {
+            // Anthropic thinking 块：content_block_delta 且 delta.type == thinking_delta
+            "anthropic" => {
+                if v.pointer("/delta/type").and_then(|t| t.as_str()) == Some("thinking_delta") {
+                    (None, v.pointer("/delta/thinking").and_then(|t| t.as_str()).map(String::from))
+                } else {
+                    (v.pointer("/delta/text").and_then(|t| t.as_str()).map(String::from), None)
+                }
+            }
+            // Gemini：part.thought == true 的是思维链
+            "gemini" => {
+                let parts = v.pointer("/candidates/0/content/parts").and_then(|p| p.as_array());
+                let mut text = String::new();
+                let mut think = String::new();
+                if let Some(arr) = parts {
+                    for b in arr {
+                        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                            if b.get("thought").and_then(|x| x.as_bool()).unwrap_or(false) {
+                                think.push_str(t);
+                            } else {
+                                text.push_str(t);
+                            }
+                        }
+                    }
+                }
+                (
+                    if text.is_empty() { None } else { Some(text) },
+                    if think.is_empty() { None } else { Some(think) },
+                )
+            }
+            _ => {
+                // DeepSeek 系：delta.reasoning_content；OpenRouter：delta.reasoning
+                let reasoning = v.get("choices").and_then(|c| c.get(0))
+                    .and_then(|c| c.pointer("/delta/reasoning_content").or_else(|| c.pointer("/delta/reasoning")))
+                    .and_then(|t| t.as_str())
+                    .map(String::from);
+                let text = v.get("choices").and_then(|c| c.get(0))
+                    .and_then(|c| c.pointer("/delta/content"))
+                    .and_then(|t| t.as_str())
+                    .map(String::from);
+                (text, reasoning)
+            }
+        }
+    }
+
+    /// Gemini：candidates[0].content.parts[*].text 拼接（非流式与流式分片同构）。
+    /// `thought` = true 时取思维链部分，否则取正文部分。
+    fn gemini_parts(v: &serde_json::Value, thought: bool) -> Option<String> {
         v.get("candidates").and_then(|c| c.get(0)).and_then(|c| c.get("content"))
             .and_then(|c| c.get("parts")).and_then(|p| p.as_array())
             .map(|arr| {
                 arr.iter()
+                    .filter(|b| b.get("thought").and_then(|x| x.as_bool()).unwrap_or(false) == thought)
                     .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                     .collect::<Vec<_>>()
                     .join("")
@@ -842,6 +921,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             }
             let parsed: serde_json::Value = resp.json().await?;
             let content = self.parse_response(&parsed).unwrap_or_default();
+            let reasoning = self.parse_reasoning(&parsed).unwrap_or_default();
             let tool_calls = self.parse_tool_calls(&parsed);
             let usage = parsed.get("usage");
             let pt = usage
@@ -860,7 +940,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 })
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            return Ok(ChatResponse { content, prompt_tokens: pt, completion_tokens: ct, tool_calls });
+            return Ok(ChatResponse { content, reasoning, prompt_tokens: pt, completion_tokens: ct, tool_calls });
         }
         anyhow::bail!("全部 API Key 均不可用：{last_err}")
     }
@@ -868,7 +948,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
     async fn stream(
         &self,
         req: ChatRequest,
-        tx: UnboundedSender<String>,
+        tx: UnboundedSender<StreamDelta>,
     ) -> anyhow::Result<ChatResponse> {
         let hint = req.key_hint.clone().unwrap_or_default();
         if self.keys.is_empty() {
@@ -894,6 +974,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         };
 
         let mut acc = String::new();
+        let mut reasoning_acc = String::new();
         let mut buf = String::new();
         // 用量统计（三协议：openai 末块 usage / anthropic message_start+message_delta / gemini usageMetadata）
         let mut usage_prompt: u64 = 0;
@@ -975,9 +1056,14 @@ impl LlmProvider for OpenAiCompatibleProvider {
                             }
                         }
                     }
-                    if let Some(delta) = self.parse_delta(&v) {
-                        acc.push_str(&delta);
-                        let _ = tx.send(delta);
+                    let (text_delta, think_delta) = self.parse_delta(&v);
+                    if let Some(t) = think_delta {
+                        reasoning_acc.push_str(&t);
+                        let _ = tx.send(StreamDelta::Thinking(t));
+                    }
+                    if let Some(d) = text_delta {
+                        acc.push_str(&d);
+                        let _ = tx.send(StreamDelta::Text(d));
                     }
                     // 用量：openai（末块 usage）/ anthropic（message_start 输入）/ gemini
                     if let Some(u) = v.get("usage") {
@@ -1025,6 +1111,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         tool_calls.extend(gemini_calls);
         Ok(ChatResponse {
             content: acc,
+            reasoning: reasoning_acc,
             prompt_tokens: usage_prompt,
             completion_tokens: usage_completion,
             tool_calls,
@@ -1069,7 +1156,7 @@ impl LlmProvider for UnconfiguredProvider {
     async fn stream(
         &self,
         _req: ChatRequest,
-        _tx: UnboundedSender<String>,
+        _tx: UnboundedSender<StreamDelta>,
     ) -> anyhow::Result<ChatResponse> {
         anyhow::bail!("{}", self.hint())
     }
@@ -1114,7 +1201,7 @@ impl LlmProvider for MockLlmProvider {
     }
 
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
-        Ok(ChatResponse { content: respond(&req), prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
+        Ok(ChatResponse { content: respond(&req), reasoning: String::new(), prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
     }
 
     async fn embed(&self, _model: &str, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -1124,15 +1211,15 @@ impl LlmProvider for MockLlmProvider {
     async fn stream(
         &self,
         req: ChatRequest,
-        tx: UnboundedSender<String>,
+        tx: UnboundedSender<StreamDelta>,
     ) -> anyhow::Result<ChatResponse> {
         let content = respond(&req);
         for chunk in content.as_bytes().chunks(48) {
             let piece = String::from_utf8_lossy(chunk).to_string();
-            let _ = tx.send(piece);
+            let _ = tx.send(StreamDelta::Text(piece));
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
-        Ok(ChatResponse { content, prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
+        Ok(ChatResponse { content, reasoning: String::new(), prompt_tokens: 100, completion_tokens: 200, tool_calls: Vec::new() })
     }
 }
 

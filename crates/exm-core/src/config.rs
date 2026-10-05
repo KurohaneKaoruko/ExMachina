@@ -83,6 +83,10 @@ pub struct SecurityConfig {
     pub terminal_timeout_secs: u32,
     /// 工具结果超过该字符数时落盘并回填路径（0 = 不落盘，仅截断）
     pub tool_output_spill_chars: usize,
+    /// 审批等待（秒）：拦截后运行时在原地等待人工决定的最大时长，
+    /// 期间批准 → 执行结果直接回灌模型继续干活；超时 → 按「受阻回流」交还上层。0 = 不等待（旧行为）
+    #[serde(default)]
+    pub approval_wait_secs: u64,
 }
 
 impl Default for SecurityConfig {
@@ -93,6 +97,33 @@ impl Default for SecurityConfig {
             auth_key: String::new(),
             terminal_timeout_secs: 120,
             tool_output_spill_chars: 12000,
+            approval_wait_secs: 120,
+        }
+    }
+}
+
+/// Computer Use 配置（computer 工具：截屏 + 鼠标 / 键盘控制本机桌面）。
+/// **默认关闭**——把整台机器的输入权交给模型必须是显式决定。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseConfig {
+    /// 总开关：false = computer 工具不下发给模型
+    pub enabled: bool,
+    /// 输入类动作（点击 / 键入 / 滚动 / 拖拽 / 热键）是否走审批闸门（截屏始终只读放行）
+    pub approval: bool,
+    /// 截图最长边（像素，超出等比缩小后回灌视觉模型；0 = 不缩放）
+    pub max_edge: u32,
+    /// 单次动作间隔下限（毫秒）：防失控连点
+    pub action_interval_ms: u64,
+}
+
+impl Default for ComputerUseConfig {
+    fn default() -> Self {
+        ComputerUseConfig {
+            enabled: false,
+            approval: true,
+            max_edge: 1568,
+            action_interval_ms: 120,
         }
     }
 }
@@ -355,6 +386,8 @@ pub struct ExmConfig {
     pub use_mock: bool,
     /// 执行审批（安全闸门）
     pub security: SecurityConfig,
+    /// Computer Use（截屏 + 鼠标键盘控制；默认关闭）
+    pub computer: ComputerUseConfig,
     /// 自动化（心跳巡检）
     pub automation: AutomationConfig,
     /// 联网搜索后端（web_search 工具；未配置则不下发该工具）
@@ -393,6 +426,8 @@ struct ConfigFile {
     memory: Option<MemoryConfigFile>,
     #[serde(default)]
     security: Option<SecurityFile>,
+    #[serde(default)]
+    computer: Option<ComputerUseConfig>,
     #[serde(default)]
     automation: Option<AutomationFile>,
     #[serde(default)]
@@ -545,6 +580,8 @@ struct SecurityFile {
     terminal_timeout_secs: Option<u32>,
     #[serde(default)]
     tool_output_spill_chars: Option<usize>,
+    #[serde(default)]
+    approval_wait_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -677,6 +714,9 @@ impl ExmConfig {
             tool_output_spill_chars: file_sec
                 .tool_output_spill_chars
                 .unwrap_or_else(|| SecurityConfig::default().tool_output_spill_chars),
+            approval_wait_secs: file_sec
+                .approval_wait_secs
+                .unwrap_or_else(|| SecurityConfig::default().approval_wait_secs),
         };
         let automation = AutomationConfig {
             heartbeat_enabled: file_auto.heartbeat_enabled
@@ -784,6 +824,17 @@ impl ExmConfig {
             vision_relay_model: file_cap.vision_relay.unwrap_or_default(),
             use_mock,
             security,
+            computer: {
+                let mut c = file.computer.clone().unwrap_or_default();
+                // 环境变量直开（自动化部署）：EXM_COMPUTER_USE=1 强制启用
+                if std::env::var("EXM_COMPUTER_USE")
+                    .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false)
+                {
+                    c.enabled = true;
+                }
+                c
+            },
             automation,
             search: file.search.clone().unwrap_or_default(),
             hooks: file.hooks.clone().unwrap_or_default(),
@@ -853,7 +904,9 @@ impl ExmConfig {
                 auth_key: Some(self.security.auth_key.clone()),
                 terminal_timeout_secs: Some(self.security.terminal_timeout_secs),
                 tool_output_spill_chars: Some(self.security.tool_output_spill_chars),
+                approval_wait_secs: Some(self.security.approval_wait_secs),
             }),
+            computer: Some(self.computer.clone()),
             automation: Some(AutomationFile {
                 heartbeat_enabled: Some(self.automation.heartbeat_enabled),
                 heartbeat_interval_minutes: Some(self.automation.heartbeat_interval_minutes),
@@ -1005,7 +1058,28 @@ pub fn config_schema() -> serde_json::Value {
                       "help": "前台命令的最长执行时间；超时强杀进程树。长任务请让 AI 用后台模式（不受此限）" },
                     { "key": "security.toolOutputSpillChars", "label": "工具结果落盘阈值（字符）", "kind": "number",
                       "default": "12000", "required": false, "min": 1000, "max": 1000000,
-                      "help": "结果超过该长度即全文落盘（.exmachina/tool-output/），回填摘要与文件路径供按需回读；0 = 仅截断" }
+                      "help": "结果超过该长度即全文落盘（.exmachina/tool-output/），回填摘要与文件路径供按需回读；0 = 仅截断" },
+                    { "key": "security.approvalWaitSecs", "label": "审批等待（秒）", "kind": "number",
+                      "default": "120", "required": false, "min": 0, "max": 3600,
+                      "help": "命令被审批拦截后，运行时原地等待人工决定的最长时长：期间在聊天里批准 → 执行结果直接回灌模型继续干活；超时按受阻回流。0 = 不等待（直接受阻）" }
+                ]
+            },
+            {
+                "key": "computerUse",
+                "label": "Computer Use",
+                "fields": [
+                    { "key": "computer.enabled", "label": "启用 Computer Use", "kind": "boolean",
+                      "default": "false", "required": false,
+                      "help": "开启后个体获得 computer 工具：截屏 + 鼠标 / 键盘控制本机桌面。默认关闭——这是把整机输入权交给模型的显式决定" },
+                    { "key": "computer.approval", "label": "输入动作审批", "kind": "boolean",
+                      "default": "true", "required": false,
+                      "help": "点击 / 键入 / 滚动 / 拖拽 / 热键一律先过审批闸门（截屏只读放行）；关闭后模型可直接操作桌面" },
+                    { "key": "computer.maxEdge", "label": "截图最长边（像素）", "kind": "number",
+                      "default": "1568", "required": false, "min": 0, "max": 4096,
+                      "help": "截图回灌视觉模型前等比缩小到该边长以内，控制 token 消耗；0 = 原图不缩放" },
+                    { "key": "computer.actionIntervalMs", "label": "动作最小间隔（毫秒）", "kind": "number",
+                      "default": "120", "required": false, "min": 0, "max": 5000,
+                      "help": "两次输入动作之间的强制间隔，防失控连点" }
                 ]
             },
             {

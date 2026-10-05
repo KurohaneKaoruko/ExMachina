@@ -1,9 +1,11 @@
 //! 个体注册表 —— 多组实现（docs/09）
 //!
-//! 组（Group）是隔离与切换的基本单位：
-//!   - 内置默认组 = `agents/`（definitions/ prompts/ playbooks/ personas/），builtin=true，定义受保护；
-//!   - 自定义组   = `agents/groups/<gid>/`（同构布局 + group.json），主智能体拥有组内增删改权限。
-//! 切换组即热切换：指挥体的规划/派发/提示词/人设全部落在激活组内。
+//! 组（Group）是隔离与切换的基本单位，统一布局 `agents/groups/<gid>/`：
+//!   - SOUL.md（主智能体人格，用户面）+ MEMORY.md（组浅层记忆快照）
+//!   - agents/*.json（成员定义，含主智能体）+ prompts/*.md（成员提示词）+ adaptations/（经验要点）
+//!   - 内置默认组 = groups/default（builtin=true，定义受保护）；主智能体与单体持 SOUL，子个体无人格层
+//!   - 集群级共享：protocol/（协议）、skills/（技能）、default-soul.md（兜底人格）
+//! 切换组即热切换：指挥体的规划/派发/提示词/SOUL 全部落在激活组内。
 //! 分布式实现可替换本文件（接口一致）。
 
 use crate::types::{normalize_domain, AgentDefinition, GroupMeta, Tier, ToolName};
@@ -85,7 +87,7 @@ fn valid_id(s: &str) -> bool {
 impl LocalRegistry {
     pub fn new(agents_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let dir = agents_dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(dir.join("definitions"))?;
+        std::fs::create_dir_all(dir.join("singles"))?;
         let reg = LocalRegistry {
             dir,
             groups: RwLock::new(HashMap::new()),
@@ -100,11 +102,14 @@ impl LocalRegistry {
     pub fn reload(&self) -> anyhow::Result<()> {
         let mut groups = HashMap::new();
 
-        // 内置默认组：agents/ 根目录
-        let default_meta_path = self.dir.join("group.json");
+        // 组统一放 agents/groups/<gid>/；内置默认组 = groups/default（builtin=true，定义受保护）
+        let groups_dir = self.dir.join("groups");
+        std::fs::create_dir_all(&groups_dir)?;
+        let default_dir = groups_dir.join("default");
+        let default_meta_path = default_dir.join("group.json");
         let default_meta = if default_meta_path.exists() {
             serde_json::from_str(&std::fs::read_to_string(&default_meta_path)?)
-                .context("解析 agents/group.json 失败")?
+                .context("解析 groups/default/group.json 失败")?
         } else {
             let meta = GroupMeta {
                 id: "default".into(),
@@ -117,16 +122,16 @@ impl LocalRegistry {
                 builtin: true,
                 created_at: crate::types::now_iso(),
             };
+            std::fs::create_dir_all(&default_dir)?;
             std::fs::write(&default_meta_path, serde_json::to_string_pretty(&meta)?)?;
             meta
         };
         groups.insert(
             default_meta.id.clone(),
-            self.load_group(default_meta, self.dir.clone())?,
+            self.load_group(default_meta, default_dir)?,
         );
 
-        // 自定义组：agents/groups/<gid>/
-        let groups_dir = self.dir.join("groups");
+        // 自定义组：groups/<gid>/（跳过默认组）
         if groups_dir.exists() {
             for entry in std::fs::read_dir(&groups_dir)?.filter_map(|e| e.ok()) {
                 let gdir = entry.path();
@@ -138,6 +143,9 @@ impl LocalRegistry {
                     .with_context(|| format!("解析组元数据失败: {}", meta_path.display()))?;
                 if !valid_id(&meta.id) {
                     anyhow::bail!("非法组 id: {}", meta.id);
+                }
+                if meta.id == "default" {
+                    continue; // 默认组已在上方装载
                 }
                 groups.insert(meta.id.clone(), self.load_group(meta, gdir)?);
             }
@@ -153,13 +161,25 @@ impl LocalRegistry {
         let mut singles = HashMap::new();
         let singles_dir = self.dir.join("singles");
         if singles_dir.exists() {
-            for entry in std::fs::read_dir(&singles_dir)?.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if p.extension().map(|x| x == "json").unwrap_or(false) {
-                    let def: AgentDefinition = serde_json::from_str(&std::fs::read_to_string(&p)?)
-                        .with_context(|| format!("单体定义校验失败: {}", p.display()))?;
-                    singles.insert(def.identifier.clone(), def);
+            // 目录制：agents/singles/<id>/agent.json
+            let mut def_files: Vec<PathBuf> = std::fs::read_dir(&singles_dir)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir() && p.join("agent.json").is_file())
+                .map(|p| p.join("agent.json"))
+                .collect();
+            // 兼容旧布局：singles/<id>.json 平铺定义
+            if let Ok(entries) = std::fs::read_dir(&singles_dir) {
+                for e in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+                    if e.is_file() && e.extension().map(|x| x == "json").unwrap_or(false) {
+                        def_files.push(e);
+                    }
                 }
+            }
+            def_files.sort();
+            for p in def_files {
+                let def: AgentDefinition = serde_json::from_str(&std::fs::read_to_string(&p)?)
+                    .with_context(|| format!("单体定义校验失败: {}", p.display()))?;
+                singles.insert(def.identifier.clone(), def);
             }
         }
         *self.singles.write() = singles;
@@ -180,8 +200,9 @@ impl LocalRegistry {
     }
 
     fn load_group(&self, meta: GroupMeta, dir: PathBuf) -> anyhow::Result<GroupData> {
+        // 组布局：SOUL.md（主智能体人格）+ agents/（成员定义）+ prompts/（成员提示词）
         let mut defs = HashMap::new();
-        let def_dir = dir.join("definitions");
+        let def_dir = dir.join("agents");
         if def_dir.exists() {
             let mut files: Vec<PathBuf> = std::fs::read_dir(&def_dir)?
                 .filter_map(|e| e.ok().map(|e| e.path()))
@@ -258,9 +279,7 @@ impl LocalRegistry {
             anyhow::bail!("组名不能为空");
         }
         let gdir = self.dir.join("groups").join(&gid);
-        for sub in ["definitions", "prompts", "personas"] {
-            std::fs::create_dir_all(gdir.join(sub))?;
-        }
+        std::fs::create_dir_all(&gdir)?;
         let meta = GroupMeta {
             id: gid.clone(),
             name: name.trim().to_string(),
@@ -381,9 +400,20 @@ impl LocalRegistry {
     fn variant_path(&self, stem: &str, lang: &str) -> Option<PathBuf> {
         let file = format!("{stem}.{lang}.md");
         if self.single_mode() {
-            return Some(self.dir.join("singles").join("prompts").join(file));
+            return Some(if stem.contains('/') || stem.contains('\\') {
+                self.singles_dir().join(&file)
+            } else {
+                self.dir.join("singles").join("prompts").join(&file)
+            });
         }
-        self.with_active(|g| g.dir.join("prompts").join(file))
+        let groups = self.groups.read();
+        let g = groups.get(&*self.active.read());
+        let dir = g.map(|g| g.dir.clone()).unwrap_or_else(|| self.dir.clone());
+        Some(if stem.contains('/') || stem.contains('\\') {
+            dir.join(&file)
+        } else {
+            dir.join("prompts").join(file)
+        })
     }
 
     fn singles_dir(&self) -> PathBuf {
@@ -391,7 +421,17 @@ impl LocalRegistry {
     }
 
     fn singles_prompt_path(&self, prompt_file: &str) -> PathBuf {
-        self.singles_dir().join("prompts").join(prompt_file)
+        if prompt_file.contains('/') || prompt_file.contains('\\') {
+            // 新约定：单体目录 agents/singles/<id>/PROMPT.md
+            self.singles_dir().join(prompt_file)
+        } else {
+            self.singles_dir().join("prompts").join(prompt_file)
+        }
+    }
+
+    /// 单体定义文件：agents/singles/<id>/agent.json
+    fn single_def_path(&self, id: &str) -> PathBuf {
+        self.singles_dir().join(id).join("agent.json")
     }
 
     /// 读取单体智能体提示词
@@ -407,12 +447,13 @@ impl LocalRegistry {
             anyhow::bail!("name/description 不能为空");
         }
         if def.prompt_file.trim().is_empty() {
-            def.prompt_file = format!("{}.md", def.identifier);
+            def.prompt_file = format!("{}/PROMPT.md", def.identifier);
         }
         def.domain = normalize_domain(&def.domain);
-        let dir = self.singles_dir();
-        std::fs::create_dir_all(dir.join("prompts"))?;
         let prompt_path = self.singles_prompt_path(&def.prompt_file);
+        if let Some(parent) = prompt_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Some(text) = prompt {
             std::fs::write(&prompt_path, text)?;
         } else if !prompt_path.exists() {
@@ -433,18 +474,18 @@ impl LocalRegistry {
             )?;
         }
         self.singles.write().insert(def.identifier.clone(), def.clone());
-        std::fs::write(dir.join(format!("{}.json", def.identifier)), serde_json::to_string_pretty(&def)?)?;
+        let def_path = self.single_def_path(&def.identifier);
+        std::fs::create_dir_all(def_path.parent().unwrap())?;
+        std::fs::write(def_path, serde_json::to_string_pretty(&def)?)?;
         Ok(def)
     }
 
     pub fn remove_single(&self, id: &str) -> anyhow::Result<bool> {
-        let prompt_file = self.singles.read().get(id).map(|d| d.prompt_file.clone());
         let removed = self.singles.write().remove(id).is_some();
         if removed {
-            if let Some(pf) = prompt_file {
-                let _ = std::fs::remove_file(self.singles_prompt_path(&pf));
-            }
-            let _ = std::fs::remove_file(self.singles_dir().join(format!("{id}.json")));
+            // 整目录移除（PROMPT/SOUL/MEMORY 随个体走）
+            let _ = std::fs::remove_dir_all(self.singles_dir().join(id));
+            let _ = std::fs::remove_file(self.singles_dir().join(format!("{id}.json"))); // 旧布局清理
             if self.active_single() == Some(id.to_string()) {
                 self.set_active_single(None)?;
             }
@@ -530,7 +571,30 @@ impl LocalRegistry {
         self.groups.read().get(gid).map(|g| g.defs.len()).unwrap_or(0)
     }
 
-    // ---------------- 提示词 / Playbook / 人设（激活组） ----------------
+    // ---------------- 提示词 / Playbook / SOUL（激活组） ----------------
+
+    /// 组目录（groups/<gid>/，MEMORY.md / SOUL.md / agents/ / prompts/ 所在）
+    pub fn group_dir(&self, gid: &str) -> Option<PathBuf> {
+        self.groups.read().get(gid).map(|g| g.dir.clone())
+    }
+
+    /// 单体目录（singles/，公开供记忆渲染等使用）
+    pub fn singles_dir_pub(&self) -> PathBuf {
+        self.singles_dir()
+    }
+
+    /// 提示词路径解析：`promptFile` 含 `/` = 相对编成根的个体目录路径（新约定 `<id>/PROMPT.md`）；
+    /// 否则兼容旧约定 `<编成根>/prompts/<file>`。
+    fn prompt_fs_path(&self, prompt_file: &str) -> PathBuf {
+        let groups = self.groups.read();
+        let g = groups.get(&*self.active.read());
+        let dir = g.map(|g| g.dir.clone()).unwrap_or_else(|| self.dir.clone());
+        if prompt_file.contains('/') || prompt_file.contains('\\') {
+            dir.join(prompt_file)
+        } else {
+            dir.join("prompts").join(prompt_file)
+        }
+    }
 
     pub fn load_prompt(&self, prompt_file: &str) -> anyhow::Result<String> {
         if self.single_mode() {
@@ -538,7 +602,7 @@ impl LocalRegistry {
                 return Ok(text);
             }
         }
-        // 语言变体：EXM_LANG=en 时优先 {stem}.{lang}.md（如 exmachina-orchestrator.en.md）
+        // 语言变体：EXM_LANG=en 时优先 {stem}.{lang}.md（如 <id>/PROMPT.en.md）
         let lang = crate::config::ExmConfig::load_language();
         if lang != "zh" {
             let stem = prompt_file.strip_suffix(".md").unwrap_or(prompt_file);
@@ -551,22 +615,25 @@ impl LocalRegistry {
                 }
             }
         }
-        let groups = self.groups.read();
-        let g = groups.get(&*self.active.read()).context("无激活组")?;
-        let p = g.dir.join("prompts").join(prompt_file);
+        let p = self.prompt_fs_path(prompt_file);
         std::fs::read_to_string(&p).with_context(|| format!("读取提示词失败: {}", p.display()))
     }
 
     /// 组内提示词是否存在
     pub fn prompt_exists(&self, prompt_file: &str) -> bool {
-        self.with_active(|g| g.dir.join("prompts").join(prompt_file).exists()).unwrap_or(false)
+        if self.single_mode() {
+            return self.singles_prompt_path(prompt_file).exists();
+        }
+        self.prompt_fs_path(prompt_file).exists()
     }
 
     /// 写入组内提示词文件（创建/更新个体时使用）
     pub fn write_prompt(&self, prompt_file: &str, content: &str) -> anyhow::Result<()> {
-        let groups = self.groups.read();
-        let g = groups.get(&*self.active.read()).context("无激活组")?;
-        let p = g.dir.join("prompts").join(prompt_file);
+        let p = if self.single_mode() {
+            self.singles_prompt_path(prompt_file)
+        } else {
+            self.prompt_fs_path(prompt_file)
+        };
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -660,7 +727,12 @@ impl LocalRegistry {
         let mut prompts = serde_json::Map::new();
         for d in g.defs.values() {
             agents.push(serde_json::to_value(d)?);
-            let pp = g.dir.join("prompts").join(&d.prompt_file);
+            // 目录制：promptFile 是相对编成根的路径（<id>/PROMPT.md）；旧布局回落 prompts/ 拼接
+            let pp = if d.prompt_file.contains('/') || d.prompt_file.contains('\\') {
+                g.dir.join(&d.prompt_file)
+            } else {
+                g.dir.join("prompts").join(&d.prompt_file)
+            };
             if let Ok(text) = std::fs::read_to_string(&pp) {
                 prompts.insert(d.prompt_file.clone(), serde_json::Value::String(text));
             }
@@ -735,11 +807,13 @@ impl LocalRegistry {
     fn adaptation_path(&self, identifier: &str) -> Option<PathBuf> {
         self.with_active(|g| {
             if g.defs.contains_key(identifier) {
-                g.dir.join("adaptations").join(format!("{identifier}.json"))
+                // 子个体无独立目录：经验要点集中在组目录 adaptations/
+                Some(g.dir.join("adaptations").join(format!("{identifier}.json")))
             } else {
-                PathBuf::new()
+                None
             }
         })
+        .flatten()
     }
 
     /// 读取个体的经验改进要点（激活组内）
@@ -845,7 +919,7 @@ impl LocalRegistry {
             anyhow::bail!("内置组的定义受保护，不可修改个体");
         }
 
-        // 提示词：显式提供则写入；否则新建时给模板
+        // 提示词：显式提供则写入；否则新建时给模板。路径 = 组内 prompts/<promptFile>
         let prompt_path = g.dir.join("prompts").join(&def.prompt_file);
         if let Some(text) = prompt {
             std::fs::create_dir_all(prompt_path.parent().unwrap())?;
@@ -869,8 +943,9 @@ impl LocalRegistry {
         g.defs.insert(def.identifier.clone(), def.clone());
         let meta_path = g.dir.join("group.json");
         std::fs::write(&meta_path, serde_json::to_string_pretty(&g.meta)?)?;
-        // 持有写锁期间直接落盘（不可再进入 persist_def 等二次加锁路径 → 防自锁）
-        let def_path = g.dir.join("definitions").join(format!("{}.json", def.identifier));
+        // 持有写锁期间直接落盘（不可再进入二次加锁路径 → 防自锁）；定义落组内 agents/
+        let def_path = g.dir.join("agents").join(format!("{}.json", def.identifier));
+        std::fs::create_dir_all(def_path.parent().unwrap())?;
         std::fs::write(&def_path, serde_json::to_string_pretty(&def)?)?;
         Ok(def)
     }
@@ -886,8 +961,9 @@ impl LocalRegistry {
             anyhow::bail!("主智能体不可删除（可先 set_primary 转移角色）");
         }
         let def = g.defs.remove(identifier).context("个体不存在")?;
-        let _ = std::fs::remove_file(g.dir.join("definitions").join(format!("{}.json", identifier)));
+        let _ = std::fs::remove_file(g.dir.join("agents").join(format!("{identifier}.json")));
         let _ = std::fs::remove_file(g.dir.join("prompts").join(&def.prompt_file));
+        let _ = std::fs::remove_file(g.dir.join("adaptations").join(format!("{identifier}.json")));
         Ok(())
     }
 
@@ -933,6 +1009,11 @@ impl LocalRegistry {
         Ok(())
     }
 
+    /// 个体定义文件：组内 agents/<id>.json（单体 singles/<id>/agent.json）
+    fn def_path_in(g_dir: &Path, identifier: &str) -> PathBuf {
+        g_dir.join("agents").join(format!("{identifier}.json"))
+    }
+
     /// 设置个体默认模型（单体优先，其次跨组查找；空串清除 = 跟随所属组/全局）
     pub fn set_agent_model(&self, identifier: &str, model: &str) -> anyhow::Result<()> {
         let m = model.trim();
@@ -944,7 +1025,8 @@ impl LocalRegistry {
                 anyhow::bail!("个体不存在: {identifier}");
             };
             def.model_hint = hint;
-            let path = self.singles_dir().join(format!("{identifier}.json"));
+            let path = self.single_def_path(identifier);
+            std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, serde_json::to_string_pretty(def)?)?;
             return Ok(());
         }
@@ -957,7 +1039,7 @@ impl LocalRegistry {
                     d.model_hint = hint.clone();
                     (
                         g.meta.id.clone(),
-                        g.dir.join("definitions").join(format!("{identifier}.json")),
+                        Self::def_path_in(&g.dir, identifier),
                         d,
                     )
                 })
@@ -988,7 +1070,8 @@ impl LocalRegistry {
             if d.name.trim().is_empty() || d.description.trim().is_empty() {
                 anyhow::bail!("name/description 不能为空");
             }
-            let path = self.singles_dir().join(format!("{identifier}.json"));
+            let path = self.single_def_path(identifier);
+            std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, serde_json::to_string_pretty(&d)?)?;
             self.singles.write().insert(identifier.to_string(), d.clone());
             return Ok(d);
@@ -999,7 +1082,7 @@ impl LocalRegistry {
             groups.values().find_map(|g| {
                 g.defs
                     .contains_key(identifier)
-                    .then(|| (g.meta.id.clone(), g.dir.join("definitions").join(format!("{identifier}.json"))))
+                    .then(|| (g.meta.id.clone(), g.dir.join(identifier).join("agent.json")))
             })
         };
         let Some((gid, path)) = owner else {
@@ -1031,57 +1114,71 @@ impl LocalRegistry {
         Ok(())
     }
 
-    // ---------------- 人设（说话风格，组内隔离） ----------------
+    // ---------------- SOUL（灵魂·人格层）：**仅用户面智能体** ----------------
+    // 组 = 组根 SOUL.md（即主智能体的人格，组对用户的脸面）；单体 = singles/<id>/SOUL.md。
+    // 子个体无人格层（返回 None）：统一智械纪律已在各自系统提示词内。
 
+    /// 组主智能体的 SOUL：组根 SOUL.md。子个体返回 None。
     fn persona_path(&self, identifier: &str) -> Option<PathBuf> {
         let groups = self.groups.read();
         let g = groups.get(&*self.active.read())?;
-        if !g.defs.contains_key(identifier) {
-            return None;
-        }
-        Some(g.dir.join("personas").join(format!("{identifier}.md")))
+        (g.defs.contains_key(identifier) && g.meta.primary.as_deref() == Some(identifier))
+            .then(|| g.dir.join("SOUL.md"))
     }
 
-    /// 默认人设：智械体风格（结构化陈述、零情绪、证据分级）
+    /// 共享默认 SOUL：`agents/default-soul.md`（未定制 SOUL 的用户面智能体兜底），热读取。
+    /// 以下常量为该文件不可读时的内置降级文本。
     pub const DEFAULT_PERSONA: &'static str = "以\"智械体\"风格说话：\n\
         - 客观、简洁、零情绪；禁止寒暄、感叹、夸赞与拟人化表达。\n\
         - 陈述结构化：结论先行，要点分条；判断尽可能附带证据等级（A–D）。\n\
         - 术语精确，不使用比喻与修辞；不确定时显式说明置信度。\n\
         - 面向任务：只输出推进任务、降低不确定性所需的信息。";
 
+    pub fn default_soul(&self) -> String {
+        std::fs::read_to_string(self.dir.join("default-soul.md"))
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| Self::DEFAULT_PERSONA.to_string())
+    }
+
+    /// SOUL 读取：组主智能体 = 组根 SOUL.md（缺省回落 default-soul.md）。
+    /// 子个体无人格层：直接返回统一智械纪律（不读文件）。
     pub fn persona(&self, identifier: &str) -> anyhow::Result<String> {
-        let path = self
-            .persona_path(identifier)
-            .context("个体不存在（激活组内）")?;
+        let Some(path) = self.persona_path(identifier) else {
+            return Ok(self.default_soul());
+        };
         match std::fs::read_to_string(path) {
             Ok(text) if !text.trim().is_empty() => Ok(text),
-            _ => Ok(Self::DEFAULT_PERSONA.to_string()),
+            _ => Ok(self.default_soul()),
         }
     }
 
     pub fn persona_is_custom(&self, identifier: &str) -> anyhow::Result<bool> {
-        let path = self
+        Ok(self
             .persona_path(identifier)
-            .context("个体不存在（激活组内）")?;
-        Ok(path.exists())
+            .map(|p| p.exists())
+            .unwrap_or(false))
     }
 
     pub fn set_persona(&self, identifier: &str, text: &str) -> anyhow::Result<()> {
-        let path = self
-            .persona_path(identifier)
-            .context("个体不存在（激活组内）")?;
+        // 仅用户面智能体（组主智能体）可设：写入组根 SOUL.md
+        let path = self.persona_path(identifier).ok_or_else(|| {
+            anyhow::anyhow!("子个体无人格层（SOUL 仅限主智能体与单体）：{identifier}")
+        })?;
         let text = text.trim();
         if text.is_empty() {
-            anyhow::bail!("人设内容不能为空（如需恢复默认请使用 reset）");
+            anyhow::bail!("SOUL 内容不能为空（如需恢复默认请使用 reset）");
         }
+        std::fs::create_dir_all(path.parent().unwrap())?;
         std::fs::write(&path, format!("{text}\n"))?;
         Ok(())
     }
 
     pub fn reset_persona(&self, identifier: &str) -> anyhow::Result<bool> {
-        let path = self
-            .persona_path(identifier)
-            .context("个体不存在（激活组内）")?;
+        let Some(path) = self.persona_path(identifier) else {
+            return Ok(false);
+        };
         if path.exists() {
             std::fs::remove_file(&path)?;
             Ok(true)
@@ -1090,20 +1187,20 @@ impl LocalRegistry {
         }
     }
 
-    // ---------------- 单体智能体人设（agents/singles/personas/，与组内个体同语义） ----------------
+    // ---------------- 单体智能体 SOUL（agents/singles/<id>/SOUL.md，同语义） ----------------
 
     fn single_persona_path(&self, id: &str) -> Option<PathBuf> {
         self.singles
             .read()
             .contains_key(id)
-            .then(|| self.singles_dir().join("personas").join(format!("{id}.md")))
+            .then(|| self.singles_dir().join(id).join("SOUL.md"))
     }
 
     pub fn single_persona(&self, id: &str) -> anyhow::Result<String> {
         let path = self.single_persona_path(id).context("单体不存在")?;
         match std::fs::read_to_string(path) {
             Ok(text) if !text.trim().is_empty() => Ok(text),
-            _ => Ok(Self::DEFAULT_PERSONA.to_string()),
+            _ => Ok(self.default_soul()),
         }
     }
 
@@ -1113,10 +1210,16 @@ impl LocalRegistry {
     }
 
     pub fn single_set_persona(&self, id: &str, text: &str) -> anyhow::Result<()> {
-        let path = self.single_persona_path(id).context("单体不存在")?;
+        // 写入恒落到单体目录 agents/singles/<id>/SOUL.md
+        let path = self
+            .singles
+            .read()
+            .contains_key(id)
+            .then(|| self.singles_dir().join(id).join("SOUL.md"))
+            .context("单体不存在")?;
         let text = text.trim();
         if text.is_empty() {
-            anyhow::bail!("人设内容不能为空（如需恢复默认请使用 reset）");
+            anyhow::bail!("SOUL 内容不能为空（如需恢复默认请使用 reset）");
         }
         std::fs::create_dir_all(path.parent().unwrap())?;
         std::fs::write(&path, format!("{text}\n"))?;
@@ -1124,7 +1227,12 @@ impl LocalRegistry {
     }
 
     pub fn single_reset_persona(&self, id: &str) -> anyhow::Result<bool> {
-        let path = self.single_persona_path(id).context("单体不存在")?;
+        let path = self
+            .singles
+            .read()
+            .contains_key(id)
+            .then(|| self.singles_dir().join(id).join("SOUL.md"))
+            .context("单体不存在")?;
         if path.exists() {
             std::fs::remove_file(&path)?;
             Ok(true)

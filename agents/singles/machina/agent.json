@@ -16,5 +16,5 @@
     "web_search"
   ],
   "whenToCall": "用户直接与智能体对话时",
-  "promptFile": "machina.md"
+  "promptFile": "machina/PROMPT.md"
 }

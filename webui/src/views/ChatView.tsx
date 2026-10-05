@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { AudioOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { AudioOutlined, CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { agentIdEn } from "../models";
 import { useExm } from "../store";
@@ -11,6 +11,7 @@ interface TargetInfo { mode: "group" | "single"; id: string; name?: string }
 import { StatementList } from "../components/Statements";
 import { Markdown } from "../components/Markdown";
 import { AsciiMeter } from "../components/Ascii";
+import { ToolCallList } from "../components/ToolCall";
 import type { ChatMessage } from "../types";
 
 function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
@@ -22,15 +23,33 @@ function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
       <div className="msg-head">
         {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
       </div>
+      {m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
+  );
+}
+
+/** 折叠思维流：分轨呈现「思考」，默认收起、流式时显示最新一行预览 */
+function ThinkingBlock({ text, label }: { text: string; label: string }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  if (!text.trim()) return <></>;
+  const preview = text.trimEnd().split("\n").pop() ?? "";
+  return (
+    <div className="thinking-block" onClick={() => setOpen(!open)}>
+      <div className="thinking-head">
+        <span className="thinking-dot" /> {label}
+        {!open && <span className="thinking-preview">{preview.slice(-60)}</span>}
+      </div>
+      {open && <pre className="thinking-body">{text}</pre>}
+    </div>
   );
 }
 
 export function ChatView(): React.ReactElement {
   const t = useT();
   const {
-    messages, liveOrch, liveUnits, timeline, running, send, wsConnected,
+    messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
+    timeline, running, send, wsConnected, decideApproval,
     sessions, sessionId, selectSession, newSession,
     groups, activeGroup, setTarget,
     refreshAgents,
@@ -140,7 +159,7 @@ export function ChatView(): React.ReactElement {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, liveOrch, liveUnits, timeline]);
+  }, [messages, liveOrch, liveUnits, runToolCalls, timeline]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -299,6 +318,30 @@ export function ChatView(): React.ReactElement {
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
         </div>
         {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert" />}
+        {/* 内联审批：命令被拦截时在消息流中直接裁决——批准后输出回灌，模型继续干活 */}
+        {approvals.map((a) => (
+          <Card key={a.approvalId} size="small" className="approval-card">
+            <div className="approval-head">
+              <span className="approval-title">⏸ {t("chat.approvalTitle")}</span>
+              <span className="approval-agent mono">{a.agentId}</span>
+            </div>
+            <pre className="approval-cmd">{a.command}</pre>
+            <div className="approval-ops">
+              <Button
+                type="primary"
+                size="small"
+                icon={<CheckOutlined />}
+                onClick={() => void decideApproval(a.approvalId, true)}
+              >
+                {t("chat.approvalApprove")}
+              </Button>
+              <Button size="small" danger onClick={() => void decideApproval(a.approvalId, false)}>
+                {t("chat.approvalDeny")}
+              </Button>
+              <span className="approval-hint">{t("chat.approvalHint")}</span>
+            </div>
+          </Card>
+        ))}
         <div className="chat-scroll">
           {messages.map((m) => (
             <MessageBubble key={m.id} m={m} />
@@ -318,6 +361,8 @@ export function ChatView(): React.ReactElement {
                     <span className="tl-text">{tl.text}</span>
                   </div>
                 ))}
+                {/* 工具执行轨迹：文件操作 / 终端命令 / 截屏全程可见 */}
+                <ToolCallList calls={runToolCalls} />
               </Space>
             </Card>
           )}
@@ -327,6 +372,7 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
               </div>
+              <ThinkingBlock text={liveUnitThinking[agent] ?? ""} label={t("chat.thinking")} />
               <pre className="live-pre">{content}</pre>
             </Card>
           ))}
@@ -336,6 +382,7 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{t("chat.role.orchestrator")}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
               </div>
+              <ThinkingBlock text={liveThinking} label={t("chat.thinking")} />
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
           )}

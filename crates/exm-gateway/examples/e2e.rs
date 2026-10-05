@@ -33,7 +33,7 @@ impl Checker {
 fn find_root() -> std::path::PathBuf {
     let mut dir = std::env::current_dir().unwrap();
     loop {
-        if dir.join("agents").join("definitions").exists() {
+        if dir.join("agents").join("groups").join("default").join("group.json").exists() {
             return dir;
         }
         if !dir.pop() {

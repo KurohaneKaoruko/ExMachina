@@ -10,6 +10,7 @@ pub mod bus;
 pub mod config;
 pub mod cron;
 pub mod browser;
+pub mod computer;
 pub mod fsdb;
 pub mod image_stash;
 pub mod mcp;
@@ -202,10 +203,25 @@ impl Core {
         Ok(changed)
     }
 
-    /// 重新生成基础记忆文件（memory.md）
+    /// 重新生成基础记忆文件（memory.md，全局浅层视图）；
+    /// 同时刷新：每组一份 `groups/<gid>/MEMORY.md`（组浅层记忆）、每单体一份 `singles/<id>/MEMORY.md`。
+    /// 深层记忆始终在 MemoryStore（数据库检索/衰减/压缩）——MEMORY.md 只是容量受限的人读快照。
     pub fn render_memory_md(&self) -> anyhow::Result<usize> {
         let cfg = self.config();
-        self.memory.render_memory_md(&cfg.memory_md_path)
+        let n = self.memory.render_memory_md(&cfg.memory_md_path)?;
+        let gid = self.registry.active_group();
+        for meta in self.registry.list_groups() {
+            if let Some(dir) = self.registry.group_dir(&meta.id) {
+                let _ = self.memory.render_group_memory_md(&meta.id, dir.join("MEMORY.md"));
+            }
+        }
+        for s in self.registry.list_singles() {
+            let dir = self.registry.singles_dir_pub().join(&s.identifier);
+            let _ = self
+                .memory
+                .render_agent_memory_md(&s.identifier, Some(&gid), dir.join("MEMORY.md"));
+        }
+        Ok(n)
     }
 
     // ---------------- 人设（说话风格） ----------------
@@ -797,6 +813,7 @@ pub fn build_orchestrator(
     .with_hooks(cfg.hooks.clone())
     .with_sandbox(cfg.sandbox.clone())
     .with_browser(cfg.browser.clone())
+    .with_computer(cfg.computer.clone())
     .with_custom_tools(cfg.tools.custom.clone())
     .with_mcp(mcp);
     if let Some(c) = &cron {

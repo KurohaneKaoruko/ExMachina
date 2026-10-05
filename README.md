@@ -83,6 +83,10 @@ cargo run -p exm-cli --release --bin exm -- agents
 
 > Docker：`docker compose up --build`（编成与状态卷持久化，详见 [docker-compose.yml](./docker-compose.yml)）。
 
+> **桌面端**（Tauri 壳，自带本地网关 / `--remote` 远程直连）：见 [desktop/README.md](./desktop/README.md)。
+> **移动端**：无需单独 App——手机浏览器 / PWA 打开网关地址（桌面端局域网地址或远程服务器地址）即为同源客户端，
+> 与桌面端共用同一端口交付（WebUI / API / WS 同端口托管）。
+
 ## 为什么需要"集群"，而不是再要一个助手
 
 单个智能体助手的天花板很清楚：**一个上下文、一串思维链、一次回答**。任务越大，
@@ -144,6 +148,7 @@ EXMACHINA 换了一条路：把"完成一件复杂事"拆成一个**可被审计
 | 第三方工具 | MCP 服务器（stdio / Streamable HTTP）以 `mcp:server:tool` 挂载，懒连接、原生 function calling、审计一致 |
 | 边缘算力 | 旧设备跑 `exm worker` 接入，本地模型承接派发；离线/超时自动回落本地执行 |
 | 语音与多模态 | 对话页麦克风转写（whisper 系）、消息朗读（TTS）、图片输入（按协议映射多模态内容） |
+| **Computer Use** | `computer` 工具：截屏回灌视觉模型 + 鼠标/键盘控制本机桌面；默认关闭显式开启，输入动作过审批闸门，动作节流防失控连点 |
 
 **工程与安全**
 
@@ -151,7 +156,8 @@ EXMACHINA 换了一条路：把"完成一件复杂事"拆成一个**可被审计
 |------|------|
 | 单进程交付 | 一个网关进程同时提供 REST API、WebSocket 事件流与 WebUI 静态托管 |
 | 断点续跑 | 进程被杀/断电后重启自动续跑：已完成节点回流回填，非终态节点重新派发 |
-| 执行闸门 | 终端命令审批（off/risky/always）+ 前缀白名单 + 审批代执行 + 工具审计落库 |
+| 执行闸门 | 终端命令审批（off/risky/always）+ 前缀白名单 + **审批等待回灌**（批准后代执行、输出直灌模型继续干活）+ 工具审计落库 |
+| 过程透明 | `tool.call`/`tool.result` 事件全程可见（命令/文件/耗时/截图），思维链分轨流式（reasoning_content / thinking），WebUI 编码工作台 + 聊天内联审批 |
 | 访问控制 | `authKey` 非空即启用 REST/WS 全量鉴权与 WebUI 登录门；通道级会话白名单 |
 | 预算硬顶 | 会话 token 预算与终端超时强杀（进程树），失控循环不会拖死节点 |
 | 编成即数据 | 个体 / 链路 / 技能 / 人设 / 组全是 `agents/` 下的可编辑数据，热装载，改完即生效 |
@@ -226,7 +232,7 @@ flowchart LR
 | `group list/create/switch/info/delete/export/import` | 智能体组：组建、切换、导入导出组包 |
 | `agent create/remove/set-primary` | 组内个体管理（首个个体自动成为主智能体） |
 | `agent optimize/adaptation/reset-adaptation` | 经验优化：教训提炼为个体行为改进要点 |
-| `persona get/set/reset` | 人设（说话风格）编辑 |
+| `persona get/set/reset` | SOUL（灵魂·人格层）编辑：每个智能体一个 `agents/<id>/SOUL.md`，默认智械人格开箱即用 |
 | `skill list/add/remove` | 技能包（任务目标命中触发词即随派发携带） |
 | `cron list/add/run/enable/disable/remove/runs` | 定时任务（网关常驻时自动调度） |
 | `approval list/approve/deny` | 终端命令审批（高危命令拦截与决定） |
@@ -302,7 +308,8 @@ exm agent reset-adaptation <identifier>              # 重置
 
 | 面板 | 用途 |
 |------|------|
-| 对话 [CHAT] | 主交互面：切换交互目标（组 / 智能体）、实时流式输出、任务时间线、语音输入与朗读 |
+| 对话 [CHAT] | 主交互面：切换交互目标（组 / 智能体）、实时流式输出、思维链折叠、工具执行卡、任务时间线、语音输入与朗读 |
+| 编码 [CODE] | 编码工作台（对标主流编码 Agent）：会话 ｜ 工具优先对话流（diff / 截图 / 内联审批） ｜ 工作区文件树 + 变更清单 + 代码预览 |
 | 智能体 / 智能体组 | 智能体与组的管理：编成、主智能体、组工作区、默认模型 |
 | 个体 [UNITS] | 激活组编成清单、人设可视化编辑、经验优化 |
 | 提供商 [PROVIDERS] | 端点与密钥唯一下发处：多档案、Key 池、连通测试、全局默认 |

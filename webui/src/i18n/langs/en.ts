@@ -4,6 +4,7 @@ import type { Dict } from "../core";
 export const en: Partial<Dict> = {
   // ── 导航与壳层 ──
   "nav.chat": "Chat",
+  "nav.code": "Code",
   "nav.agent": "Agents",
   "nav.groups": "Groups",
   "nav.units": "Units",
@@ -17,6 +18,17 @@ export const en: Partial<Dict> = {
   "nav.memory": "Memory",
   "nav.events": "Events",
   "nav.settings": "Settings",
+
+  // ── Coding workbench ──
+  "code.workspace": "Workspace",
+  "code.emptyWs": "Workspace is empty",
+  "code.sessions": "Sessions",
+  "code.truncated": "File too large, showing first 200KB",
+  "code.placeholder": "Describe the change to implement: goal, constraints, acceptance…",
+  "code.files": "Files",
+  "code.changes": "Changes",
+  "code.changesTitle": "Touched this session",
+  "code.noChanges": "No file changes yet",
   "brand.sub": "Agent Cluster // Console",
   "theme.label": "Theme",
   "lang.label": "Language",
@@ -62,6 +74,11 @@ export const en: Partial<Dict> = {
   "chat.noMatch": "No matching sessions",
   "chat.noSessions": "No sessions yet",
   "chat.wsDown": "Realtime gateway channel lost, reconnecting…",
+  "chat.thinking": "Thinking",
+  "chat.approvalTitle": "Awaiting approval",
+  "chat.approvalApprove": "Approve & run",
+  "chat.approvalDeny": "Deny",
+  "chat.approvalHint": "Approved commands run on your behalf; output flows back to the model",
   "chat.orchRunning": "Orchestrator running",
   "chat.tl.dispatch": "Dispatch",
   "chat.tl.sync": "Sync",

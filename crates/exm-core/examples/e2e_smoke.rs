@@ -7,11 +7,11 @@ use std::time::Duration;
 fn find_workspace_root() -> anyhow::Result<std::path::PathBuf> {
     let mut dir = std::env::current_dir()?;
     loop {
-        if dir.join("agents").join("definitions").exists() {
+        if dir.join("agents").join("groups").join("default").join("group.json").exists() {
             return Ok(dir);
         }
         if !dir.pop() {
-            anyhow::bail!("未找到包含 agents/definitions 的工作区根目录");
+            anyhow::bail!("未找到包含 agents/groups/default 的工作区根目录");
         }
     }
 }

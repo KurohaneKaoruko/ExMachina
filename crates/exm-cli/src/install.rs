@@ -38,15 +38,17 @@ pub fn run_install(workspace_root: &std::path::Path, quick: bool) -> anyhow::Res
     // 1) 环境检查
     let mut notes: Vec<String> = Vec::new();
     let agents_dir = workspace_root.join("agents");
-    if agents_dir.join("definitions").exists() {
-        let n = std::fs::read_dir(agents_dir.join("definitions"))?
+    let default_group = agents_dir.join("groups").join("default");
+    if default_group.join("group.json").is_file() {
+        // 组目录制编成：groups/<gid>/agents/*.json
+        let n = std::fs::read_dir(default_group.join("agents"))?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
             .count();
-        println!("{} 编成数据：{} 份个体定义（{}）", ok("✓"), n, agents_dir.display());
+        println!("{} 编成数据：{} 份成员定义（{}）", ok("✓"), n, default_group.display());
     } else {
-        println!("{} 未找到 agents/definitions（将无法装载个体，请检查工作目录）", err("✗"));
-        notes.push(format!("缺少编成目录：{}", agents_dir.display()));
+        println!("{} 未找到 agents/groups/default（将无法装载个体，请检查工作目录）", err("✗"));
+        notes.push(format!("缺少编成目录：{}", default_group.display()));
     }
 
     // 2) 模型接入
