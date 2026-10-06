@@ -63,6 +63,19 @@ stdio 模式 = CLI 子命令 `exm mcp serve`（网关外独立进程，回连网
 **D11 桌面：官方插件 + 事件桥**
 `tauri-plugin-notification` / `tauri-plugin-global-shortcut` / tray-icon（tauri feature）。壳内 WS 已订阅事件流，审批/完成/cron 事件映射为原生通知；零新事件通路。关窗驻留默认开，托盘退出才终止网关子进程。
 
+## Decisions（续——P1 实施增补）
+
+**D12 媒体产物透出与出站投递（组 6.2-6.4 实施口径）**
+
+- **产物来源（exm-core）**：新增会话级 outbox（store 集合 `session_outbox/{sessionId}.jsonl`，条目 `{kind: image|file|voice, path(相对工作区), caption}`）：
+  1. browser / computer 截图成功 → 自动 `outbox_push("image", 相对路径)`（截图即视觉答复，自动投递）
+  2. `filesystem write` 目标落在 `.exmachina/outbox/<filename>` → `outbox_push("file", 路径)`（智能体有意投递的交付物走专用目录，避免把每个源码改动都推给 IM 群）
+- **产物上抛**：orchestrator 在两处 `run.finished` emit（L0 直答与收束）前 `outbox_drain(session)`，产物以 `artifacts: [{kind, path, caption}]` 并入 payload（drain 即清空，防重复投递）
+- **出站投递（exm-gateway）**：`spawn_reply` 读取 payload.artifacts → 逐条 `media_fallback(kind平台, artifact.kind)`：Native → 调用适配器媒体发送闭包；LinkNote → 并入文本（描述 + 可访问链接）
+- **适配器契约**：`spawn_reply` 增加第二闭包 `send_media(kind, path, caption) -> bool`（平台 API 差异封在闭包内）：telegram sendPhoto/sendDocument/sendVoice（multipart）、discord message multipart file、slack files.getUploadURLExternal→POST→completeV2、napcat image/file 段（file:// 绝对路径）、matrix /media/v3/upload + m.image/m.file、qqbot/webhook/qq/wechat 无（全走 LinkNote）
+- **入站（6.4）**：telegram（photo/document/voice 已有 getFile 通道）、discord（attachments[] url 下载）、napcat（image/file 段 url 或 file://）、matrix（m.image/file mxc url 经媒体 API 下载）→ 落 `.exmachina/inbox/{channelId}/` → 图片走 image_stash、语音走 transcribe、文件注入路径说明；下载失败占位回退
+- **typing（6.5 已落地）**：telegram/discord 已接；slack/napcat/qqbot/matrix 无或暂缓（矩阵位为 false，诚实降级）
+
 ## Risks / Trade-offs
 
 - [九平台媒体 API 差异大，出站实现量大] → 能力矩阵先行定义 + 每平台"直发/降级"双路径单测；P0 先落 telegram/discord/slack 三平台，其余 P1
