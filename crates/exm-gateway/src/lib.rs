@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub mod git_panel;
+pub mod identity;
 pub mod llm_admin;
 pub mod singles;
 pub mod discord;
@@ -143,6 +144,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(platform::routes())
         .merge(llm_admin::routes())
         .merge(git_panel::routes())
+        .merge(identity::routes())
         .merge(singles::routes())
         .merge(worker_hub::routes())
         .route(

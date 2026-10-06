@@ -7,7 +7,7 @@
 //! 回复文本限 4000 字符 → 截 3800。`disconnect` 帧按服务端要求重连。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -205,7 +205,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                         }
                     }
                     let payload = v.get("payload").cloned().unwrap_or(Value::Null);
-                    let Some((channel, text)) = parse_event(&payload) else { continue };
+                    let Some((channel, mentioned, text)) = parse_event(&payload) else { continue };
                     if text.trim().is_empty() {
                         continue;
                     }
@@ -213,12 +213,31 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                         eprintln!("[slack:{}] {channel} 不在白名单，已忽略", ch.id);
                         continue;
                     }
+                    // DM（channel 以 D 开头）豁免群聊门控；app_mention 事件即提及信号
+                    let is_group = !channel.starts_with('D');
+                    let external_id = payload
+                        .pointer("/event/user")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let gate_ctx = InboundCtx { text: &text, external_id: &external_id, display_name: &external_id, is_group, mentioned };
+                    match admit(core.as_ref(), &ch, &gate_ctx).await {
+                        GateDecision::Allow => {}
+                        GateDecision::Ignore => continue,
+                        GateDecision::Deny(reply) => {
+                            let client2 = client.clone();
+                            let token2 = bot_token.clone();
+                            let chan = channel.clone();
+                            tokio::spawn(async move { send_message(&client2, &token2, &chan, &reply).await });
+                            continue;
+                        }
+                    }
                     let core = core.clone();
                     let ch2 = ch.clone();
                     let client2 = client.clone();
                     let token2 = bot_token.clone();
                     tokio::spawn(async move {
-                        handle_message(&core, &ch2, &client2, &token2, &channel, text.trim()).await;
+                        handle_message(&core, &ch2, &client2, &token2, &channel, &external_id, text.trim()).await;
                     });
                 }
                 _ => {}
@@ -228,8 +247,8 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
     }
 }
 
-/// events_api payload → (频道 id, 正文)。机器人自身消息与非文本消息一律忽略。
-fn parse_event(payload: &Value) -> Option<(String, String)> {
+/// events_api payload → (频道 id, 是否提及(app_mention), 正文)。机器人自身消息与非文本消息一律忽略。
+fn parse_event(payload: &Value) -> Option<(String, bool, String)> {
     let ev = payload.get("event")?;
     let t = ev.get("type").and_then(|x| x.as_str()).unwrap_or("");
     if t != "message" && t != "app_mention" {
@@ -241,7 +260,7 @@ fn parse_event(payload: &Value) -> Option<(String, String)> {
     }
     let channel = ev.get("channel").and_then(|x| x.as_str())?.to_string();
     let content = ev.get("text").and_then(|x| x.as_str()).unwrap_or("");
-    Some((channel, strip_mentions(content)))
+    Some((channel, t == "app_mention", strip_mentions(content)))
 }
 
 /// 剥掉 `<@U123>` 提及片段
@@ -266,9 +285,11 @@ async fn handle_message(
     client: &reqwest::Client,
     bot_token: &str,
     channel: &str,
+    external_id: &str,
     text: &str,
 ) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, channel).await else { return };
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
     let client2 = client.clone();
     let token2 = bot_token.to_string();
     let chan = channel.to_string();

@@ -6,6 +6,7 @@ import {
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type Channel, type ChannelStatus } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { IdentityPanel } from "../components/IdentityPanel";
 import { useExm } from "../store";
 import { useT, type TKey } from "../i18n/core";
 
@@ -309,8 +310,7 @@ export function ChannelsView(): React.ReactElement {
       <PageHeader
         en="CHANNELS"
         title={t("nav.channels")}
-        desc={t("channels.desc")}
-        actions={
+        desc={t("channels.desc")}        actions={
           <>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               {t("channels.add")}
@@ -323,6 +323,7 @@ export function ChannelsView(): React.ReactElement {
       />
 
       <Spin spinning={loading}>
+        <IdentityPanel />
         <Table<Channel>
           size="small"
           rowKey="id"

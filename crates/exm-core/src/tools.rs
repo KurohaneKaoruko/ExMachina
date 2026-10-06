@@ -2298,6 +2298,8 @@ impl ToolGateway {
     /// - 拒绝：把拒绝原因作为工具结果回灌；
     /// - 超时：按「待人工审批」受阻回流（旧行为）。
     async fn gate_command(&self, agent_id: &str, session_id: &str, cmd: &str) -> ToolResult {
+        // 来源升级标：通道闸门登记过来源的会话（member）→ 审批单标记须管理员批准
+        let origin = self.store.get_session_origin(session_id).ok().flatten();
         let req = ApprovalRequest {
             id: crate::types::new_id()[..8].to_string(),
             session_id: session_id.to_string(),
@@ -2308,6 +2310,8 @@ impl ToolGateway {
             result: None,
             created_at: crate::types::now_iso(),
             decided_at: None,
+            origin_user: origin.as_ref().map(|(u, _)| u.clone()),
+            origin_role: origin.as_ref().map(|(_, r)| r.clone()),
         };
         let _ = self.store.add_approval(&req);
         let _ = self.events.send(CoreEvent {

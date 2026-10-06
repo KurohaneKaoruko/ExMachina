@@ -646,3 +646,46 @@ export function gitOverview(): Promise<GitOverview> {
 export function gitOp(op: string, extra?: { path?: string; message?: string; branch?: string }): Promise<GitOpResult> {
   return req(`/git/op`, { method: "POST", body: JSON.stringify({ op, ...extra }) });
 }
+
+export interface IdentityItem {
+  id: string;
+  channel: string;
+  externalId: string;
+  displayName: string;
+  role: string;
+  pairedAt: string;
+  note: string;
+}
+export interface CodeItem {
+  code: string;
+  note: string;
+  platform?: string | null;
+  createdAt: string;
+  expiresAtMs: number;
+  expired: boolean;
+}
+export interface IdentityList {
+  identityRequired: boolean;
+  identities: IdentityItem[];
+  codes: CodeItem[];
+}
+
+/** 通道身份：清单（绑定 + 配对码） */
+export function identityList(): Promise<IdentityList> {
+  return req(`/identity/list`);
+}
+
+/** 通道身份：签发配对码（单次有效、限时） */
+export function identityIssue(note: string): Promise<{ code: string; expiresAtMs: number }> {
+  return req(`/identity/code`, { method: "POST", body: JSON.stringify({ note }) });
+}
+
+/** 通道身份：调整角色（admin | member） */
+export function identitySetRole(id: string, role: string): Promise<{ ok: boolean }> {
+  return req(`/identity/role`, { method: "POST", body: JSON.stringify({ id, role }) });
+}
+
+/** 通道身份：解绑 */
+export function identityUnbind(id: string): Promise<{ ok: boolean }> {
+  return req(`/identity/${encodeURIComponent(id)}`, { method: "DELETE" });
+}

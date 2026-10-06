@@ -818,6 +818,11 @@ pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Unix 毫秒时间戳（配对码过期等数值比较口径）
+pub fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -928,9 +933,33 @@ pub struct ApprovalRequest {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<String>,
+    /// 发起会话的外部用户（通道来源会话才有；控制台/智能体发起为空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_user: Option<String>,
+    /// member 发起的审批须管理员在控制台批准（升级语义标注）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_role: Option<String>,
 }
 
 // ---------------------------------------------------------------- 通道用户身份（配对绑定）
+
+/// 配对码：控制台签发的一次性短码，外部用户在通道内 `/pair <码>` 完成绑定
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingCode {
+    /// 短码本身即主键（8 位随机码）
+    pub code: String,
+    /// 签发备注
+    #[serde(default)]
+    pub note: String,
+    /// 目标平台（空 = 通用）；限定后其他平台提交无效
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_platform: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    /// 过期时间（Unix 毫秒）
+    pub expires_at_ms: u64,
+}
 
 /// 绑定的外部用户身份：通道账号 → 平台用户档案（配对码换发的长期绑定）
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,7 +2,7 @@
 //! 每个启用的 telegram 通道 = 一个账号 = 一个独立轮询任务；账号绑定组后消息在该组上下文执行。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -197,17 +197,88 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                 if text.trim().is_empty() {
                     continue;
                 }
-                handle_message(&core, &ch, chat_id, &text).await;
+                // 入站闸门：/pair 兑换 → 群聊唤醒门控 → 身份管控（capability-completion 组 3）
+                let from_id = u.pointer("/message/from/id").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
+                let display = u
+                    .pointer("/message/from/username")
+                    .or_else(|| u.pointer("/message/from/first_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let is_group = matches!(
+                    u.pointer("/message/chat/type").and_then(|v| v.as_str()),
+                    Some("group") | Some("supergroup")
+                );
+                let mut mentioned = u
+                    .pointer("/message/reply_to_message/from/is_bot")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if is_group && !mentioned {
+                    // 提及归一化：实体 mention 且 @ 的正是本 bot（bot 身份经 getMe 缓存）
+                    let (bot_id, bot_name) = bot_info(ch.token.as_deref().unwrap_or_default()).await;
+                    if u.pointer("/message/reply_to_message/from/id").and_then(|v| v.as_i64())
+                        == bot_id.parse::<i64>().ok()
+                    {
+                        mentioned = true;
+                    }
+                    if let Some(entities) = u.pointer("/message/entities").and_then(|v| v.as_array()) {
+                        let hit = entities.iter().any(|e| {
+                            e.get("type").and_then(|x| x.as_str()) == Some("mention")
+                                && !bot_name.is_empty()
+                                && text.to_lowercase().contains(&format!("@{}", bot_name.to_lowercase()))
+                        });
+                        mentioned = mentioned || hit;
+                    }
+                }
+                match admit(&core, &ch, &InboundCtx {
+                    text: &text, external_id: &from_id, display_name: &display, is_group, mentioned,
+                }).await {
+                    GateDecision::Allow => handle_message(&core, &ch, chat_id, &from_id, &text).await,
+                    GateDecision::Ignore => {}
+                    GateDecision::Deny(reply) => {
+                        send_message(ch.token.as_deref().unwrap_or_default(), chat_id, &reply).await;
+                    }
+                }
             }
         }
     }
 }
 
+/// bot 身份缓存（token → (id, username)）：群聊提及归一化用，懒获取一次
+async fn bot_info(token: &str) -> (String, String) {
+    static CACHE: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
+    let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(v) = map.lock().unwrap().get(token) {
+        return v.clone();
+    }
+    let info = match reqwest::Client::new()
+        .get(format!("https://api.telegram.org/bot{}/getMe", token.trim()))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) => match r.json::<serde_json::Value>().await {
+            Ok(v) => match (
+                v.pointer("/result/id").and_then(|x| x.as_i64()),
+                v.pointer("/result/username").and_then(|x| x.as_str()),
+            ) {
+                (Some(id), Some(name)) => (id.to_string(), name.to_string()),
+                _ => (String::new(), String::new()),
+            },
+            Err(_) => (String::new(), String::new()),
+        },
+        Err(_) => (String::new(), String::new()),
+    };
+    map.lock().unwrap().insert(token.to_string(), info.clone());
+    info
+}
+
 /// 一条用户消息：组绑定 → 会话复用 → 订阅回复 → 执行 → sendMessage
-async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, text: &str) {
+async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_id: &str, text: &str) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, &chat_id.to_string()).await else {
         return;
     };
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
     let token = ch.token.clone().unwrap_or_default();
     let reply = spawn_reply(&run, rx, 3800, move |text| async move {
         send_message(&token, chat_id, &text).await;

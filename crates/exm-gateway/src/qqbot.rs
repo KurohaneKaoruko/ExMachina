@@ -9,7 +9,7 @@
 //! config.sandbox = "true" 时走沙箱 openapi（sandbox.api.sgroup.qq.com）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -263,11 +263,35 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                             eprintln!("[qqbot:{}] {} 不在白名单，已忽略", ch.id, peer.key());
                                             continue;
                                         }
+                                        // 闸门：官方 bot 群聊/频道本就 @ 驱动（mentioned 恒真）；C2C 私聊豁免门控
+                                        let is_group = !matches!(peer, Peer::C2C(_));
+                                        let external_id =
+                                            d.pointer("/author/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                        let gate_ctx = InboundCtx {
+                                            text: &content,
+                                            external_id: &external_id,
+                                            display_name: &external_id,
+                                            is_group,
+                                            mentioned: true,
+                                        };
+                                        match admit(core.as_ref(), &ch, &gate_ctx).await {
+                                            GateDecision::Allow => {}
+                                            GateDecision::Ignore => continue,
+                                            GateDecision::Deny(reply) => {
+                                                let creds2 = creds.clone();
+                                                let peer2 = peer.clone();
+                                                let msg_id2 = msg_id.clone();
+                                                tokio::spawn(async move {
+                                                    send_passive(&creds2, &base, &peer2, &msg_id2, 1, &reply).await;
+                                                });
+                                                continue;
+                                            }
+                                        }
                                         let core = core.clone();
                                         let ch2 = ch.clone();
                                         let creds2 = creds.clone();
                                         tokio::spawn(async move {
-                                            handle_message(&core, &ch2, &creds2, base, peer, msg_id, content.trim()).await;
+                                            handle_message(&core, &ch2, &creds2, base, peer, &external_id, msg_id, content.trim()).await;
                                         });
                                     }
                                     _ => {}
@@ -378,12 +402,14 @@ async fn handle_message(
     creds: &Arc<BotCreds>,
     base: &str,
     peer: Peer,
+    external_id: &str,
     msg_id: String,
     text: &str,
 ) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, peer.key()).await else {
         return;
     };
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
     // 回复任务：被动回复须带原消息 msg_id + 递增 msg_seq
     let seq = Arc::new(AtomicU64::new(0));
     let max_chars = peer.max_chars();

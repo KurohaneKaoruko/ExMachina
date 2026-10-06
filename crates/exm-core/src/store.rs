@@ -398,6 +398,54 @@ impl Store {
         self.db.delete("identities", id)
     }
 
+    // ---------------------------------------------------------------- 会话来源（通道身份升级语义）
+
+    /// 登记会话的外部来源（通道闸门放行时写入；审批单创建时读取打标）
+    pub fn put_session_origin(&self, session_id: &str, external_id: &str, role: &str) -> Result<()> {
+        self.db.put(
+            "session_origins",
+            session_id,
+            &serde_json::json!({ "externalId": external_id, "role": role }),
+        )
+    }
+
+    pub fn get_session_origin(&self, session_id: &str) -> Result<Option<(String, String)>> {
+        let v: Option<serde_json::Value> = self.db.get("session_origins", session_id)?;
+        Ok(v.map(|v| {
+            (
+                v.get("externalId").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("role").and_then(|x| x.as_str()).unwrap_or("member").to_string(),
+            )
+        }))
+    }
+
+    // ---------------------------------------------------------------- 配对码（一次性、限时）
+
+    pub fn put_pairing_code(&self, code: &PairingCode) -> Result<()> {
+        self.db.put("pairing_codes", &code.code, code)
+    }
+
+    pub fn get_pairing_code(&self, code: &str) -> Result<Option<PairingCode>> {
+        self.db.get("pairing_codes", code)
+    }
+
+    pub fn list_pairing_codes(&self) -> Result<Vec<PairingCode>> {
+        let mut list: Vec<PairingCode> = self.db.list("pairing_codes")?;
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(list)
+    }
+
+    /// 兑销（单次有效）：删除并返回原码
+    pub fn consume_pairing_code(&self, code: &str) -> Result<Option<PairingCode>> {
+        match self.db.get::<PairingCode>("pairing_codes", code)? {
+            Some(c) => {
+                self.db.delete("pairing_codes", code)?;
+                Ok(Some(c))
+            }
+            None => Ok(None),
+        }
+    }
+
     // ---------------------------------------------------------------- 事件触发器（文件监听 / webhook 事件源）
 
     pub fn put_event_trigger(&self, trigger: &EventTrigger) -> Result<()> {

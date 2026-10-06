@@ -6,7 +6,7 @@
 //! 收发解耦：入站读取不阻塞（消息处理全部 spawn），动作经 mpsc 通道交给专职写任务，
 //! 避免长运行期间无法应答 WS 层 Ping 被服务端断开。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -178,7 +178,48 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
     let core = core.clone();
     let ch = ch.clone();
     let tx = tx.clone();
-    tokio::spawn(async move { handle_message(&core, &ch, &tx, group_id, user_id, &text).await });
+    tokio::spawn(async move {
+        let Some(external_id) = napcat_gate(&core, &ch, &tx, group_id, user_id, &v, &text).await else {
+            return; // 闸门拦截（忽略 / 已回复）
+        };
+        handle_message(&core, &ch, &tx, group_id, user_id, &external_id, &text).await;
+    });
+}
+
+/// OneBot 消息的入站闸门（群聊唤醒 + 身份管控）：在 spawn 的任务内执行
+async fn napcat_gate(
+    core: &Core,
+    ch: &Channel,
+    tx: &tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    group_id: Option<i64>,
+    user_id: Option<i64>,
+    raw: &serde_json::Value,
+    text: &str,
+) -> Option<String> {
+    let is_group = group_id.is_some();
+    // 提及归一化：原始消息含 @ 段（CQ:at）即视为提及（QQ 群内 @ 机器人是主语义）
+    let raw_text = raw.get("message").map(|m| m.to_string()).unwrap_or_default();
+    let mentioned = raw_text.contains("CQ:at");
+    let external_id = user_id.map(|u| u.to_string()).unwrap_or_default();
+    let ctx = InboundCtx { text, external_id: &external_id, display_name: &external_id, is_group, mentioned };
+    match admit(core, ch, &ctx).await {
+        GateDecision::Allow => Some(external_id),
+        GateDecision::Ignore => None,
+        GateDecision::Deny(reply) => {
+            let action = match group_id {
+                Some(g) => serde_json::json!({
+                    "action": "send_group_msg",
+                    "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": reply } }] },
+                }),
+                None => serde_json::json!({
+                    "action": "send_private_msg",
+                    "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": reply } }] },
+                }),
+            };
+            let _ = tx.send(action);
+            None
+        }
+    }
 }
 
 /// OneBot 消息体 → 纯文本：数组段取 text；CQ 码字符串剥掉非文本段。
@@ -217,6 +258,7 @@ async fn handle_message(
     tx: &mpsc::UnboundedSender<serde_json::Value>,
     group_id: Option<i64>,
     user_id: Option<i64>,
+    external_id: &str,
     text: &str,
 ) {
     // 会话键：群聊优先，无群号走私聊
@@ -224,6 +266,7 @@ async fn handle_message(
     let Some((run, rx)) = ChannelRun::begin(core, ch, &peer).await else {
         return;
     };
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
     let tx = tx.clone();
     let reply = spawn_reply(&run, rx, 3500, move |text| async move {
         let action = match group_id {

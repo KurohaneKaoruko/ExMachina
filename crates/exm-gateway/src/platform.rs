@@ -559,6 +559,9 @@ pub struct Channel {
     /// napcat → url/token。空值键不入库。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, String>,
+    /// 群聊唤醒门控：Some(true)=群内仅提及/回复触发；None=取全局默认（config.identity.groupGateDefault）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_gate: Option<bool>,
     pub created_at: String,
 }
 
@@ -594,6 +597,65 @@ impl Channel {
     pub(crate) fn cfg(&self, key: &str) -> Option<String> {
         self.config.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
     }
+
+    /// 群聊唤醒门控是否开启（通道级覆盖 > 全局默认）
+    pub(crate) fn gate_enabled(&self, core: &exm_core::Core) -> bool {
+        self.group_gate.unwrap_or_else(|| core.config().identity.group_gate_default)
+    }
+}
+
+// ---------------------------------------------------------------- 通道入站闸门（身份 + 群聊唤醒）
+
+/// 入站消息上下文：由各适配器从平台消息归一化提取
+pub(crate) struct InboundCtx<'a> {
+    pub text: &'a str,
+    pub external_id: &'a str,
+    pub display_name: &'a str,
+    /// 群聊 / 频道上下文（私聊为 false）
+    pub is_group: bool,
+    /// 平台归一化信号：被提及（@）或回复智能体消息
+    pub mentioned: bool,
+}
+
+pub(crate) enum GateDecision {
+    Allow,
+    /// 群聊未唤醒：静默忽略
+    Ignore,
+    /// 拒绝执行并回复提示（含 /pair 结果与配对指引）
+    Deny(String),
+}
+
+/// 入站统一闸门：① `/pair` 兑换拦截（未绑定也可用）→ ② 群聊唤醒门控 → ③ 身份管控裁决。
+/// 位置前置于一切执行（ChannelRun::begin 之前由各适配器调用）。
+pub(crate) async fn admit(core: &exm_core::Core, ch: &Channel, ctx: &InboundCtx<'_>) -> GateDecision {
+    let identity_cfg = &core.config().identity;
+
+    // ① 配对码兑换（控制台签发短码 → 通道内 /pair <码> 绑定；单次有效、限期）
+    let trimmed = ctx.text.trim();
+    if let Some(code) = trimmed.strip_prefix("/pair ").map(str::trim).filter(|c| !c.is_empty()) {
+        return match core.redeem_pairing(code, &ch.id, ctx.external_id, ctx.display_name, "member") {
+            Ok(idn) => GateDecision::Deny(format!(
+                "【报告】绑定成功：{}（角色 {}）。现在可以正常对话。",
+                idn.display_name, idn.role
+            )),
+            Err(e) => GateDecision::Deny(format!("【报告】绑定失败：{e}")),
+        };
+    }
+
+    // ② 群聊唤醒门控：群内仅提及 / 回复触发；私聊豁免
+    if ch.gate_enabled(core) && ctx.is_group && !ctx.mentioned {
+        return GateDecision::Ignore;
+    }
+
+    // ③ 身份管控：开启后未绑定用户拒绝执行并给配对指引
+    if identity_cfg.identity_required {
+        if core.identity_of(&ch.id, ctx.external_id).is_none() {
+            return GateDecision::Deny(
+                "【报告】未绑定身份：请在控制台「通道身份」页签发配对码，然后在此发送 /pair <配对码> 完成绑定。".into(),
+            );
+        }
+    }
+    GateDecision::Allow
 }
 
 /// 运行收束事件 → 纯文本回帖（telegram / napcat / qqbot 三个适配器共用）。
@@ -826,6 +888,9 @@ pub struct ChannelBody {
     pub config: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// 群聊唤醒门控（None = 取全局默认）
+    #[serde(default)]
+    pub group_gate: Option<bool>,
 }
 
 pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBody>) -> impl IntoResponse {
@@ -896,6 +961,7 @@ pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBod
         reply_webhook: b.reply_webhook.filter(|s| !s.trim().is_empty()),
         token: b.token.filter(|s| !s.trim().is_empty()),
         config,
+        group_gate: b.group_gate,
         created_at: exm_core::types::now_iso(),
     };
     channels.push(ch.clone());
@@ -921,6 +987,9 @@ pub async fn update_channel(
     }
     if let Some(v) = &b.enabled {
         ch.enabled = *v;
+    }
+    if let Some(v) = b.group_gate {
+        ch.group_gate = Some(v);
     }
     if let Some(v) = &b.group {
         ch.group = if v.trim().is_empty() { None } else { Some(v.clone()) };
@@ -1139,4 +1208,158 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(update_channel).delete(delete_channel),
         )
         .route("/api/channels/:id/inbound", post(channel_inbound))
+}
+
+#[cfg(test)]
+mod identity_gate_tests {
+    use super::*;
+    use exm_core::types::{PairingCode, UserIdentity};
+
+    fn test_core() -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        exm_core::Core::create(&dir).expect("创建 Core 失败")
+    }
+
+    fn chan(gate: Option<bool>) -> Channel {
+        Channel {
+            id: "tg-main".into(),
+            kind: "telegram".into(),
+            enabled: true,
+            group: None,
+            allowed_chats: vec![],
+            account: None,
+            secret: None,
+            reply_webhook: None,
+            token: None,
+            config: Default::default(),
+            group_gate: gate,
+            created_at: exm_core::types::now_iso(),
+        }
+    }
+
+    fn ctx<'a>(text: &'a str, uid: &'a str, is_group: bool, mentioned: bool) -> InboundCtx<'a> {
+        InboundCtx { text, external_id: uid, display_name: uid, is_group, mentioned }
+    }
+
+    /// 群聊门控：默认开——未提及忽略、提及放行、私聊豁免
+    #[tokio::test]
+    async fn 群聊门控_提及与私聊语义() {
+        let core = test_core();
+        let ch = chan(None);
+        assert!(core.config().identity.group_gate_default, "全局默认应开启");
+        let group_unmentioned = ctx("大家好", "u1", true, false);
+        let group_mentioned = ctx("@bot 帮我看下", "u1", true, true);
+        let private_unmentioned = ctx("在吗", "u1", false, false);
+        match admit(&core, &ch, &group_unmentioned).await {
+            GateDecision::Ignore => {}
+            _ => panic!("群聊未提及应忽略"),
+        }
+        match admit(&core, &ch, &group_mentioned).await {
+            GateDecision::Allow => {}
+            _ => panic!("群聊提及应放行"),
+        }
+        match admit(&core, &ch, &private_unmentioned).await {
+            GateDecision::Allow => {}
+            _ => panic!("私聊应豁免门控"),
+        }
+    }
+
+    /// 通道级覆盖：显式关闭门控后群聊未提及也放行
+    #[tokio::test]
+    async fn 群聊门控_通道级关闭() {
+        let core = test_core();
+        let ch = chan(Some(false));
+        match admit(&core, &ch, &ctx("随便聊聊", "u1", true, false)).await {
+            GateDecision::Allow => {}
+            _ => panic!("通道级关闭后不应拦截"),
+        }
+        let ch_on = chan(Some(true));
+        match admit(&core, &ch_on, &ctx("随便聊聊", "u1", true, false)).await {
+            GateDecision::Ignore => {}
+            _ => panic!("通道级开启后未提及应忽略"),
+        }
+    }
+
+    /// 身份管控：开启后未绑定拒绝并给 /pair 指引；绑定后放行
+    #[tokio::test]
+    async fn 身份管控_未绑定拒绝_绑定放行() {
+        let core = test_core();
+        let mut cfg = (*core.config()).clone();
+        cfg.identity.identity_required = true;
+        core.apply_config(cfg).unwrap();
+        let ch = chan(None);
+        let denied = admit(&core, &ch, &ctx("帮我做事", "u9", false, false)).await;
+        match denied {
+            GateDecision::Deny(msg) => assert!(msg.contains("/pair"), "拒绝应含配对指引: {msg}"),
+            _ => panic!("未绑定应拒绝"),
+        }
+        // 绑定后放行
+        core.save_identity(&UserIdentity {
+            id: "tg-main:u9".into(),
+            channel: "tg-main".into(),
+            external_id: "u9".into(),
+            display_name: "用户9".into(),
+            role: "member".into(),
+            paired_at: exm_core::types::now_iso(),
+            note: String::new(),
+        })
+        .unwrap();
+        match admit(&core, &ch, &ctx("帮我做事", "u9", false, false)).await {
+            GateDecision::Allow => {}
+            _ => panic!("已绑定应放行"),
+        }
+    }
+
+    /// /pair 兑换：有效码绑定成功（单次有效）；过期码拒绝；重复使用拒绝
+    #[tokio::test]
+    async fn 配对码_兑换流转() {
+        let core = test_core();
+        let ch = chan(None);
+        let code = core.issue_pairing_code("测试", None, 600).unwrap();
+
+        let ok = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u7", false, false)).await;
+        match ok {
+            GateDecision::Deny(msg) => assert!(msg.contains("绑定成功"), "{msg}"),
+            _ => panic!("/pair 有效码应回复绑定成功"),
+        }
+        assert!(core.identity_of("tg-main", "u7").is_some(), "兑换后应落库");
+
+        // 已用：再次兑换拒绝
+        let reuse = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u8", false, false)).await;
+        match reuse {
+            GateDecision::Deny(msg) => assert!(msg.contains("无效") || msg.contains("已被使用"), "{msg}"),
+            _ => panic!("/pair 已用码应拒绝"),
+        }
+
+        // 过期：手工插入一张已过期码
+        let expired = PairingCode {
+            code: "expired1".into(),
+            note: String::new(),
+            channel_platform: None,
+            created_by: "console".into(),
+            created_at: exm_core::types::now_iso(),
+            expires_at_ms: exm_core::types::now_ms() - 1000,
+        };
+        core.save_pairing_code(&expired).unwrap();
+        let late = admit(&core, &ch, &ctx("/pair expired1", "u6", false, false)).await;
+        match late {
+            GateDecision::Deny(msg) => assert!(msg.contains("过期"), "{msg}"),
+            _ => panic!("/pair 过期码应拒绝"),
+        }
+    }
+
+    /// 平台限定码：其他平台提交无效
+    #[tokio::test]
+    async fn 配对码_平台限定() {
+        let core = test_core();
+        let code = core.issue_pairing_code("仅 discord", Some("discord-main"), 600).unwrap();
+        let ch = Channel { id: "tg-main".into(), ..chan(None) };
+        let wrong = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u5", false, false)).await;
+        match wrong {
+            GateDecision::Deny(msg) => assert!(msg.contains("discord-main"), "{msg}"),
+            _ => panic!("平台不匹配应拒绝"),
+        }
+        assert!(core.identity_of("tg-main", "u5").is_none());
+    }
 }

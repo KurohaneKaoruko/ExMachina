@@ -8,7 +8,7 @@
 //! 断线优先 Resume(op6，补发漏掉的事件)；op9 Invalid Session 回退重新 Identify。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -116,6 +116,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
 
     // (session_id, seq)：断线优先 Resume 补发
     let mut session: Option<(String, i64)> = None;
+    let mut bot_id = String::new(); // READY 时捕获本 bot 用户 id（提及归一化用）
     loop {
         let gw = match client.get(format!("{API}/gateway/bot")).header("Authorization", &auth).send().await {
             Ok(r) if r.status().is_success() => match r.json::<Value>().await {
@@ -219,6 +220,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                     "READY" => {
                                         let sid = d.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                                         session = Some((sid, seq.unwrap_or(0)));
+                                        bot_id = d.pointer("/user/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                                         let user = d.pointer("/user/username").and_then(|x| x.as_str()).unwrap_or("?");
                                         println!("[discord:{}] 机器人已连结：{user}", ch.id);
                                         report_status(&ch.id, "ok", format!("机器人 {user}"));
@@ -235,12 +237,36 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                             eprintln!("[discord:{}] {channel_id} 不在白名单，已忽略", ch.id);
                                             continue;
                                         }
+                                        // 提及归一化：mentions 数组命中本 bot；群组上下文 = 有 guild_id
+                                        let is_group = d.get("guild_id").and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+                                        let mut mentioned = false;
+                                        if let Some(list) = d.get("mentions").and_then(|x| x.as_array()) {
+                                            mentioned = if bot_id.is_empty() {
+                                                !list.is_empty()
+                                            } else {
+                                                list.iter().any(|m| m.get("id").and_then(|x| x.as_str()) == Some(bot_id.as_str()))
+                                            };
+                                        }
+                                        let external_id = d.pointer("/author/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                        let display = d.pointer("/author/global_name").or_else(|| d.pointer("/author/username")).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                        let gate_ctx = InboundCtx { text: &text, external_id: &external_id, display_name: &display, is_group, mentioned };
+                                        match admit(core.as_ref(), &ch, &gate_ctx).await {
+                                            GateDecision::Allow => {}
+                                            GateDecision::Ignore => continue,
+                                            GateDecision::Deny(reply) => {
+                                                let client2 = client.clone();
+                                                let token2 = token.clone();
+                                                let cid = channel_id.clone();
+                                                tokio::spawn(async move { send_message(&client2, &token2, &cid, &reply).await });
+                                                continue;
+                                            }
+                                        }
                                         let core = core.clone();
                                         let ch2 = ch.clone();
                                         let client2 = client.clone();
                                         let token2 = token.clone();
                                         tokio::spawn(async move {
-                                            handle_message(&core, &ch2, &client2, &token2, &channel_id, text.trim()).await;
+                                            handle_message(&core, &ch2, &client2, &token2, &channel_id, &external_id, text.trim()).await;
                                         });
                                     }
                                     _ => {}
@@ -306,9 +332,11 @@ async fn handle_message(
     client: &reqwest::Client,
     token: &str,
     channel_id: &str,
+    external_id: &str,
     text: &str,
 ) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, channel_id).await else { return };
+    core.stamp_session_origin(&run.session_id, &external_id, core.identity_of(&ch.id, &external_id).map(|i| i.role).as_deref().unwrap_or(""));
     let client2 = client.clone();
     let token2 = token.to_string();
     let cid = channel_id.to_string();

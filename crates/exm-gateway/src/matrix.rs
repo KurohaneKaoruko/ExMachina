@@ -8,7 +8,7 @@
 //! token 失效（M_UNKNOWN_TOKEN）上报错误后指数退避重试。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -167,13 +167,33 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                             "ok",
                             if self_user.is_empty() { "轮询中".into() } else { format!("账号 {self_user}") },
                         );
-                        for (room, sender, text) in parse_events(&body, &self_user) {
+                        for (room, sender, mentioned, text) in parse_events(&body, &self_user) {
                             if text.trim().is_empty() {
                                 continue;
                             }
                             if !ch.allowed_chats.is_empty() && !ch.allowed_chats.iter().any(|a| a == &room) {
                                 eprintln!("[matrix:{}] {room} 不在白名单，已忽略", ch.id);
                                 continue;
+                            }
+                            // 房间即群：门控按群聊语义执行（self_user 非空时提及才唤醒）
+                            let gate_ctx = InboundCtx {
+                                text: &text,
+                                external_id: &sender,
+                                display_name: &sender,
+                                is_group: true,
+                                mentioned: mentioned || self_user.is_empty(),
+                            };
+                            match admit(core.as_ref(), &ch, &gate_ctx).await {
+                                GateDecision::Allow => {}
+                                GateDecision::Ignore => continue,
+                                GateDecision::Deny(reply) => {
+                                    let client2 = client.clone();
+                                    let hs2 = hs.clone();
+                                    let token2 = token.clone();
+                                    let room2 = room.clone();
+                                    tokio::spawn(async move { send_message(&client2, &hs2, &token2, &room2, &reply).await });
+                                    continue;
+                                }
                             }
                             let core = core.clone();
                             let ch2 = ch.clone();
@@ -214,8 +234,8 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
     }
 }
 
-/// /sync 响应 → [(房间 id, 发送者, 正文)]。自己发的消息与非文本消息一律忽略。
-fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, String)> {
+/// /sync 响应 → [(房间 id, 发送者, 是否提及, 正文)]。自己发的消息与非文本消息一律忽略。
+fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, String)> {
     let mut out = Vec::new();
     let Some(join) = body.pointer("/rooms/join").and_then(|v| v.as_object()) else {
         return out;
@@ -237,7 +257,14 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, String)> 
                 continue;
             }
             let text = content.get("body").and_then(|x| x.as_str()).unwrap_or("");
-            out.push((room_id.clone(), sender.to_string(), text.to_string()));
+            // m.mentions.user_ids 含本用户即提及；部分客户端以 body 前缀 @名 提及（宽松兜底）
+            let mentioned = content
+                .pointer("/m.mentions/user_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().any(|u| u.as_str() == Some(self_user)))
+                .unwrap_or(false)
+                || (!self_user.is_empty() && text.to_lowercase().contains(&format!("@{}", self_user.to_lowercase())));
+            out.push((room_id.clone(), sender.to_string(), mentioned, text.to_string()));
         }
     }
     out
@@ -269,7 +296,7 @@ async fn handle_message(
 ) {
     // 会话键用房间 id，房间内多人共享同一会话（Matrix 房间即群）
     let Some((run, rx)) = ChannelRun::begin(core, ch, room).await else { return };
-    let _ = sender;
+    core.stamp_session_origin(&run.session_id, sender, core.identity_of(&ch.id, sender).map(|i| i.role).as_deref().unwrap_or(""));
     let client2 = client.clone();
     let hs2 = hs.to_string();
     let token2 = token.to_string();

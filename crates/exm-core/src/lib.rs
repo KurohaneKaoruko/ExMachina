@@ -361,6 +361,87 @@ impl Core {
         Ok(format!("已保存 {norm}（{} 字节，写前检查点已记录）", content.len()))
     }
 
+    // ---------------- 通道身份与配对码（gateway 身份闸门共用） ----------------
+
+    pub fn identity_of(&self, channel: &str, external_id: &str) -> Option<UserIdentity> {
+        self.store.get_identity(channel, external_id).ok().flatten()
+    }
+
+    pub fn identity_of_id(&self, id: &str) -> Option<UserIdentity> {
+        self.store.get_identity_by_id(id).ok().flatten()
+    }
+
+    pub fn identities(&self) -> Vec<UserIdentity> {
+        self.store.list_identities().unwrap_or_default()
+    }
+
+    pub fn save_identity(&self, identity: &UserIdentity) -> anyhow::Result<()> {
+        self.store.put_identity(identity)
+    }
+
+    pub fn drop_identity(&self, id: &str) -> anyhow::Result<()> {
+        self.store.delete_identity(id)
+    }
+
+    /// 签发一次性配对码（8 位短码，TTL 由调用方给）
+    pub fn issue_pairing_code(&self, note: &str, platform: Option<&str>, ttl_secs: u64) -> anyhow::Result<PairingCode> {
+        let code = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+        let c = PairingCode {
+            code: code.clone(),
+            note: note.to_string(),
+            channel_platform: platform.map(|s| s.to_string()),
+            created_by: "console".into(),
+            created_at: now_iso(),
+            expires_at_ms: now_ms() + ttl_secs * 1000,
+        };
+        self.store.put_pairing_code(&c)?;
+        Ok(c)
+    }
+
+    pub fn pairing_codes(&self) -> Vec<PairingCode> {
+        self.store.list_pairing_codes().unwrap_or_default()
+    }
+
+    /// 直接落一张配对码（迁移 / 测试 / 控制台定向写入）
+    pub fn save_pairing_code(&self, code: &PairingCode) -> anyhow::Result<()> {
+        self.store.put_pairing_code(code)
+    }
+
+    /// 兑换配对码 → 绑定身份（单次有效 + 过期校验；channel 为通道账号 id）
+    pub fn redeem_pairing(
+        &self,
+        code: &str,
+        channel: &str,
+        external_id: &str,
+        display_name: &str,
+        default_role: &str,
+    ) -> anyhow::Result<UserIdentity> {
+        let c = self
+            .store
+            .consume_pairing_code(code.trim())
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .ok_or_else(|| anyhow::anyhow!("配对码无效或已被使用"))?;
+        if now_ms() > c.expires_at_ms {
+            anyhow::bail!("配对码已过期，请重新签发");
+        }
+        if let Some(p) = &c.channel_platform {
+            if !channel.starts_with(p.as_str()) {
+                anyhow::bail!("配对码限定平台 {p}，当前通道不可用");
+            }
+        }
+        let identity = UserIdentity {
+            id: format!("{channel}:{external_id}"),
+            channel: channel.to_string(),
+            external_id: external_id.to_string(),
+            display_name: display_name.to_string(),
+            role: default_role.to_string(),
+            paired_at: now_iso(),
+            note: c.note.clone(),
+        };
+        self.store.put_identity(&identity)?;
+        Ok(identity)
+    }
+
     /// 回滚检查点：`date` 为空取最近一份；返回被覆盖的文件相对路径
     pub fn restore_checkpoint(&self, date: Option<&str>, rel: &str) -> anyhow::Result<String> {
         let target = self.config().workspace_root.join(".exmachina").join("checkpoints");
@@ -732,6 +813,15 @@ impl Core {
         Ok(req)
     }
 
+    /// 登记会话的外部来源（闸门放行时由适配器调用；审批单创建时据此打升级标）
+    pub fn stamp_session_origin(&self, session_id: &str, external_id: &str, role: &str) {
+        let _ = self.store.put_session_origin(session_id, external_id, role);
+    }
+
+    pub fn session_origin(&self, session_id: &str) -> Option<(String, String)> {
+        self.store.get_session_origin(session_id).ok().flatten()
+    }
+
     /// 创建 WebUI 发起的 git 破坏性操作审批单：command 为精确 git 命令，
     /// 批准后由 approval_decide 代执行（与工具审批同一执行与审计路径）
     pub async fn request_git_approval(&self, command: &str) -> anyhow::Result<ApprovalRequest> {
@@ -745,6 +835,8 @@ impl Core {
             result: None,
             created_at: now_iso(),
             decided_at: None,
+            origin_user: None,
+            origin_role: None,
         };
         self.store.add_approval(&req)?;
         let _ = self.events.send(CoreEvent {
