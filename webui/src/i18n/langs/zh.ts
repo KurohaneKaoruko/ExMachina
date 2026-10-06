@@ -407,7 +407,7 @@ export const zh = {
   "api.synthFailed": "合成失败 ({status})",
 
   // ── 智能体组页 ──
-  "groups.desc": "组是编成与隔离的基本单位：默认组「智械集群」内置受保护，其他组可自由编成，主智能体可在任务中扩编组内个体。",
+  "groups.desc": "组是编成与隔离的基本单位：默认组「智能连结」（连结体）内置受保护，其他组可自由编成，主智能体可在任务中扩编组内个体。",
   "groups.new": "新建组",
   "groups.del": "删除组",
   "groups.created": "组已创建：{name}",
@@ -735,7 +735,7 @@ export const zh = {
   "singles.deleteFailed": "删除失败：{err}",
   "singles.modelUpdated": "默认模型已更新：{name}",
   "singles.setFailed": "设置失败：{err}",
-  "singles.desc": "独立于任何组、直接对接你的单体智能体（预置「智能连结」以「本机」自称）。与谁对话在「对话」页左栏切换，这里只管档案与默认模型。",
+  "singles.desc": "独立于任何组、直接对接你的单体智能体（预置 Machina 以「本机」自称）。与谁对话在「对话」页左栏切换，这里只管档案与默认模型。",
   "singles.new": "新建智能体",
   "singles.activeTag": "对话目标",
   "singles.settings": "设置",
@@ -758,7 +758,7 @@ export const zh = {
   "singles.domain": "域：{domain}",
   "singles.solo": "单体",
   "singles.model": "默认模型：",
-  "singles.empty": "尚无智能体：创建一个直接对话的智能体（默认「智能连结」已内置）",
+  "singles.empty": "尚无智能体：创建一个直接对话的智能体（默认 Machina 已内置）",
   "singles.modelTitle": "默认模型 · {name}",
   "singles.modelHint": "该智能体的对话与任务将使用所选模型；选「跟随全局默认」时使用「模型设置」页中设为全局默认的提供商。提供商本身请到「模型设置」页维护。",
   "singles.create": "创建",
