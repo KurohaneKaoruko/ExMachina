@@ -18,6 +18,8 @@ services:
       - EXM_LLM_API_KEY=${EXM_LLM_API_KEY:-}
       - EXM_LLM_MODEL_ORCH=${EXM_LLM_MODEL_ORCH:-}
       - EXM_LLM_MODEL_UNIT=${EXM_LLM_MODEL_UNIT:-}
+      # 后台访问密钥（.env 注入，不入库）：非空时 WebUI 出登录门、全部 /api 需 X-Auth-Key
+      - EXM_AUTH_KEY=${EXM_AUTH_KEY:-}
     volumes:
       - exmachina-state:/app/.exmachina
       # 编成数据挂载（组/单体/技能/提示词可持久化编辑）
