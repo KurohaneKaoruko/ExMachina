@@ -80,8 +80,8 @@ export const zh = {
   "theme.accent.ice": "冰蓝",
   "status.connected": "网关已连接",
   "status.reconnecting": "网关重连中",
-  "status.link": "通道就绪",
-  "status.unlinked": "未接入",
+  "status.link": "模型就绪",
+  "status.unlinked": "模型未配置",
   "status.connecting": "连结中",
 
   // ── 登录门 ──
@@ -114,7 +114,7 @@ export const zh = {
   "chat.deleteConfirm": "删除该会话及其全部记录？",
   "chat.noMatch": "无匹配会话",
   "chat.noSessions": "尚无会话",
-  "chat.wsDown": "与网关的实时通道断开，重连中…",
+  "chat.wsDown": "与网关的实时连接断开，重连中…",
   "chat.thinking": "思考",
   "chat.approvalTitle": "待人工审批",
   "chat.approvalApprove": "批准并执行",

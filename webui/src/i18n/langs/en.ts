@@ -82,8 +82,8 @@ export const en: Partial<Dict> = {
   "theme.accent.ice": "Ice Blue",
   "status.connected": "Gateway connected",
   "status.reconnecting": "Gateway reconnecting…",
-  "status.link": "READY",
-  "status.unlinked": "NOT SET",
+  "status.link": "MODEL READY",
+  "status.unlinked": "NO MODEL",
   "status.connecting": "Connecting",
 
   // ── 登录门 ──
