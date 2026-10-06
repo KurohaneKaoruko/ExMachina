@@ -144,8 +144,27 @@ impl Store {
             statements,
             created_at: now_iso(),
             token_usage: None,
+            thinking: None,
+            tool_calls: Vec::new(),
         };
         self.db.append_line("messages", session_id, &msg)?;
+        Ok(msg)
+    }
+
+    /// 带过程数据的消息落盘（思维链 + 工具轨迹；过程收起栏的数据来源）
+    pub fn add_message_full(
+        &self,
+        session_id: &str,
+        role: MessageRole,
+        agent_id: Option<&str>,
+        statements: Vec<Statement>,
+        thinking: Option<String>,
+        tool_calls: Vec<crate::round_trace::ToolCallRecord>,
+    ) -> Result<ChatMessage> {
+        let mut msg = self.add_message(session_id, role, agent_id, statements)?;
+        msg.thinking = thinking.filter(|s| !s.trim().is_empty());
+        msg.tool_calls = tool_calls;
+        self.db.put("messages", &msg.id, &msg)?;
         Ok(msg)
     }
 
@@ -307,6 +326,29 @@ impl Store {
 
     pub fn list_tool_audit(&self, agent_id: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
         self.db.read_lines("tool_audit", agent_id, limit)
+    }
+
+    /// 跨个体聚合的工具审计查询（agent/tool 过滤，时间倒序，limit 封顶）
+    pub fn list_tool_audit_filtered(
+        &self,
+        agent: Option<&str>,
+        tool: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut all: Vec<serde_json::Value> = self.db.list("tool_audit")?;
+        if let Some(a) = agent {
+            all.retain(|v| v.get("agentId").and_then(|x| x.as_str()) == Some(a));
+        }
+        if let Some(t) = tool {
+            all.retain(|v| v.get("tool").and_then(|x| x.as_str()).map(|x| x.to_lowercase()).unwrap_or_default().contains(&t.to_lowercase()));
+        }
+        all.sort_by(|a, b| {
+            let ka = a.get("createdAt").and_then(|x| x.as_str()).unwrap_or("");
+            let kb = b.get("createdAt").and_then(|x| x.as_str()).unwrap_or("");
+            kb.cmp(ka)
+        });
+        all.truncate(limit);
+        Ok(all)
     }
 
     // ---------------- 用量台账（真实 token，替代字符粗估） ----------------

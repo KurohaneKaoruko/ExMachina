@@ -882,6 +882,19 @@ impl ToolGateway {
             result.error.clone().unwrap_or_default().chars().take(200).collect()
         };
         let _ = self.store.audit_tool(agent_id, full_name, args, &summary, started.elapsed().as_millis() as u64);
+        // 轮次过程轨迹：随收束落盘到最终消息（过程收起栏数据源）
+        crate::round_trace::push_tool(
+            session_id,
+            crate::round_trace::ToolCallRecord {
+                call_id: call_id.clone(),
+                agent_id: agent_id.to_string(),
+                tool: full_name.to_string(),
+                args: args.clone(),
+                ok: result.ok,
+                duration_ms: started.elapsed().as_millis() as u64,
+                summary,
+            },
+        );
         self.emit_tool_result(session_id, &call_id, agent_id, full_name, &result, &started);
         result
     }

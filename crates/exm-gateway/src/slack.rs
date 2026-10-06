@@ -233,7 +233,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                         .and_then(|x| x.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let gate_ctx = InboundCtx { text: &text, external_id: &external_id, display_name: &external_id, is_group, mentioned };
+                    let gate_ctx = InboundCtx { text: &text, external_id: &external_id, display_name: &external_id, is_group, mentioned, chat_key: channel.as_str() };
                     match admit(core.as_ref(), &ch, &gate_ctx).await {
                         GateDecision::Allow => {}
                         GateDecision::Ignore => continue,

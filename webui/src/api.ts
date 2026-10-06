@@ -199,6 +199,8 @@ export interface CronJob {
   lastRunAt?: string;
   lastStatus?: string;
   createdAt: string;
+  /** 下次执行时间（启用且 cron 命中时由服务端计算） */
+  nextRunAt?: string;
 }
 
 export interface CronRun {
@@ -383,6 +385,12 @@ export const api = {
   sessionSnapshots: (id: string) =>
     req<{ turn: number; messageCount: number; status: string }[]>(`/sessions/${id}/snapshots`),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
+  stopSession: (id: string) =>
+    req<{ ok: boolean; toolsExecuted: number }>(`/sessions/${id}/stop`, { method: "POST", body: JSON.stringify({}) }),
+  audit: (params: { agent?: string; tool?: string; limit?: number }) =>
+    req<{ items: Array<Record<string, unknown>> }>("/audit?" + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)])).toString()),
+  channelTest: (id: string) =>
+    req<{ ok: boolean; category?: string; identity?: string; message?: string; error?: string }>(`/channels/${id}/test`, { method: "POST", body: JSON.stringify({}) }),
   chat: (id: string, text: string, images?: string[], mode?: string) =>
     req<{ accepted: boolean }>(`/sessions/${id}/chat`, {
       method: "POST",

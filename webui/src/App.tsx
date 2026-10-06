@@ -85,6 +85,15 @@ export default function App(): React.ReactElement {
   const accent = useTheme((s) => s.accent);
   const setAccent = useTheme((s) => s.setAccent);
   const [view, setView] = useState<ViewKey>("chat");
+  const navRequest = useExm((st) => st.navRequest);
+  useEffect(() => {
+    if (!navRequest) return;
+    if (navRequest.view === "chat" && navRequest.sessionId) {
+      void useExm.getState().selectSession(navRequest.sessionId);
+    }
+    setView(navRequest.view as ViewKey);
+    useExm.setState({ navRequest: null });
+  }, [navRequest]);
   const [themeOpen, setThemeOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   /** 移动端侧栏抽屉（≤860px 时侧栏覆盖呈现） */

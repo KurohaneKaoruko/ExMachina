@@ -289,6 +289,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                             display_name: &external_id,
                                             is_group,
                                             mentioned: true,
+                                            chat_key: peer.key(),
                                         };
                                         match admit(core.as_ref(), &ch, &gate_ctx).await {
                                             GateDecision::Allow => {}

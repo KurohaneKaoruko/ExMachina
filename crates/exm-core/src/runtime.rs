@@ -90,6 +90,10 @@ impl AgentRuntime {
         specs.extend(self.tools.mcp().tool_snapshot_for(&def.identifier));
 
         for _step in 0..max_steps {
+            // 停止检查点：会话被请求停止时终止本节点执行
+            if crate::round_trace::is_cancelled(session_id) {
+                anyhow::bail!("本轮已被用户停止");
+            }
             let (text, calls, usage) = self
                 .call_llm(&messages, &agent_hint, &chain, &specs, &mut on_delta)
                 .await?;

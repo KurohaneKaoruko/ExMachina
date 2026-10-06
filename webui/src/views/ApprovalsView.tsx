@@ -1,13 +1,15 @@
 /** 执行审批：被闸门拦截的命令，批准后代执行 / 拒绝 */
 import React, { useCallback, useEffect, useState } from "react";
 import { Button, Empty, Segmented, Space, Spin, Table, Tag, message } from "antd";
-import { CheckOutlined, CloseOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, CheckOutlined, CloseOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type ApprovalRequest } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { useExm } from "../store";
 import { useT } from "../i18n/core";
 
 export function ApprovalsView(): React.ReactElement {
   const t = useT();
+  const requestNav = useExm((st) => st.requestNav);
   const [status, setStatus] = useState<string>("pending");
   const [items, setItems] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -102,6 +104,23 @@ export function ApprovalsView(): React.ReactElement {
               title: t("approvals.colResult"),
               render: (_, r) =>
                 r.result ? <span className="dim result-cell">{r.result.slice(0, 240)}</span> : <span className="dim">—</span>,
+            },
+            {
+              title: t("approvals.colSession"),
+              width: 90,
+              render: (_, r) =>
+                r.sessionId ? (
+                  <Button
+                    size="small"
+                    icon={<ArrowRightOutlined />}
+                    onClick={() => requestNav("chat", r.sessionId)}
+                    title={t("approvals.jump")}
+                  >
+                    {t("approvals.jump")}
+                  </Button>
+                ) : (
+                  <span className="dim">—</span>
+                ),
             },
             {
               title: t("approvals.colOps"),

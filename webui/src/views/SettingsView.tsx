@@ -3,13 +3,13 @@
  * 字段定义来自后端 config_schema()；LLM 接入在「提供商」页维护。
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Input, InputNumber, message, Select, Switch } from "antd";
+import { Button, Input, InputNumber, message, Select, Switch, Card } from "antd";
 import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, GlobalOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
+import { api, limitsStats, type ConfigSchema, type ConfigSchemaField, type GatewayConfig, type LimitsStats } from "../api";
 
 /** 分组元数据。ui 是本地偏好分区，不属于后端 config schema */
 const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey: TKey }> = {
@@ -272,6 +272,7 @@ export function SettingsView(): React.ReactElement {
               <h3>{t(meta.titleKey)}</h3>
               <p>{t(meta.descKey)}。{t("settings.hotTip")}</p>
             </header>
+            {current.key === "limits" && <LimitsStatsCard />}
             <div className="cfg-list">
               {current.fields.map((f) => {
                 const value = values[f.key];
@@ -336,5 +337,42 @@ export function SettingsView(): React.ReactElement {
         </section>
       </div>
     </div>
+  );
+}
+
+/** 用量统计卡（ops-visibility）：消费既有 /limits/stats 快照 */
+function LimitsStatsCard(): React.ReactElement {
+  const t = useT();
+  const [stats, setStats] = useState<LimitsStats | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try { setStats(await limitsStats()); } catch { setStats(null); }
+    })();
+  }, []);
+  if (!stats) return <></>;
+  return (
+    <Card size="small" className="hud" style={{ marginBottom: 12 }}>
+      {stats.enabled ? (
+        <>
+          <div className="dim" style={{ marginBottom: 6 }}>
+            {t("cfg.limitsStatsEnabled", { window: stats.windowSecs, max: stats.maxRequests > 0 ? stats.maxRequests : "∞", period: stats.quotaPeriod })}
+          </div>
+          {stats.counters.length === 0 ? (
+            <div className="dim">{t("cfg.limitsNoCounters")}</div>
+          ) : (
+            <table className="plain-table">
+              <thead><tr><th>{t("cfg.limitsSubject")}</th><th>{t("cfg.limitsCount")}</th></tr></thead>
+              <tbody>
+                {stats.counters.map((c) => (
+                  <tr key={c.key}><td className="mono">{c.key}</td><td className="mono">{c.count}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      ) : (
+        <div className="dim">{t("cfg.limitsDisabled")}</div>
+      )}
+    </Card>
   );
 }

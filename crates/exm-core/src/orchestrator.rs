@@ -532,6 +532,40 @@ impl Orchestrator {
         result
     }
 
+    /// 停止轮次的统一收束：停止陈述作为最终消息（含过程数据），审计事件落账
+    fn finish_stopped_round(&self, session_id: &str, tools_executed: usize) -> anyhow::Result<()> {
+        let text = format!("【警告】本轮已被用户停止（已执行 {} 次工具调用）。", tools_executed);
+        let statements = vec![Statement::warn(text)];
+        let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+        self.store.add_message_full(
+            session_id,
+            MessageRole::System,
+            None,
+            statements,
+            thinking,
+            tool_calls,
+        )?;
+        let _ = self.store.audit_tool(
+            "system",
+            "session_stop",
+            &serde_json::json!({ "session": session_id }),
+            &format!("用户停止本轮（已执行 {} 次工具调用）", tools_executed),
+            0,
+        );
+        self.emit(
+            session_id,
+            "run.finished",
+            serde_json::json!({
+                "routeLevel": "STOPPED",
+                "agentId": self.orch_id(),
+                "statements": [ { "tag": "警告", "text": "本轮已被用户停止。" } ],
+                "stopped": true,
+                "artifacts": self.store.outbox_drain(session_id).unwrap_or_default()
+            }),
+        );
+        Ok(())
+    }
+
     /// 轮次快照记录：turn = 既有快照数 + 1；游标 = 当前消息条数；
     /// 检查点链 = 本轮写类工具登记的检查点引用（读出即清）；用量 = 本轮增量（台账差分）
     fn record_turn_snapshot(&self, session_id: &str, status: &str) {
@@ -580,15 +614,23 @@ impl Orchestrator {
 
         // L0 直达：不派发
         if matches!(plan.route_level, RouteLevel::L0) || plan.nodes.is_empty() {
+            // 用户请求停止：以停止陈述收束本轮，不再产出内容
+            if crate::round_trace::is_cancelled(session_id) {
+                let n = crate::round_trace::tool_count(session_id);
+                return self.finish_stopped_round(session_id, n);
+            }
             let statements = plan
                 .final_answer
                 .clone()
                 .unwrap_or_else(|| vec![Statement::report("本机直接回答（L0）。")]);
-            self.store.add_message(
+            let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+            self.store.add_message_full(
                 session_id,
                 MessageRole::Orchestrator,
                 Some(self.orch_id().as_str()),
                 statements.clone(),
+                thinking,
+                tool_calls,
             )?;
             self.emit(
                 session_id,
@@ -640,13 +682,25 @@ impl Orchestrator {
             .await;
 
         let final_reports = reports.lock().await.clone();
-        let final_text = self.converge(session_id, &plan, &final_reports, &graph).await?;
+        // 用户请求停止：跳过 LLM 收束，以停止陈述收束本轮
+        let cancelled = crate::round_trace::is_cancelled(session_id);
+        let final_text = if cancelled {
+            format!(
+                "【警告】本轮已被用户停止（已执行 {} 次工具调用）。",
+                crate::round_trace::tool_count(session_id)
+            )
+        } else {
+            self.converge(session_id, &plan, &final_reports, &graph).await?
+        };
         let statements = text_to_statements(&final_text);
-        self.store.add_message(
+        let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+        self.store.add_message_full(
             session_id,
             MessageRole::Orchestrator,
             Some(self.orch_id().as_str()),
             statements.clone(),
+            thinking,
+            tool_calls,
         )?;
 
         // 只更新阻断项，保留并发节点写入的证据/风险（原子读改写）
@@ -1252,6 +1306,8 @@ impl Orchestrator {
                 match delta {
                     // 思维链单独成轨：渠道折叠呈现「思考」，不与回答混流
                     StreamDelta::Thinking(t) => {
+                        // 思维增量随轮次留存（过程收起栏/落盘数据源）
+                        crate::round_trace::push_thinking(session_id, &t);
                         self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": t }));
                     }
                     StreamDelta::Text(t) => {
@@ -1281,6 +1337,7 @@ impl Orchestrator {
                             &model,
                         );
                         if !fallback.reasoning.is_empty() {
+                            crate::round_trace::push_thinking(session_id, &fallback.reasoning);
                             self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": fallback.reasoning }));
                         }
                         // 非流式回退：内联 <think> 与协议正文按阶段分轨（不裸奔到可见输出）
@@ -1353,6 +1410,10 @@ pub struct ExecCtx {
 
 impl ExecCtx {
     pub async fn run_node(&self, node: TaskNode) -> NodeOutcome {
+        // 停止检查点：已请求停止的会话，剩余节点快速失败（不再派发 LLM/工具）
+        if crate::round_trace::is_cancelled(&self.session_id) {
+            return NodeOutcome::failed(node.id.clone(), String::from("本轮已被用户停止"));
+        }
         let o = self.orchestrator.clone();
         // 上游回流快照（短暂持锁，随即释放，不跨 await）
         let snapshot: Arc<Reports> = Arc::new(self.reports.lock().await.clone());

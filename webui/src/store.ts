@@ -67,6 +67,9 @@ interface ExmState {
   handleEvent: (evt: WsEvent) => void;
   setWs: (ok: boolean) => void;
   bumpMemory: () => void;
+  /** 跨视图导航请求（审批→会话跳转等）：App 订阅消费 */
+  navRequest: { view: string; sessionId?: string; nonce: number } | null;
+  requestNav: (view: string, sessionId?: string) => void;
 }
 
 let ws: WebSocket | null = null;
@@ -336,6 +339,9 @@ export const useExm = create<ExmState>((set, get) => ({
       message.error(String(e));
     }
   },
+
+  navRequest: null,
+  requestNav: (view, sessionId) => set({ navRequest: { view, sessionId, nonce: Date.now() } }),
 
   handleEvent: (evt) => {
     if (evt.sessionId !== get().sessionId) return;

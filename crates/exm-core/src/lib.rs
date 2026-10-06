@@ -22,6 +22,7 @@ pub mod patch;
 pub mod provider;
 pub mod registry;
 pub mod remote;
+pub mod round_trace;
 pub mod runtime;
 pub mod store;
 pub mod task;
@@ -625,8 +626,29 @@ impl Core {
                 .clone()
         };
         let _guard = lock.lock().await;
-        let orch = self.orchestrator();
-        orch.handle_user_message(session_id, text).await
+        // 轮次生命周期：开始（登记取消令牌）→ 执行 → 结束（移除）
+        crate::round_trace::begin(session_id);
+        let result = self.orchestrator().handle_user_message(session_id, text).await;
+        crate::round_trace::end(session_id);
+        result
+    }
+
+    /// 停止会话运行中的轮次：置位取消令牌（工具循环检查点终止），返回已执行的工具次数。
+    /// 空闲会话（无运行中轮次）返回错误。
+    pub fn stop_session(&self, session_id: &str) -> anyhow::Result<usize> {
+        if !crate::round_trace::is_running(session_id) {
+            anyhow::bail!("该会话当前没有运行中的任务");
+        }
+        crate::round_trace::request_cancel(session_id);
+        let n = crate::round_trace::tool_count(session_id);
+        let _ = self.store.audit_tool(
+            "system",
+            "session_stop",
+            &serde_json::json!({ "session": session_id }),
+            &format!("用户请求停止（当时已执行 {n} 次工具调用）"),
+            0,
+        );
+        Ok(n)
     }
 
     pub fn mcp(&self) -> Arc<crate::mcp::McpRegistry> {

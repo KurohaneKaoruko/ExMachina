@@ -36,6 +36,114 @@ function describe(e: StoredEvent, t: ReturnType<typeof useT>): { tag: string; co
 export function ActivityView(): React.ReactElement {
   const t = useT();
   const { sessions, timeline } = useExm();
+  const [tab, setTab] = useState<"events" | "audit">("events");
+  const [sid, setSid] = useState<string>("");
+  const [events, setEvents] = useState<StoredEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  return (
+    <div className="pane-wrap">
+      <PageHeader
+        en="EVENTS"
+        title={t("nav.events")}
+        desc={t("activity.desc")}
+        actions={
+          <Space>
+            <Button type={tab === "events" ? "primary" : "default"} size="small" onClick={() => setTab("events")}>
+              {t("activity.tabEvents")}
+            </Button>
+            <Button type={tab === "audit" ? "primary" : "default"} size="small" onClick={() => setTab("audit")}>
+              {t("activity.tabAudit")}
+            </Button>
+          </Space>
+        }
+      />
+      <div className="pane-body">{tab === "events" ? <EventsPane /> : <AuditPane />}</div>
+    </div>
+  );
+}
+
+/** 工具审计视图（ops-visibility）：按个体/工具过滤的调用明细 */
+function AuditPane(): React.ReactElement {
+  const t = useT();
+  const { agents } = useExm();
+  const [agent, setAgent] = useState<string | undefined>(undefined);
+  const [tool, setTool] = useState<string>("");
+  const [items, setItems] = useState<Array<Record<string, unknown>>>([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api.audit({ agent, tool, limit: 300 });
+      setItems(r.items);
+    } finally {
+      setLoading(false);
+    }
+  }, [agent, tool]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="pane-body">
+      <Space style={{ marginBottom: 10 }} wrap>
+        <Select
+          allowClear
+          showSearch
+          style={{ minWidth: 180 }}
+          placeholder={t("activity.auditAgent")}
+          value={agent}
+          onChange={(v) => setAgent(v || undefined)}
+          options={agents.map((a) => ({ value: a.identifier, label: `${a.name} (${a.identifier})` }))}
+        />
+        <Select
+          allowClear
+          showSearch
+          style={{ minWidth: 160 }}
+          placeholder={t("activity.auditTool")}
+          value={tool || undefined}
+          onChange={(v) => setTool(v || "")}
+          options={[...new Set(items.map((i) => String(i.tool ?? "")))].filter(Boolean).map((tl) => ({ value: tl, label: tl }))}
+        />
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>{t("common.refresh")}</Button>
+      </Space>
+      <Spin spinning={loading}>
+        {items.length === 0 && <Empty description={t("activity.auditEmpty")} className="pane-empty" />}
+        {items.map((it, idx) => {
+          const key = String(it.callId ?? idx);
+          const isOpen = expanded === key;
+          return (
+            <Card key={key} size="small" className="hud" style={{ marginBottom: 6 }}>
+              <div className="audit-row" onClick={() => setExpanded(isOpen ? null : key)} style={{ cursor: "pointer" }}>
+                <Tag color={it.ok ? "success" : "error"}>{String(it.ok ? "OK" : "ERR")}</Tag>
+                <span className="mono">{String(it.tool ?? "")}</span>
+                <span className="dim">{String(it.agentId ?? "")}</span>
+                <span className="dim mono" style={{ marginLeft: "auto" }}>
+                  {String(it.createdAt ?? "").replace("T", " ").slice(0, 19)} · {String(it.durationMs ?? 0)}ms
+                </span>
+              </div>
+              {isOpen && (
+                <div className="usage-body" style={{ borderTop: "1px dashed var(--line)", marginTop: 6 }}>
+                  <div className="dim" style={{ marginBottom: 4 }}>{t("activity.auditArgs")}</div>
+                  <pre className="usage-think">{JSON.stringify(it.args ?? {}, null, 2)}</pre>
+                  <div className="dim" style={{ margin: "6px 0 4px" }}>{t("activity.auditSummary")}</div>
+                  <pre className="usage-think">{String(it.summary ?? "")}</pre>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </Spin>
+    </div>
+  );
+}
+
+/** 事件视图（原有会话事件溯源） */
+function EventsPane(): React.ReactElement {
+  const t = useT();
+  const { sessions, timeline } = useExm();
   const [sid, setSid] = useState<string>("");
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [loading, setLoading] = useState(false);

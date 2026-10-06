@@ -16,9 +16,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+pub mod channel_test;
 pub mod git_panel;
-pub mod identity;
-pub mod limits;
+pub mod identity;pub mod limits;
 pub mod llm_admin;
 pub mod singles;
 pub mod discord;
@@ -192,6 +192,12 @@ pub fn build_router(core: Arc<Core>) -> Router {
             "/api/groups/:gid/agents/:identifier/prompt",
             get(get_agent_prompt).put(put_agent_prompt),
         )
+        // 停止会话运行中的轮次（process-transparency）
+        .route("/api/sessions/:id/stop", post(stop_session))
+        // 工具审计聚合（ops-visibility）
+        .route("/api/audit", get(list_audit))
+        // 通道连通测试（integration-ux）
+        .route("/api/channels/:id/test", post(crate::channel_test::test_channel))
         .route("/api/auth/verify", post(verify_auth))
         // MCP 服务端 HTTP 挂载（10.3）：配置启用时挂载（默认关闭 = 不挂载）；
         // 挂载在鉴权中间件之前，复用同一鉴权口径
@@ -1053,6 +1059,39 @@ async fn rename_session(
     match st.core.store.update_session_title(&id, &title) {
         Ok(_) => Json(json!({ "ok": true, "title": title })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- 工具审计聚合（ops-visibility）
+
+/// 工具审计查询（GET /api/audit）：跨个体聚合既有审计分片，服务端过滤
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditQuery {
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn list_audit(State(st): State<AppState>, Query(q): Query<AuditQuery>) -> impl IntoResponse {
+    match st.core.store.list_tool_audit_filtered(q.agent.as_deref(), q.tool.as_deref(), q.limit.unwrap_or(200).min(1000)) {
+        Ok(items) => Json(json!({ "items": items })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 停止会话运行中的轮次（POST /api/sessions/:id/stop）：运行中返回已执行工具数，空闲返回 409
+async fn stop_session(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.stop_session(&id) {
+        Ok(tools) => Json(json!({ "ok": true, "toolsExecuted": tools })).into_response(),
+        Err(e) => {
+            let idle = e.to_string().contains("没有运行中的任务");
+            let code = if idle { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(json!({ "error": e.to_string() }))).into_response()
+        }
     }
 }
 

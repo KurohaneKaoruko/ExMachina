@@ -286,13 +286,28 @@ pub struct CronBody {
 pub async fn list_cron(State(st): State<AppState>) -> impl IntoResponse {
     // 内部心跳条目不外露：心跳由 automation 配置驱动（调度器自持 last_run_minute 防重），
     // 非用户任务；外露会导致用户禁用/删除被下一个调度周期静默推翻
-    let jobs: Vec<_> = st
+    let now = chrono::Utc::now();
+    let jobs: Vec<Value> = st
         .core
         .cron
         .list()
         .unwrap_or_default()
         .into_iter()
         .filter(|j| j.id != "__heartbeat__")
+        .map(|j| {
+            // 下次执行时间（integration-ux）：启用且 cron 命中的任务向前扫描最近命中
+            let mut v = serde_json::to_value(&j).unwrap_or(Value::Null);
+            if j.enabled {
+                if let Some(expr) = &j.cron {
+                    if let Some(t) = exm_core::cron::next_run(expr, now, 527_040) {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("nextRunAt".into(), json!(t.to_rfc3339()));
+                        }
+                    }
+                }
+            }
+            v
+        })
         .collect();
     Json(serde_json::to_value(jobs).unwrap_or(Value::Null)).into_response()
 }
@@ -989,6 +1004,8 @@ pub(crate) struct InboundCtx<'a> {
     pub is_group: bool,
     /// 平台归一化信号：被提及（@）或回复智能体消息
     pub mentioned: bool,
+    /// 通道会话键（与会话标题 `channel:<id>:<key>` 一致；/stop 定位会话用）
+    pub chat_key: &'a str,
 }
 
 pub(crate) enum GateDecision {
@@ -1003,6 +1020,24 @@ pub(crate) enum GateDecision {
 /// 位置前置于一切执行（ChannelRun::begin 之前由各适配器调用）。
 pub(crate) async fn admit(core: &exm_core::Core, ch: &Channel, ctx: &InboundCtx<'_>) -> GateDecision {
     let identity_cfg = &core.config().identity;
+
+    // ⓪ /stop 停止指令（先于一切校验）：直接终止该通道会话运行中的轮次并回执
+    if ctx.text.trim() == "/stop" {
+        let gid = ch.group.clone().unwrap_or_else(|| core.active_group());
+        let title = format!("channel:{}:{}", ch.id, ctx.chat_key);
+        let receipt = match core
+            .list_sessions_in_group(&gid)
+            .ok()
+            .and_then(|list| list.into_iter().find(|s| s.title == title))
+        {
+            Some(session) => match core.stop_session(&session.id) {
+                Ok(n) => format!("⏹ 已停止本轮（已执行 {n} 次工具调用）。"),
+                Err(_) => "当前没有运行中的任务。".to_string(),
+            },
+            None => "当前没有运行中的任务。".to_string(),
+        };
+        return GateDecision::Deny(receipt);
+    }
 
     // ① 配对码兑换（控制台签发短码 → 通道内 /pair <码> 绑定；单次有效、限期）
     let trimmed = ctx.text.trim();
@@ -1384,6 +1419,11 @@ pub(crate) fn report_status(id: &str, state: &str, detail: impl Into<String>) {
 /// 通道删除 / 停用时清除残留状态（下线的账号不该在状态表里阴魂不散）
 pub(crate) fn clear_status(id: &str) {
     chan_statuses().lock().remove(id);
+}
+
+/// 单通道运行状态读取（连通测试的「长连接平台」口径）
+pub(crate) fn status_of(id: &str) -> Option<ChanStatus> {
+    chan_statuses().lock().get(id).cloned()
 }
 
 /// 通道运行状态总览（通道页状态列轮询）
@@ -1811,7 +1851,7 @@ mod identity_gate_tests {
     }
 
     fn ctx<'a>(text: &'a str, uid: &'a str, is_group: bool, mentioned: bool) -> InboundCtx<'a> {
-        InboundCtx { text, external_id: uid, display_name: uid, is_group, mentioned }
+        InboundCtx { text, external_id: uid, display_name: uid, is_group, mentioned, chat_key: "test" }
     }
 
     /// 群聊门控：默认开——未提及忽略、提及放行、私聊豁免

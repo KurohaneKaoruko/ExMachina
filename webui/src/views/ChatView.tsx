@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { AudioOutlined, CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { AudioOutlined, CheckOutlined, CloudUploadOutlined, CloseOutlined, EditOutlined, ExportOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { agentIdEn } from "../models";
 import { useExm } from "../store";
@@ -89,6 +89,8 @@ export function ChatView(): React.ReactElement {
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [sessionFilter, setSessionFilter] = useState("");
+  /** 会话类型过滤（2.2）：all / normal / channel */
+  const [sessionKind, setSessionKind] = useState("all");
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [recording, setRecording] = useState(false);
   const [usage, setUsage] = useState<{
@@ -203,6 +205,39 @@ export function ChatView(): React.ReactElement {
       }
     } catch {
       // 删除失败静默：会话可能在运行中被网关拒绝
+    }
+  };
+
+  // ---- 会话导出 Markdown（2.3）：角色前缀正文 + 工具摘要 + 思维链折叠引用 ----
+  const exportSession = async (id: string, title: string) => {
+    try {
+      const msgs = await api.messages(id);
+      const lines: string[] = [`# ${title}`, "", `> 导出时间：${new Date().toLocaleString()}`, ""];
+      for (const m of msgs) {
+        const role = m.role === "user" ? "👤 用户" : m.role === "orchestrator" ? (m.agentId ? `🤖 ${m.agentId}` : "🤖 指挥体") : "⚙️ 系统";
+        lines.push(`## ${role} · ${m.createdAt}`, "");
+        if (m.thinking) {
+          lines.push("<details><summary>思维过程</summary>", "", "```", m.thinking, "```", "", "</details>", "");
+        }
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          lines.push("<details><summary>工具调用</summary>", "");
+          for (const tc of m.toolCalls) {
+            lines.push(`- \`${tc.tool}\` ${tc.status === "ok" ? "✅" : tc.status === "error" ? "❌" : "⏳"} ${tc.summary || ""}`);
+          }
+          lines.push("", "</details>", "");
+        }
+        lines.push(m.statements.map((st) => st.text).join("\n\n"), "");
+      }
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title.replace(/[\\/:*?"<>|]/g, "_") || "session"}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success(t("chat.exportDone"));
+    } catch (e) {
+      message.error(t("chat.exportFailed", { err: String(e).slice(0, 120) }));
     }
   };
 
@@ -330,8 +365,21 @@ export function ChatView(): React.ReactElement {
             value={sessionFilter}
             onChange={(e) => setSessionFilter(e.target.value)}
           />
+          {/* 会话类型过滤（2.2）：全部 / 普通 / 通道 */}
+          <Select
+            size="small"
+            value={sessionKind}
+            onChange={setSessionKind}
+            className="session-kind"
+            options={[
+              { value: "all", label: t("chat.kind.all") },
+              { value: "normal", label: t("chat.kind.normal") },
+              { value: "channel", label: t("chat.kind.channel") },
+            ]}
+          />
           <div className="session-list">
             {sessions
+              .filter((s) => (sessionKind === "all" ? true : sessionKind === "channel" ? s.title.startsWith("channel:") : !s.title.startsWith("channel:")))
               .filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase()))
               .map((s) => (
               <div
@@ -339,10 +387,21 @@ export function ChatView(): React.ReactElement {
                 className={`session-row ${s.id === sessionId ? "active" : ""}`}
                 onClick={() => void selectSession(s.id)}
               >
-                <MessageOutlined className="session-row-icon" />
-                <span className="session-title">{s.title}</span>
+                {s.title.startsWith("channel:") ? <CloudUploadOutlined className="session-row-icon" /> : <MessageOutlined className="session-row-icon" />}
+                <span className="session-title">{s.title.replace(/^channel:[^:]+:/, "↗ ")}</span>
                 {s.id === sessionId && running && <span className="session-live-dot" />}
                 <span className="session-ops" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="small"
+                    type="text"
+                    className="session-edit"
+                    icon={<ExportOutlined />}
+                    title={t("chat.export")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void exportSession(s.id, s.title);
+                    }}
+                  />
                   <Button
                     size="small"
                     type="text"
@@ -581,6 +640,19 @@ export function ChatView(): React.ReactElement {
           >
             {t("chat.send")}
           </Button>
+          {running && sessionId && (
+            <Popconfirm
+              title={t("chat.stopConfirm")}
+              onConfirm={() => {
+                if (!sessionId) return;
+                api.stopSession(sessionId)
+                  .then((r) => message.success(t("chat.stopDone", { n: String(r.toolsExecuted) })))
+                  .catch((e) => message.error(t("chat.stopFail", { err: String(e).slice(0, 120) })));
+              }}
+            >
+              <Button danger icon={<PauseCircleOutlined />}>{t("chat.stop")}</Button>
+            </Popconfirm>
+          )}
           {renaming && (
             <Modal
               open

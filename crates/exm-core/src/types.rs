@@ -555,6 +555,12 @@ pub struct ChatMessage {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
+    /// 本轮思维链（收束时由服务端留存，过程收起栏数据源）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// 本轮工具调用轨迹（收束时由服务端留存）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<crate::round_trace::ToolCallRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
