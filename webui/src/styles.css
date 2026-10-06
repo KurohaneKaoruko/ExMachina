@@ -1967,3 +1967,48 @@ input, textarea { caret-color: var(--accent); }
 
 /* 数字读数（chip-num 等）字距收紧 */
 .chip-num { letter-spacing: 0.5px; }
+
+/* ============ 过程收起栏（OpenCode 模式：使用了 N 个思考 / 工具） ============ */
+.msg-process { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.usage-bar { border: 1px solid var(--line); border-radius: 2px; background: rgba(255, 255, 255, 0.015); }
+.usage-bar + .usage-bar { margin-top: 0; }
+.usage-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+}
+.usage-bar-head:hover { color: var(--text-hi); background: rgba(var(--accent-rgb), 0.05); }
+.usage-caret { display: inline-block; transition: transform 0.15s ease; color: var(--accent); font-size: 10px; }
+.usage-caret.open { transform: rotate(90deg); }
+.usage-label { font-family: var(--mono); letter-spacing: 0.3px; }
+.usage-live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  margin-right: 4px;
+  animation: led-pulse 1.2s ease-in-out infinite;
+}
+.usage-body {
+  padding: 6px 10px 8px;
+  border-top: 1px dashed var(--line);
+  max-height: 320px;
+  overflow: auto;
+}
+.usage-think {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.usage-body .timeline-item { padding: 2px 0; }

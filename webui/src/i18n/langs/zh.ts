@@ -139,6 +139,8 @@ export const zh = {
   "groups.none": "还没有智能体组——新建一个开始编成",
   "groups.groupDeleteConfirm": "删除组「{name}」？其编成目录将一并移除。",
   "agents.f.promptExtra": "留空使用内置统一智械纪律提示词",
+  "chat.usedThinking": "使用了 {n} 字思考",
+  "chat.usedTools": "使用了 {n} 项工具与调度",
   "chat.send": "发送",
   "chat.mode.code": "编码模式",
   "chat.mode.codeTip": "展开思维链与文件/命令操作轨迹；关闭即普通聊天（只看结论输出）",

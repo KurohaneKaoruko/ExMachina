@@ -141,6 +141,8 @@ export const en: Partial<Dict> = {
   "groups.none": "No agent groups yet — create one to start composing",
   "groups.groupDeleteConfirm": "Delete group \"{name}\"? Its roster directory will be removed.",
   "agents.f.promptExtra": "Leave empty to use the built-in discipline prompt",
+  "chat.usedThinking": "Used {n} chars of thinking",
+  "chat.usedTools": "Used {n} tool & dispatch steps",
   "chat.send": "Send",
   "chat.mode.code": "Code mode",
   "chat.mode.codeTip": "Expand the thinking chain and file/command operation trace; off = plain chat (final answers only)",

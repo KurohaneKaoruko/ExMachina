@@ -485,8 +485,9 @@ export const useExm = create<ExmState>((set, get) => ({
       case "run.finished": {
         const statements = (p.statements ?? []) as Statement[];
         const id = get().sessionId!;
-        // 工具轨迹随最终消息留存（思维流与实时卡一并清场）
+        // 工具轨迹与思维链随最终消息留存（收起栏可随时展开回看，不再「突然消失」）
         const toolCalls = get().runToolCalls;
+        const thinking = get().liveThinking;
         set({
           running: false,
           liveOrch: "",
@@ -503,6 +504,7 @@ export const useExm = create<ExmState>((set, get) => ({
               agentId: typeof p.agentId === "string" ? p.agentId : "orchestrator",
               statements,
               toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+              thinking: thinking.trim() ? thinking : undefined,
               createdAt: new Date().toISOString(),
             },
           ],

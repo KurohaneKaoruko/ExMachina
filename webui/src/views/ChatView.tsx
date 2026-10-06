@@ -1,6 +1,6 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, Tooltip, message } from "antd";
+import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
 import { AudioOutlined, CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { agentIdEn } from "../models";
@@ -12,13 +12,16 @@ import { StatementList } from "../components/Statements";
 import { Markdown } from "../components/Markdown";
 import { AsciiMeter } from "../components/Ascii";
 import { ToolCallList } from "../components/ToolCall";
+import { UsageBar } from "../components/UsageBar";
 import { TurnOps } from "../components/HistoryOps";
 import type { ChatMessage } from "../types";
 
-function MessageBubble({ m, turn, ops, orchLabel, showTools }: { m: ChatMessage; turn?: number; ops?: React.ReactNode; orchLabel?: string; showTools?: boolean }): React.ReactElement {
+function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: number; ops?: React.ReactNode; orchLabel?: string }): React.ReactElement {
   const tb = useT();
   const isUser = m.role === "user";
   const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? (orchLabel ?? tb("chat.role.orchestrator")) : (m.agentId ?? tb("chat.role.system"));
+  const hasThinking = Boolean(m.thinking && m.thinking.trim());
+  const hasTools = Boolean(m.toolCalls && m.toolCalls.length > 0);
   return (
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
@@ -26,26 +29,28 @@ function MessageBubble({ m, turn, ops, orchLabel, showTools }: { m: ChatMessage;
         {turn != null && <span className="msg-turn mono">#{turn}</span>}
         {ops && <span className="msg-ops">{ops}</span>}
       </div>
-      {showTools && m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
+      {(hasThinking || hasTools) && (
+        <div className="msg-process">
+          {hasThinking && (
+            <UsageBar label={tUsage(tb, m.thinking!.length)}>
+              <pre className="usage-think">{m.thinking}</pre>
+            </UsageBar>
+          )}
+          {hasTools && (
+            <UsageBar label={tb("chat.usedTools", { n: m.toolCalls!.length })}>
+              <ToolCallList calls={m.toolCalls!} />
+            </UsageBar>
+          )}
+        </div>
+      )}
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
   );
 }
 
-/** 折叠思维流：分轨呈现「思考」，默认收起、流式时显示最新一行预览 */
-function ThinkingBlock({ text, label }: { text: string; label: string }): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  if (!text.trim()) return <></>;
-  const preview = text.trimEnd().split("\n").pop() ?? "";
-  return (
-    <div className="thinking-block" onClick={() => setOpen(!open)}>
-      <div className="thinking-head">
-        <span className="thinking-dot" /> {label}
-        {!open && <span className="thinking-preview">{preview.slice(-60)}</span>}
-      </div>
-      {open && <pre className="thinking-body">{text}</pre>}
-    </div>
-  );
+/** 思考栏摘要文案（OpenCode 口径：使用了 N 个思考；本地思维流以字数计量） */
+function tUsage(tb: (k: string, v?: Record<string, string>) => string, chars: number): string {
+  return tb("chat.usedThinking", { n: String(chars) });
 }
 
 export function ChatView(): React.ReactElement {
@@ -82,12 +87,6 @@ export function ChatView(): React.ReactElement {
     await loadTarget();
   };
   const [text, setText] = useState("");
-  /** 编码模式：展开思维链与文件/命令操作轨迹；关闭 = 普通聊天（只看结论输出） */
-  const [codeMode, setCodeMode] = useState(() => localStorage.getItem("exm.codeMode") === "1");
-  const toggleCodeMode = (v: boolean) => {
-    setCodeMode(v);
-    localStorage.setItem("exm.codeMode", v ? "1" : "0");
-  };
   const [images, setImages] = useState<string[]>([]);
   const [sessionFilter, setSessionFilter] = useState("");
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
@@ -390,15 +389,7 @@ export function ChatView(): React.ReactElement {
           <span className="console-sep" />
           <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
           <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
-          <Tooltip title={t("chat.mode.codeTip")}>
-            <button
-              className={`mode-toggle ${codeMode ? "on" : ""}`}
-              onClick={() => toggleCodeMode(!codeMode)}
-              title={t("chat.mode.codeTip")}
-            >
-              {t("chat.mode.code")}
-            </button>
-          </Tooltip>
+
           {usage && (
             <span className="readout console-usage">
               <span className="k">TOKENS</span>
@@ -441,7 +432,6 @@ export function ChatView(): React.ReactElement {
               m={m}
               turn={turn}
               orchLabel={orchLabel}
-              showTools={codeMode}
               ops={
                 turn != null && !running ? (
                   <TurnOps turn={turn} onEdit={openEdit} onUndo={doUndo} onFork={doFork} />
@@ -455,18 +445,30 @@ export function ChatView(): React.ReactElement {
             <Card size="small" className="msg-bubble msg-agent">
               <Space direction="vertical" className="full-width">
                 <div>
-                  <Spin size="small" /> <b>{codeMode ? t("chat.orchRunning") : `${orchLabel} …`}</b>
+                  <Spin size="small" /> <b>{`${orchLabel} …`}</b>
                 </div>
-                {codeMode && timeline.map((tl, i) => (
-                  <div key={i} className={`timeline-item tl-${tl.kind}`}>
-                    <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
-                      {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
-                    </Tag>
-                    <span className="tl-text">{tl.text}</span>
+                {(liveThinking.trim() || timeline.length > 0 || runToolCalls.length > 0) && (
+                  <div className="msg-process">
+                    {liveThinking.trim() && (
+                      <UsageBar label={t("chat.usedThinking", { n: String(liveThinking.length) })} live>
+                        <pre className="usage-think">{liveThinking}</pre>
+                      </UsageBar>
+                    )}
+                    {(timeline.length > 0 || runToolCalls.length > 0) && (
+                      <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
+                        {timeline.map((tl, i) => (
+                          <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+                            <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                              {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                            </Tag>
+                            <span className="tl-text">{tl.text}</span>
+                          </div>
+                        ))}
+                        {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
+                      </UsageBar>
+                    )}
                   </div>
-                ))}
-                {/* 工具执行轨迹：编码模式可见（文件操作 / 终端命令 / 截屏） */}
-                {codeMode && <ToolCallList calls={runToolCalls} />}
+                )}
               </Space>
             </Card>
           )}
@@ -476,7 +478,11 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
               </div>
-              {codeMode && <ThinkingBlock text={liveUnitThinking[agent] ?? ""} label={t("chat.thinking")} />}
+              {(liveUnitThinking[agent] ?? "").trim() && (
+                <UsageBar label={t("chat.usedThinking", { n: String((liveUnitThinking[agent] ?? "").length) })} live>
+                  <pre className="usage-think">{liveUnitThinking[agent]}</pre>
+                </UsageBar>
+              )}
               <pre className="live-pre">{content}</pre>
             </Card>
           ))}
@@ -486,20 +492,28 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{orchLabel}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
               </div>
-              {codeMode && (
-                <>
-                  {timeline.map((tl, i) => (
-                    <div key={i} className={`timeline-item tl-${tl.kind}`}>
-                      <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
-                        {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
-                      </Tag>
-                      <span className="tl-text">{tl.text}</span>
-                    </div>
-                  ))}
-                  <ToolCallList calls={runToolCalls} />
-                </>
+              {(liveThinking.trim() || timeline.length > 0 || runToolCalls.length > 0) && (
+                <div className="msg-process">
+                  {liveThinking.trim() && (
+                    <UsageBar label={t("chat.usedThinking", { n: String(liveThinking.length) })} live>
+                      <pre className="usage-think">{liveThinking}</pre>
+                    </UsageBar>
+                  )}
+                  {(timeline.length > 0 || runToolCalls.length > 0) && (
+                    <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
+                      {timeline.map((tl, i) => (
+                        <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+                          <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                            {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                          </Tag>
+                          <span className="tl-text">{tl.text}</span>
+                        </div>
+                      ))}
+                      {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
+                    </UsageBar>
+                  )}
+                </div>
               )}
-              {codeMode && <ThinkingBlock text={liveThinking} label={t("chat.thinking")} />}
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
           )}
