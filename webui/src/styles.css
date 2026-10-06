@@ -1936,3 +1936,14 @@ body {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 块级标题的卡片（组卡/模型卡/单体卡/技能卡）：标题装饰为内联元素，遇块级标题会折行成
+   「装饰行 + 文字行 + 装饰行」——这类卡片直接隐藏装饰，标题保持单行干净呈现 */
+.group-card .ant-card-head-title::before,
+.group-card .ant-card-head-title::after,
+.model-card .ant-card-head-title::before,
+.model-card .ant-card-head-title::after,
+.skill-card .ant-card-head-title::before,
+.skill-card .ant-card-head-title::after {
+  content: none;
+}
