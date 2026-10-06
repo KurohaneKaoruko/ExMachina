@@ -363,6 +363,25 @@ export const api = {
       body: JSON.stringify({ title }),
     }),
   deleteSession: (id: string) => req<{ ok: boolean }>(`/sessions/${id}`, { method: "DELETE" }),
+  // 会话历史管控（组 9）：撤销 / 编辑重发 / 分支派生 / 归档与快照视图
+  undoSession: (id: string, turn: number, restoreFiles = true) =>
+    req<{ uptoTurn: number; archived: number; restored: string[] }>(`/sessions/${id}/undo`, {
+      method: "POST",
+      body: JSON.stringify({ turn, restoreFiles }),
+    }),
+  editSession: (id: string, turn: number, text: string) =>
+    req<{ resent: boolean }>(`/sessions/${id}/edit`, {
+      method: "POST",
+      body: JSON.stringify({ turn, text }),
+    }),
+  forkSession: (id: string, turn: number) =>
+    req<{ id: string; title: string }>(`/sessions/${id}/fork`, {
+      method: "POST",
+      body: JSON.stringify({ turn }),
+    }),
+  sessionArchive: (id: string) => req<ChatMessage[]>(`/sessions/${id}/archive`),
+  sessionSnapshots: (id: string) =>
+    req<{ turn: number; messageCount: number; status: string }[]>(`/sessions/${id}/snapshots`),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
   chat: (id: string, text: string, images?: string[]) =>
     req<{ accepted: boolean }>(`/sessions/${id}/chat`, {

@@ -278,6 +278,9 @@ pub struct CronBody {
     pub session_title: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// 结果推送订阅的通道 id 清单（空 = 不推送）
+    #[serde(default)]
+    pub notify_channels: Vec<String>,
 }
 
 pub async fn list_cron(State(st): State<AppState>) -> impl IntoResponse {
@@ -342,6 +345,12 @@ pub async fn create_cron(State(st): State<AppState>, Json(b): Json<CronBody>) ->
         last_run_at: None,
         last_status: None,
         last_run_minute: None,
+        notify_channels: b
+            .notify_channels
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         created_at: String::new(),
     };
     match st.core.cron.upsert(job) {
@@ -390,6 +399,7 @@ pub async fn run_cron_now(State(st): State<AppState>, Path(id): Path<String>) ->
     match st.core.cron.get(&id) {
         Ok(Some(job)) => {
             let run = st.core.run_cron_job(&job).await;
+            notify_cron_result(&st.core, &job, &run).await;
             Json(serde_json::to_value(run).unwrap_or(Value::Null)).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "任务不存在" }))).into_response(),
@@ -430,11 +440,13 @@ async fn tick_jobs(core: &exm_core::Core) -> anyhow::Result<()> {
             // 一次性任务：触发后停用
             job.enabled = false;
         }
-        core.cron.upsert(job)?;
+        core.cron.upsert(job.clone())?;
         changed = true;
+        // 结果推送（7.3）：订阅了通道的任务完成后出站摘要（未订阅 = 维持现状不推）
+        notify_cron_result(core, &job, &run).await;
     }
 
-    // 心跳巡检：配置驱动的内置周期任务（会话固定「心跳巡检」）
+    // 心跳巡检：配置驱动的内置周期任务（会话固定「心跳巡检」；per-agent 粒度见 build_heartbeat_job）
     let cfg = core.config();
     if cfg.automation.heartbeat_enabled {
         let interval = cfg.automation.heartbeat_interval_minutes.max(1) as i64;
@@ -447,20 +459,7 @@ async fn tick_jobs(core: &exm_core::Core) -> anyhow::Result<()> {
                 .map(|j| j.last_run_minute.as_deref() == Some(minute_key.as_str()))
                 .unwrap_or(false);
             if !already {
-                let hb = exm_core::types::CronJob {
-                    id: "__heartbeat__".into(),
-                    name: "心跳巡检".into(),
-                    prompt: cfg.automation.heartbeat_prompt.clone(),
-                    cron: None,
-                    at: None,
-                    group: None,
-                    session_title: Some("心跳巡检".into()),
-                    enabled: true,
-                    last_run_at: None,
-                    last_status: None,
-                    last_run_minute: Some(minute_key),
-                    created_at: String::new(),
-                };
+                let hb = build_heartbeat_job(core, &minute_key);
                 let run = core.run_cron_job(&hb).await;
                 core.cron.upsert(exm_core::types::CronJob {
                     last_run_at: Some(exm_core::types::now_iso()),
@@ -480,6 +479,167 @@ async fn tick_jobs(core: &exm_core::Core) -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+/// 个体所属组（心跳 per-agent 定位用）：逐组扫描成员清单
+fn group_of_agent(core: &exm_core::Core, identifier: &str) -> Option<String> {
+    core.registry
+        .list_groups()
+        .into_iter()
+        .find(|g| core.registry.agents_in_group(&g.id).iter().any(|a| a.identifier == identifier))
+        .map(|g| g.id)
+}
+
+/// 构造本次心跳任务（7.4 per-agent 粒度）：
+/// 配置了目标个体且其存在于某组 → 以该组为执行上下文（产出经 write_memories 进该组记忆体系，
+/// 会话独立「心跳巡检-<个体>」）；未配置或个体不存在 → 维持全局巡检（激活组 + 会话「心跳巡检」）。
+fn build_heartbeat_job(core: &exm_core::Core, minute_key: &str) -> exm_core::types::CronJob {
+    let cfg = core.config();
+    let target = cfg.automation.heartbeat_agent.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let agent_group = target.and_then(|id| group_of_agent(core, id));
+    let (name, session_title, group) = match (target, agent_group) {
+        (Some(id), Some(g)) => (format!("心跳巡检·{id}"), format!("心跳巡检-{id}"), Some(g)),
+        _ => ("心跳巡检".to_string(), "心跳巡检".to_string(), None),
+    };
+    exm_core::types::CronJob {
+        id: "__heartbeat__".into(),
+        name,
+        prompt: cfg.automation.heartbeat_prompt.clone(),
+        cron: None,
+        at: None,
+        group,
+        session_title: Some(session_title),
+        enabled: true,
+        last_run_at: None,
+        last_status: None,
+        last_run_minute: Some(minute_key.to_string()),
+        notify_channels: Vec::new(),
+        created_at: String::new(),
+    }
+}
+
+// ---------------------------------------------------------------- 定时任务结果推送（7.3）
+
+/// 任务完成后的订阅通道摘要推送：全局开关 + 任务订阅清单双闸门；
+/// 未订阅 = 不产生任何通道消息（维持现状）。受限流约束的出站复用同一文本通路。
+async fn notify_cron_result(core: &exm_core::Core, job: &exm_core::types::CronJob, run: &exm_core::types::CronRun) {
+    let cfg = core.config();
+    if !cfg.notify.enabled || job.notify_channels.is_empty() {
+        return;
+    }
+    let max_chars = cfg.notify.max_chars.max(50);
+    let summary: String = run.summary.chars().take(max_chars).collect();
+    let text = format!("⏰ 定时任务「{}」{}\n{}", job.name, if run.status == "done" { "已完成" } else { "失败" }, summary);
+    for ch in load_channels(core) {
+        if !ch.enabled || !job.notify_channels.iter().any(|id| *id == ch.id) {
+            continue;
+        }
+        let ok = push_channel_text(&ch, &text).await;
+        if !ok {
+            eprintln!("[cron-notify] 通道 {} 推送失败", ch.id);
+        }
+    }
+}
+
+/// 通道文本出站（推送语义，不经历会话）：按平台直发到首个白名单会话或回调地址。
+/// 返回是否成功；无可用目标的平台（未配置会话键/回调）返回 false。
+pub(crate) async fn push_channel_text(ch: &Channel, text: &str) -> bool {
+    let chat = ch.allowed_chats.first().cloned();
+    match ch.kind.as_str() {
+        // webhook 桥接：POST 回调地址（无回调则无从推送）
+        "webhook" | "qq" | "wechat" => {
+            let Some(url) = ch.reply_webhook.clone().filter(|u| !u.trim().is_empty()) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post(&url)
+                .json(&serde_json::json!({ "text": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // telegram：Bot API sendMessage 到首个白名单会话
+        "telegram" => {
+            let (Some(token), Some(chat)) = (ch.token.clone().filter(|t| !t.trim().is_empty()), chat) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
+                .json(&serde_json::json!({ "chat_id": chat, "text": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // discord：Bot REST 发消息（config.channelId 优先于白名单）
+        "discord" => {
+            let Some(token) = ch.token.clone().filter(|t| !t.trim().is_empty()) else {
+                return false;
+            };
+            let Some(target) = ch.cfg("channelId").or(chat) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post(format!("https://discord.com/api/v10/channels/{target}/messages"))
+                .header("Authorization", format!("Bot {token}"))
+                .json(&serde_json::json!({ "content": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // slack：chat.postMessage（token + 频道）
+        "slack" => {
+            let Some(token) = ch.token.clone().filter(|t| !t.trim().is_empty()) else {
+                return false;
+            };
+            let Some(target) = ch.cfg("channelId").or(chat) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post("https://slack.com/api/chat.postMessage")
+                .bearer_auth(token)
+                .json(&serde_json::json!({ "channel": target, "text": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // matrix：房间消息事件（token + roomId；与适配器同口径 Bearer 鉴权）
+        "matrix" => {
+            let Some(homeserver) = ch.cfg("homeserver").filter(|h| !h.trim().is_empty()) else {
+                return false;
+            };
+            let Some(token) = ch.token.clone().filter(|t| !t.trim().is_empty()) else {
+                return false;
+            };
+            let Some(room) = ch.cfg("channelId").or(chat) else {
+                return false;
+            };
+            let url = format!(
+                "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+                homeserver.trim_end_matches('/'),
+                crate::matrix::url_encode_pub(&room),
+                exm_core::types::new_id()
+            );
+            reqwest::Client::new()
+                .put(url)
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "msgtype": "m.text", "body": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // napcat/qqbot：长连接适配器自有会话内出站，推送语义暂不支持（诚实返回 false）
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------- 执行审批
@@ -1819,5 +1979,193 @@ mod inbound_media_tests {
         let note = stage_inbound_media(&core, "ses-fail", &saved);
         assert!(note.contains("读取失败"), "{note}");
         assert!(exm_core::image_stash::take("ses-fail").is_empty(), "失败不应产生暂存");
+    }
+}
+
+// ---------------------------------------------------------------- 心跳 per-agent 粒度（7.4 单测）
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    fn core_with_agent(heartbeat_agent: Option<&str>) -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-hb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = exm_core::config::ExmConfig::load(&dir);
+        cfg.use_mock = true;
+        cfg.automation.heartbeat_agent = heartbeat_agent.map(|s| s.to_string());
+        let core = exm_core::Core::with_config(cfg).expect("创建 Core 失败");
+        // 测试组（内置组定义受保护，不可增删）：主智能体 + 可派发的执行个体
+        core.registry().create_group(Some("t".into()), "心跳组", "").unwrap();
+        let mk = |name: &str, identifier: &str, tier: exm_core::types::Tier| exm_core::types::AgentDefinition {
+            name: name.into(),
+            identifier: identifier.into(),
+            domain: "测试".into(),
+            tier,
+            description: "测试个体".into(),
+            capabilities: vec![],
+            tools: vec![],
+            when_to_call: String::new(),
+            dependencies: vec![],
+            composable_with: vec![],
+            input_schema: Default::default(),
+            output_schema: Default::default(),
+            prompt_file: String::new(),
+            model_hint: None,
+        };
+        core.registry()
+            .upsert_agent("t", mk("值守指挥", "duty-orch", exm_core::types::Tier::Orchestrator), None)
+            .unwrap();
+        core.registry()
+            .upsert_agent("t", mk("值守执行", "duty-worker", exm_core::types::Tier::Unit), None)
+            .unwrap();
+        core.registry().set_primary("t", "duty-orch").unwrap();
+        core
+    }
+
+    #[test]
+    fn 心跳_未配置维持全局() {
+        let core = core_with_agent(None);
+        let job = build_heartbeat_job(&core, "k1");
+        assert_eq!(job.session_title.as_deref(), Some("心跳巡检"), "全局心跳会话名不变");
+        assert!(job.group.is_none(), "未配置 = 激活组执行（group 缺省）");
+    }
+
+    #[test]
+    fn 心跳_目标个体不存在维持全局() {
+        let core = core_with_agent(Some("ghost-agent"));
+        let job = build_heartbeat_job(&core, "k2");
+        assert_eq!(job.session_title.as_deref(), Some("心跳巡检"), "个体不存在回落全局");
+        assert!(job.group.is_none());
+    }
+
+    #[test]
+    fn 心跳_目标个体以其组巡检且产出进其记忆() {
+        let core = core_with_agent(Some("duty-worker"));
+        core.registry().set_active_group("t").unwrap();
+        let job = build_heartbeat_job(&core, "k3");
+        assert_eq!(job.session_title.as_deref(), Some("心跳巡检-duty-worker"), "per-agent 心跳独立会话");
+        assert_eq!(job.group.as_deref(), Some("t"), "以个体所属组为执行上下文");
+
+        // 实际执行一轮（替身通道派发）：产出（会话摘要等）应落在该组的记忆体系
+        let run = tokio::runtime::Runtime::new().unwrap().block_on(core.run_cron_job(&job));
+        assert_eq!(run.status, "done", "替身通道执行应完成：{}", run.summary);
+        let stats = core.memory_stats().unwrap();
+        let group_entries = stats["byGroup"]["t"].as_u64().unwrap_or(0);
+        assert!(group_entries >= 1, "心跳产出应写入目标组记忆（byGroup.t = {group_entries}）");
+        // 独立演进：per-agent 会话存在，全局心跳会话不被创建（两种模式互不污染）
+        let titles: Vec<String> = core
+            .list_sessions_in_group("t")
+            .unwrap()
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+        assert!(titles.iter().any(|t| t == "心跳巡检-duty-worker"), "per-agent 会话存在：{titles:?}");
+        assert!(!titles.iter().any(|t| t == "心跳巡检"), "全局心跳会话不应被 per-agent 心跳创建");
+    }
+}
+
+// ---------------------------------------------------------------- 定时任务结果推送（7.3 单测）
+
+#[cfg(test)]
+mod cron_notify_tests {
+    use super::*;
+
+    fn core_with_channel(reply_url: &str) -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-notify-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".exmachina").join("data")).unwrap();
+        let core = exm_core::Core::create(&dir).expect("创建 Core 失败");
+        // 通道落库：webhook 桥接 + 回调地址指向测试收端
+        let channels = serde_json::json!([{
+            "id": "ch-hook", "type": "webhook", "enabled": true,
+            "allowedChats": [], "replyWebhook": reply_url, "createdAt": exm_core::types::now_iso(),
+        }]);
+        std::fs::write(
+            core.config().data_dir.join("channels.json"),
+            serde_json::to_string_pretty(&channels).unwrap(),
+        )
+        .unwrap();
+        core
+    }
+
+    fn job(subscribed: bool) -> exm_core::types::CronJob {
+        exm_core::types::CronJob {
+            id: "job1".into(),
+            name: "每日报表".into(),
+            prompt: "生成报表".into(),
+            cron: Some("0 9 * * *".into()),
+            at: None,
+            group: None,
+            session_title: None,
+            enabled: true,
+            last_run_at: None,
+            last_status: None,
+            last_run_minute: None,
+            notify_channels: if subscribed { vec!["ch-hook".into()] } else { vec![] },
+            created_at: String::new(),
+        }
+    }
+
+    fn run() -> exm_core::types::CronRun {
+        exm_core::types::CronRun {
+            id: "r1".into(),
+            job_id: "job1".into(),
+            job_name: "每日报表".into(),
+            session_id: "s1".into(),
+            started_at: exm_core::types::now_iso(),
+            finished_at: exm_core::types::now_iso(),
+            status: "done".into(),
+            summary: "报表已生成：12 项指标正常".into(),
+        }
+    }
+
+    /// 本地 HTTP 收端：记录收到的 POST 文本
+    async fn spawn_receiver() -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let app = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move |body: String| async move {
+                let _ = tx.send(body);
+                "ok"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
+        (format!("http://{addr}/hook"), rx)
+    }
+
+    #[tokio::test]
+    async fn 推送_订阅通道收到摘要() {
+        let (url, mut rx) = spawn_receiver().await;
+        let core = core_with_channel(&url);
+        notify_cron_result(&core, &job(true), &run()).await;
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("订阅推送应在超时前到达")
+            .expect("通道收端应收到消息");
+        assert!(body.contains("每日报表"), "摘要含任务名：{body}");
+        assert!(body.contains("报表已生成"), "摘要含结论：{body}");
+    }
+
+    #[tokio::test]
+    async fn 推送_无订阅维持现状() {
+        let (url, mut rx) = spawn_receiver().await;
+        let core = core_with_channel(&url);
+        notify_cron_result(&core, &job(false), &run()).await;
+        let got = tokio::time::timeout(std::time::Duration::from_millis(400), rx.recv()).await;
+        assert!(got.is_err(), "未订阅任务不得产生通道消息");
+    }
+
+    #[tokio::test]
+    async fn 推送_总开关关闭不推() {
+        let (url, mut rx) = spawn_receiver().await;
+        let core = core_with_channel(&url);
+        let mut cfg = (*core.config()).clone();
+        cfg.notify.enabled = false;
+        core.apply_config(cfg).unwrap();
+        notify_cron_result(&core, &job(true), &run()).await;
+        let got = tokio::time::timeout(std::time::Duration::from_millis(400), rx.recv()).await;
+        assert!(got.is_err(), "总开关关闭 = 全部不推");
     }
 }

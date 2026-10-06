@@ -137,6 +137,25 @@ enum Commands {
         #[command(subcommand)]
         action: CheckpointAction,
     },
+    /// MCP 服务端：把启用的内置工具按 ACL 暴露给外部 MCP 客户端（默认关闭，配置 mcpServe.enabled 开启）
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// stdio 模式：本进程以 MCP 协议（JSON-RPC 2.0，逐行）与客户端通信
+    /// 会话亲和：调用在 arguments.session 给出会话 id；--session 提供缺省绑定
+    Serve {
+        /// 缺省会话 id（调用未携带 session 时使用；无效会话仍会被拒绝）
+        #[arg(long)]
+        session: Option<String>,
+        /// 客户端身份标注（审计可归因；缺省 stdio）
+        #[arg(long, default_value = "stdio")]
+        client: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -489,6 +508,67 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             let core = build_core(&workspace)?;
             let host_ref = if host.is_empty() { None } else { Some(host.as_str()) };
             exm_gateway::serve(core, port, host_ref).await
+        }
+        Commands::Mcp { action } => {
+            let core = build_core(&workspace)?;
+            let McpAction::Serve { session, client } = action;
+            // ACL 默认关闭：未启用时给出明确指引（不静默空转）
+            if !core.config().mcp_serve.enabled {
+                anyhow::bail!("MCP 服务端未启用：请在 .exmachina/config.json 的 mcpServe 段置 enabled=true 后重试");
+            }
+            use std::io::{BufRead, Write};
+            let srv = exm_core::mcp_server::McpServer::new(core, client);
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            eprintln!(
+                "[mcp] stdio 服务端已就绪（会话亲和缺省: {}）",
+                session.as_deref().unwrap_or("<未绑定>")
+            );
+            for line in stdin.lock().lines() {
+                let Ok(line) = line else { break };
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let mut req: serde_json::Value = match serde_json::from_str(trimmed) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = serde_json::to_writer(
+                            &mut stdout,
+                            &serde_json::json!({
+                                "jsonrpc": "2.0", "id": null,
+                                "error": { "code": -32700, "message": format!("解析失败: {e}") }
+                            }),
+                        );
+                        let _ = writeln!(stdout);
+                        continue;
+                    }
+                };
+                // 缺省会话绑定：调用未携带 arguments.session 时注入（无效会话仍由服务端拒绝）
+                if let Some(default_sid) = session.as_deref() {
+                    if req["method"] == "tools/call" {
+                        let args = req.pointer_mut("/params/arguments");
+                        match args {
+                            Some(a) if a.get("session").is_none() => {
+                                if let Some(obj) = a.as_object_mut() {
+                                    obj.insert("session".into(), serde_json::json!(default_sid));
+                                }
+                            }
+                            None => {
+                                if let Some(params) = req.get_mut("params").and_then(|p| p.as_object_mut()) {
+                                    params.insert("arguments".into(), serde_json::json!({ "session": default_sid }));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if let Some(resp) = srv.handle_request(&req).await {
+                    serde_json::to_writer(&mut stdout, &resp)?;
+                    writeln!(stdout)?;
+                }
+            }
+            Ok(())
         }
         Commands::Worker { url, token, id } => {
             let core = build_core(&workspace)?;

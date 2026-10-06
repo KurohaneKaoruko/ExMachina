@@ -50,42 +50,42 @@
 
 ## 7. 主动行为增强（P1）
 
-- [ ] 7.1 文件监听触发器（`notify` 接入、去抖 1s 可配、排除 glob 默认含 `.exmachina/`、`target/`、`node_modules/`），事件经统一注入通路进会话——验证：临时目录集成测试"连续变更合并为一次注入"
-- [ ] 7.2 通用事件 webhook 入口（独立路径+密钥、签名校验、映射规则可配、失败审计）——验证：接口单测覆盖"有效注入/签名拒绝+审计"
-- [ ] 7.3 cron 结果推送：`CronJob.notify_channels` 字段 + 完成事件出站摘要（受限流约束）——验证：单测覆盖"订阅推送/无订阅维持现状"
-- [ ] 7.4 心跳 per-agent 粒度（目标个体/组配置、以其身份巡检、产出进其记忆），未配置维持全局——验证：单测覆盖两种模式
+- [x] 7.1 文件监听触发器（`notify` 接入、去抖 1s 可配、排除 glob 默认含 `.exmachina/`、`target/`、`node_modules/`），事件经统一注入通路进会话——验证：临时目录集成测试"连续变更合并为一次注入"
+- [x] 7.2 通用事件 webhook 入口（独立路径+密钥、签名校验、映射规则可配、失败审计）——验证：接口单测覆盖"有效注入/签名拒绝+审计"
+- [x] 7.3 cron 结果推送：`CronJob.notify_channels` 字段 + 完成事件出站摘要（受限流约束）——验证：单测覆盖"订阅推送/无订阅维持现状"
+- [x] 7.4 心跳 per-agent 粒度（目标个体/组配置、以其身份巡检、产出进其记忆），未配置维持全局——验证：单测覆盖两种模式
 
 ## 8. 记忆工具（P1）
 
-- [ ] 8.1 `memory_read/memory_write/memory_link` 三工具薄封装 MemoryStore（recall/remember/link），组隔离与 `source=agent` 标注——验证：单测覆盖检索排序、哈希去重、越组隔离
-- [ ] 8.2 工具白名单接入：默认仅主智能体可见，个体经编成 JSON 授权——验证：runtime 工具面快照单测
-- [ ] 8.3 编排提示词与文档同步（工具说明、使用纪律）——验证：`openspec show` 相关文档段落存在且与实现一致
+- [x] 8.1 `memory_read/memory_write/memory_link` 三工具薄封装 MemoryStore（recall/remember/link），组隔离与 `source=agent` 标注——验证：单测覆盖检索排序、哈希去重、越组隔离
+- [x] 8.2 工具白名单接入：默认仅主智能体可见，个体经编成 JSON 授权——验证：runtime 工具面快照单测
+- [x] 8.3 编排提示词与文档同步（工具说明、使用纪律）——验证：`openspec show` 相关文档段落存在且与实现一致
 
 ## 9. 会话历史管控（P1）
 
-- [ ] 9.1 轮次快照记录（消息游标 + 检查点 id 链），每轮原子更新——验证：多轮对话后快照链完整性单测
-- [ ] 9.2 undo：空闲校验 → 游标回退 → 上下文重建 → 可选 checkpoint restore → 审计事件 + 归档视图；处理中拒绝——验证：单测覆盖"空闲回退/处理中拒绝/文件联动回滚"
-- [ ] 9.3 编辑重发（= undo 至该轮 + 新内容重执行，原内容归档可查）——验证：接口单测
-- [ ] 9.4 fork 分支（新会话携带历史副本 + `parent_session/upto` 元数据，权限与组继承，原会话不变）——验证：单测覆盖派生与独立演进
-- [ ] 9.5 ChatView/CodingView 接入 undo/重发/分叉入口——验证：`npm run build:webui` + 手工冒烟
+- [x] 9.1 轮次快照记录（消息游标 + 检查点 id 链），每轮原子更新——验证：多轮对话后快照链完整性单测
+- [x] 9.2 undo：空闲校验 → 游标回退 → 上下文重建 → 可选 checkpoint restore → 审计事件 + 归档视图；处理中拒绝——验证：单测覆盖"空闲回退/处理中拒绝/文件联动回滚"
+- [x] 9.3 编辑重发（= undo 至该轮 + 新内容重执行，原内容归档可查）——验证：接口单测
+- [x] 9.4 fork 分支（新会话携带历史副本 + `parent_session/upto` 元数据，权限与组继承，原会话不变）——验证：单测覆盖派生与独立演进
+- [x] 9.5 ChatView/CodingView 接入 undo/重发/分叉入口——验证：`npm run build:webui` + 手工冒烟
 
 ## 10. MCP 服务端（P1）
 
-- [ ] 10.1 ACL 配置与工具清单过滤（组/会话范围/工具清单，未授权不可见），默认关闭——验证：单测覆盖可见性矩阵
-- [ ] 10.2 stdio 模式 `exm mcp serve`（子进程 JSON-RPC，会话亲和，无效会话拒绝）——验证：端到端用 MCP 客户端协议脚本调用 read/terminal 成功
-- [ ] 10.3 网关 `/mcp` HTTP 挂载（复用鉴权中间件）——验证：接口测试覆盖鉴权与会话亲和
-- [ ] 10.4 外部调用安全口径一致性：审批/沙箱/审计/限流全生效，审计含来源标注——验证：端到端"外部触发破坏性命令 → 审批卡出现 → 拒绝返回错误"
+- [x] 10.1 ACL 配置与工具清单过滤（组/会话范围/工具清单，未授权不可见），默认关闭——验证：单测覆盖可见性矩阵
+- [x] 10.2 stdio 模式 `exm mcp serve`（子进程 JSON-RPC，会话亲和，无效会话拒绝）——验证：端到端用 MCP 客户端协议脚本调用 read/terminal 成功
+- [x] 10.3 网关 `/mcp` HTTP 挂载（复用鉴权中间件）——验证：接口测试覆盖鉴权与会话亲和
+- [x] 10.4 外部调用安全口径一致性：审批/沙箱/审计/限流全生效，审计含来源标注——验证：端到端"外部触发破坏性命令 → 审批卡出现 → 拒绝返回错误"
 
 ## 11. 桌面集成（P1）
 
-- [ ] 11.1 系统托盘（状态菜单/显隐/退出；关窗驻留默认开，配置可改完全退出；退出级联终止网关子进程）——验证：桌面手工验收清单通过
-- [ ] 11.2 原生通知（审批/定时推送/任务完成三类，点击聚焦定位，类别开关）——验证：桌面手工验收 + 事件映射单测
-- [ ] 11.3 全局快捷键（默认唤起/收起组合键可改绑，冲突提示）——验证：桌面手工验收
-- [ ] 11.4 WebUI/PWA 回归不受影响——验证：浏览器与 PWA 冒烟清单通过
+- [x] 11.1 系统托盘（状态菜单/显隐/退出；关窗驻留默认开，配置可改完全退出；退出级联终止网关子进程）——验证：桌面手工验收清单通过
+- [x] 11.2 原生通知（审批/定时推送/任务完成三类，点击聚焦定位，类别开关）——验证：桌面手工验收 + 事件映射单测
+- [x] 11.3 全局快捷键（默认唤起/收起组合键可改绑，冲突提示）——验证：桌面手工验收
+- [x] 11.4 WebUI/PWA 回归不受影响——验证：浏览器与 PWA 冒烟清单通过
 
 ## 12. 整体验收
 
-- [ ] 12.1 文档更新：docs/（使用指南新增能力章节、协议与契约补充新 REST/WS 事件）、README 功能清单——验证：文档审阅与示例命令可执行
-- [ ] 12.2 `doctor` 子命令纳入新配置项诊断——验证：`exm doctor` 输出新项且异常配置可检出
-- [ ] 12.3 原创性验收：全仓（crates/ webui/src/ desktop/ agents/ scripts/ docs/ README*.md）对禁用词清单（`openclaw`、`opencode`，大小写不敏感）检索零命中——验证：`grep -riE "openclaw|opencode" crates webui/src desktop agents scripts docs README.md README_EN.md | wc -l` 输出 0
-- [ ] 12.4 `cargo test --workspace` + `npm run build:webui` + `openspec validate` 全绿；`docker compose up --build` 冒烟通过
+- [x] 12.1 文档更新：docs/（使用指南新增能力章节、协议与契约补充新 REST/WS 事件）、README 功能清单——验证：文档审阅与示例命令可执行
+- [x] 12.2 `doctor` 子命令纳入新配置项诊断——验证：`exm doctor` 输出新项且异常配置可检出
+- [x] 12.3 原创性验收：全仓（crates/ webui/src/ desktop/ agents/ scripts/ docs/ README*.md）对禁用词清单（`openclaw`、`opencode`，大小写不敏感）检索零命中——验证：`grep -riE "openclaw|opencode" crates webui/src desktop agents scripts docs README.md README_EN.md | wc -l` 输出 0
+- [x] 12.4 `cargo test --workspace` + `npm run build:webui` + `openspec validate` 全绿；`docker compose up --build` 冒烟通过

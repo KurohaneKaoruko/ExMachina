@@ -350,6 +350,7 @@ pub fn run_cron_add(
         last_run_at: None,
         last_status: None,
         last_run_minute: None,
+        notify_channels: Vec::new(),
         created_at: String::new(),
     })?;
     println!("{} 定时任务已创建：{}（{}）", ok("完成"), job.name, job.id.cyan());

@@ -1842,3 +1842,15 @@ body {
 .git-log-line { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .change-ops { margin-left: auto; display: none; }
 .change-row:hover .change-ops { display: inline-flex; }
+
+/* ── 会话历史管控（组 9.5）：轮次操作条 ── */
+.msg-ops { margin-left: auto; display: inline-flex; gap: 2px; }
+.msg-bubble .msg-ops { opacity: 0; transition: opacity 0.15s; }
+.msg-bubble:hover .msg-ops { opacity: 1; }
+.turn-ops { display: inline-flex; gap: 0; }
+.turn-op { padding: 0 5px; font-size: 12px; color: var(--dim, #8a9a9a); }
+.turn-op:hover { color: var(--accent, #35e0c8); }
+.msg-turn { margin-left: 6px; font-size: 10px; opacity: 0.55; }
+.code-msg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.code-msg .turn-op { padding: 0 4px; }
+.edit-warn { margin-bottom: 12px; }

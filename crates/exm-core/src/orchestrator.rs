@@ -502,7 +502,45 @@ impl Orchestrator {
                 vec![Statement::warn(format!("本轮运行失败：{err}"))],
             );
         }
+        // 轮次快照（9.1）：每轮收束原子落一条（消息游标 + 检查点链 + 用量），undo / 编辑重发 / fork 基座
+        self.record_turn_snapshot(session_id, if result.is_ok() { "done" } else { "failed" });
         result
+    }
+
+    /// 轮次快照记录：turn = 既有快照数 + 1；游标 = 当前消息条数；
+    /// 检查点链 = 本轮写类工具登记的检查点引用（读出即清）；用量 = 本轮增量（台账差分）
+    fn record_turn_snapshot(&self, session_id: &str, status: &str) {
+        let turn = match self.store.latest_turn_snapshot(session_id) {
+            Ok(Some(last)) => last.turn + 1,
+            _ => 1,
+        };
+        let count = self.store.list_messages(session_id, 0).map(|m| m.len()).unwrap_or(0);
+        let checkpoint_ids = self.store.drain_checkpoint_refs(session_id).unwrap_or_default();
+        let (p, c, _) = self.store.usage_total(session_id);
+        let (prev_p, prev_c) = match turn {
+            1 => (0, 0),
+            _ => match self.store.list_turn_snapshots(session_id).ok().and_then(|l| l.last().cloned()) {
+                Some(last) => (last.prompt_tokens, last.completion_tokens),
+                None => (0, 0),
+            },
+        };
+        let snap = TurnSnapshot {
+            id: format!("{session_id}:{turn}"),
+            session_id: session_id.to_string(),
+            turn,
+            message_count: count,
+            checkpoint_ids,
+            prompt_tokens: p.saturating_sub(prev_p),
+            completion_tokens: c.saturating_sub(prev_c),
+            status: status.to_string(),
+            created_at: now_iso(),
+        };
+        let _ = self.store.put_turn_snapshot(&snap);
+        self.emit(
+            session_id,
+            "turn.snapshotted",
+            serde_json::json!({ "turn": turn, "messageCount": count, "status": status }),
+        );
     }
 
     async fn run_round(self: &Arc<Self>, session_id: &str, text: &str) -> anyhow::Result<()> {
@@ -1323,20 +1361,9 @@ impl ExecCtx {
                 }
                 inputs
             },
-            // 主智能体权限注入：自定义组的主智能体获得组内个体管理工具（docs/09）
-            tool_allowlist: {
-                let mut allowlist = def.tools.clone();
-                let group_meta = o.registry.active_group_meta();
-                if group_meta
-                    .as_ref()
-                    .map(|m| m.primary.as_deref() == Some(def.identifier.as_str()) && !m.builtin)
-                    .unwrap_or(false)
-                    && !allowlist.contains(&ToolName::AgentManage)
-                {
-                    allowlist.push(ToolName::AgentManage);
-                }
-                allowlist
-            },
+            // 主智能体权限注入：组主智能体获得组内个体管理工具（自定义组）与记忆三工具（默认授权）；
+            // 个体工具面 = 编成 JSON 的 tools 清单（8.2）
+            tool_allowlist: crate::tools::ToolGateway::runtime_allowlist(&def, o.registry.active_group_meta().as_ref()),
             constraints: DispatchConstraints {
                 // 步数预算按配置分档（复杂任务需要更多「思考-调工具」轮次）；超时随步数放宽
                 max_steps: (o.max_unit_steps as u32).max(3),

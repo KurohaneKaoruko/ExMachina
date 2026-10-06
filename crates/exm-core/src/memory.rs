@@ -377,6 +377,24 @@ impl MemoryStore {
         )
     }
 
+    /// 条目的关联链（作为起点的出链 + 作为终点的入链）；关联持久化于 links 集合
+    pub fn links_of(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        let mut out: Vec<serde_json::Value> = self.db.read_lines(LINKS, id, 0)?;
+        // 入链：to = id 的关联存于对端的分桶；全量扫描代价可控（关联数据量小）
+        let entries: Vec<MemoryEntry> = self.db.list(ENTRIES)?;
+        for e in entries {
+            if e.id == id {
+                continue;
+            }
+            for l in self.db.read_lines::<serde_json::Value>(LINKS, &e.id, 0)? {
+                if l.get("to").and_then(|v| v.as_str()) == Some(id) {
+                    out.push(l);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// 全量重建倒排索引（索引可随时重建，docs/08 §6）
     pub fn reindex(&self) -> Result<usize> {
         self.db.clear_buckets(TERMS)?;
