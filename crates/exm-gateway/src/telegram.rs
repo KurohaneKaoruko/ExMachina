@@ -161,6 +161,7 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
             offset = u["update_id"].as_i64().unwrap_or(offset) + 1;
             let chat_id = u.pointer("/message/chat/id").and_then(|v| v.as_i64());
             let Some(chat_id) = chat_id else { continue };
+            let mut inbound_media: Option<Vec<(String, String, String)>> = None;
             // 会话白名单：非空时仅放行清单内的 chat
             if !ch.allowed_chats.is_empty()
                 && !ch.allowed_chats.iter().any(|a| a == &chat_id.to_string())
@@ -196,6 +197,47 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
             if let Some(text) = text {
                 if text.trim().is_empty() {
                     continue;
+                }
+                // 入站媒体（组 6.4）：photo / document 下载落 inbox，随消息注入
+                let mut media: Vec<(String, String, String)> = Vec::new();
+                if let Some(photos) = u.pointer("/message/photo").and_then(|v| v.as_array()) {
+                    // 取最大尺寸那张
+                    let best = photos
+                        .iter()
+                        .max_by_key(|p| p.get("width").and_then(|x| x.as_i64()).unwrap_or(0));
+                    if let Some(file_id) = best.and_then(|p| p.get("file_id")).and_then(|x| x.as_str()) {
+                        media.push(("image".into(), file_id.to_string(), "photo.jpg".into()));
+                    }
+                }
+                if let Some(doc) = u.pointer("/message/document") {
+                    let file_id = doc.get("file_id").and_then(|x| x.as_str()).unwrap_or("");
+                    let name = doc
+                        .get("file_name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("document.bin")
+                        .to_string();
+                    if !file_id.is_empty() {
+                        media.push(("file".into(), file_id.to_string(), name));
+                    }
+                }
+                if !media.is_empty() {
+                    let api = format!("https://api.telegram.org/bot{}", ch.token.as_deref().unwrap_or_default());
+                    let mut saved: Vec<(String, String, String)> = Vec::new();
+                    let base = format!("https://api.telegram.org/bot{}", ch.token.as_deref().unwrap_or_default());
+                    for (kind, file_id, name) in &media {
+                        match crate::platform::download_bytes(&format!("{base}/file/bot{}/{file_id}", ch.token.as_deref().unwrap_or_default())).await {
+                            Some(bytes) if !bytes.is_empty() => {
+                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch, name, bytes).await {
+                                    saved.push((kind.clone(), p, name.clone()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !saved.is_empty() {
+                        // 注入说明在 begin 后由 session 暂存接管：先暂存文本尾注，经 handle_message 传入
+                        inbound_media = Some(saved);
+                    }
                 }
                 // 入站闸门：/pair 兑换 → 群聊唤醒门控 → 身份管控（capability-completion 组 3）
                 let from_id = u.pointer("/message/from/id").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
@@ -233,7 +275,9 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                 match admit(&core, &ch, &InboundCtx {
                     text: &text, external_id: &from_id, display_name: &display, is_group, mentioned,
                 }).await {
-                    GateDecision::Allow => handle_message(&core, &ch, chat_id, &from_id, &text).await,
+                    GateDecision::Allow => {
+                        handle_message(&core, &ch, chat_id, &from_id, inbound_media.unwrap_or_default(), &text).await
+                    }
                     GateDecision::Ignore => {}
                     GateDecision::Deny(reply) => {
                         send_message(ch.token.as_deref().unwrap_or_default(), chat_id, &reply).await;
@@ -332,7 +376,14 @@ async fn bot_info(token: &str) -> (String, String) {
 }
 
 /// 一条用户消息：组绑定 → 会话复用 → 订阅回复 → 执行 → sendMessage
-async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_id: &str, text: &str) {
+async fn handle_message(
+    core: &Arc<Core>,
+    ch: &Channel,
+    chat_id: i64,
+    external_id: &str,
+    media: Vec<(String, String, String)>,
+    text: &str,
+) {
     // typing 指示（组 6.5）：平台支持即发送，处理结束随回帖自然覆盖
     if caps("telegram").typing {
         send_typing(&ch.token.clone().unwrap_or_default(), chat_id).await;
@@ -340,6 +391,13 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_i
     let Some((run, rx)) = ChannelRun::begin(core, ch, &chat_id.to_string()).await else {
         return;
     };
+    // 入站媒体注入（组 6.4）：图片进多模态暂存（session 维度），文件附路径说明
+    let saved: Vec<(String, String, String)> = media
+        .iter()
+        .map(|(k, p, n)| (k.clone(), p.clone(), n.clone()))
+        .collect();
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &saved);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let token = ch.token.clone().unwrap_or_default();
     let media_token = token.clone();
@@ -356,7 +414,7 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_i
             async move { tg_send_media(&token, chat_id, item).await }
         },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }
 

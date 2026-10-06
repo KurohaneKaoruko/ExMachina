@@ -8,7 +8,7 @@
 //! token 失效（M_UNKNOWN_TOKEN）上报错误后指数退避重试。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
+use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -301,6 +301,10 @@ async fn handle_message(
     let hs2 = hs.to_string();
     let token2 = token.to_string();
     let room2 = room.to_string();
+    let m_client = client.clone();
+    let m_hs = hs.to_string();
+    let m_token = token.to_string();
+    let m_room = room.to_string();
     let reply = spawn_reply(
         &run,
         rx,
@@ -314,10 +318,87 @@ async fn handle_message(
                 send_message(&client2, &hs2, &token2, &room2, &text).await;
             }
         },
-        move |_item: MediaItem| async { false },
+        move |item: MediaItem| {
+            let client2 = m_client.clone();
+            let hs2 = m_hs.clone();
+            let token2 = m_token.clone();
+            let room2 = m_room.clone();
+            async move { mx_send_media(&client2, &hs2, &token2, &room2, &item).await }
+        },
     );
     run.run(text).await;
     let _ = reply.await;
+}
+
+/// matrix 媒体直发（组 6.3）：POST /media/v3/upload → content_uri → m.image / m.file
+async fn mx_send_media(
+    client: &reqwest::Client,
+    hs: &str,
+    token: &str,
+    room: &str,
+    item: &MediaItem,
+) -> bool {
+    let Ok(bytes) = tokio::fs::read(&item.path).await else {
+        return false;
+    };
+    let mime = match item.kind.as_str() {
+        "voice" => "audio/ogg",
+        "file" => "application/octet-stream",
+        _ => "image/png",
+    };
+    let name = item
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "media".into());
+    static TXN: AtomicU64 = AtomicU64::new(0);
+    let n = TXN.fetch_add(1, Ordering::Relaxed);
+    let txn = format!("exm-media-{}-{n}", exm_core::types::now_ms());
+    let upload = format!("{hs}/_matrix/media/v3/upload?filename={}", url_encode(&name));
+    let resp = match client
+        .post(upload)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", mime)
+        .body(bytes)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let uri: String = match resp.json::<Value>().await {
+        Ok(v) => v
+            .get("content_uri")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => return false,
+    };
+    if uri.is_empty() {
+        return false;
+    }
+    static MTXN: AtomicU64 = AtomicU64::new(0);
+    let mn = MTXN.fetch_add(1, Ordering::Relaxed);
+    let mtxn = format!("exm-msg-{}-{mn}", exm_core::types::now_ms());
+    let msgtype = if item.kind == "voice" { "m.audio" } else if item.kind == "file" { "m.file" } else { "m.image" };
+    let send = format!("{hs}/_matrix/client/v3/rooms/{}/send/m.room.message/{}", url_encode(room), url_encode(&mtxn));
+    let body = json!({
+        "msgtype": msgtype,
+        "body": if item.caption.is_empty() { name.clone() } else { item.caption.clone() },
+        "url": uri,
+        "info": { "mimetype": mime },
+    });
+    client
+        .put(send)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
 async fn send_message(client: &reqwest::Client, hs: &str, token: &str, room: &str, text: &str) {

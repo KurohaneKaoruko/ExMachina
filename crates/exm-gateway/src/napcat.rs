@@ -178,11 +178,39 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
     let core = core.clone();
     let ch = ch.clone();
     let tx = tx.clone();
+    let raw = v.clone();
     tokio::spawn(async move {
-        let Some(external_id) = napcat_gate(&core, &ch, &tx, group_id, user_id, &v, &text).await else {
+        let Some(external_id) = napcat_gate(&core, &ch, &tx, group_id, user_id, &raw, &text).await else {
             return; // 闸门拦截（忽略 / 已回复）
         };
-        handle_message(&core, &ch, &tx, group_id, user_id, &external_id, &text).await;
+        // 入站媒体（组 6.4）：image/file 段 → 下载或本地 file:// 复制 → 注入
+        let mut media: Vec<(String, String)> = Vec::new();
+        if let Some(segs) = raw.get("message").and_then(|m| m.as_array()) {
+            for seg in segs {
+                let t = seg.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if t != "image" && t != "file" {
+                    continue;
+                }
+                let url = seg.pointer("/data/url").and_then(|x| x.as_str()).unwrap_or("");
+                let file = seg.pointer("/data/file").and_then(|x| x.as_str()).unwrap_or("");
+                media.push((t.to_string(), if !url.is_empty() { url.to_string() } else { file.to_string() }));
+            }
+        }
+        let mut saved: Vec<(String, String, String)> = Vec::new();
+        for (kind, src) in media {
+            let name = format!("napcat-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else { "bin" });
+            let bytes = if let Some(local) = src.strip_prefix("file://") {
+                std::fs::read(local).ok()
+            } else {
+                crate::platform::download_bytes(&src).await
+            };
+            if let Some(b) = bytes {
+                if let Some(p) = crate::platform::save_inbound_media(&core, &ch, &name, b).await {
+                    saved.push((kind, p, name));
+                }
+            }
+        }
+        handle_message(&core, &ch, &tx, group_id, user_id, &external_id, saved, &text).await;
     });
 }
 
@@ -259,6 +287,7 @@ async fn handle_message(
     group_id: Option<i64>,
     user_id: Option<i64>,
     external_id: &str,
+    media: Vec<(String, String, String)>,
     text: &str,
 ) {
     // 会话键：群聊优先，无群号走私聊
@@ -267,7 +296,11 @@ async fn handle_message(
         return;
     };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
+    // 入站媒体注入（组 6.4）：图片进多模态暂存，文件附路径说明
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     let tx = tx.clone();
+    let media_tx = tx.clone();
     let reply = spawn_reply(
         &run,
         rx,
@@ -288,8 +321,45 @@ async fn handle_message(
                 let _ = tx.send(action);
             }
         },
-        move |_item: MediaItem| async { false },
+        move |item: MediaItem| {
+            let tx = media_tx.clone();
+            async move {
+                // OneBot 11：base64:// 数据段（远程 NapCat 同样可用，免文件系统共享）
+                let (seg_type, mime) = match item.kind.as_str() {
+                    "voice" => ("record", "audio/ogg"),
+                    "file" => ("file", "application/octet-stream"),
+                    _ => ("image", "image/png"),
+                };
+                let Ok(bytes) = tokio::fs::read(&item.path).await else {
+                    return false;
+                };
+                use base64::Engine as _;
+                let data = format!("base64://{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+                let name = item
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "media".into());
+                let seg = match seg_type {
+                    "file" => serde_json::json!({ "type": "file", "data": { "file": data, "name": name } }),
+                    _ => serde_json::json!({ "type": seg_type, "data": { "file": data } }),
+                };
+                let _ = mime;
+                let action = match group_id {
+                    Some(g) => serde_json::json!({
+                        "action": "send_group_msg",
+                        "params": { "group_id": g, "message": [seg] },
+                    }),
+                    None => serde_json::json!({
+                        "action": "send_private_msg",
+                        "params": { "user_id": user_id.unwrap_or(0), "message": [seg] },
+                    }),
+                };
+                let _ = tx.send(action);
+                true
+            }
+        },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }

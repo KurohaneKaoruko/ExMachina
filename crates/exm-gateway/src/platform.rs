@@ -622,7 +622,7 @@ pub(crate) fn caps(kind: &str) -> ChannelCaps {
         "telegram" => ChannelCaps { image: true, file: true, voice: true, typing: true },
         "discord" => ChannelCaps { image: true, file: true, voice: false, typing: true },
         "slack" => ChannelCaps { image: true, file: true, voice: false, typing: false },
-        "napcat" => ChannelCaps { image: false, file: false, voice: false, typing: false },
+        "napcat" => ChannelCaps { image: true, file: true, voice: true, typing: false },
         "matrix" => ChannelCaps { image: false, file: false, voice: false, typing: false },
         _ => ChannelCaps { image: false, file: false, voice: false, typing: false },
     }
@@ -1103,6 +1103,81 @@ where
             }
         }
     })
+}
+
+/// 入站媒体：下载保存到 `.exmachina/inbox/{通道id}/`，返回（绝对路径, 文件名）
+pub(crate) async fn save_inbound_media(
+    core: &exm_core::Core,
+    ch: &Channel,
+    name: &str,
+    bytes: Vec<u8>,
+) -> Option<String> {
+    let dir = core
+        .config()
+        .workspace_root
+        .join(".exmachina")
+        .join("inbox")
+        .join(&ch.id);
+    tokio::fs::create_dir_all(&dir).await.ok()?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' })
+        .collect();
+    let file = dir.join(format!(
+        "{}-{safe}",
+        exm_core::types::now_ms()
+    ));
+    tokio::fs::write(&file, &bytes).await.ok()?;
+    Some(file.display().to_string())
+}
+
+/// 通用下载（入站媒体用）：带超时；失败 None
+pub(crate) async fn download_bytes(url: &str) -> Option<Vec<u8>> {
+    reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()
+        .map(|b| b.to_vec())
+}
+
+/// 入站媒体注入会话：图片走多模态暂存（data URL），文件/语音注入路径说明。
+/// 追加到消息文本后由模型一并感知。返回注入说明文本。
+pub(crate) fn stage_inbound_media(
+    core: &exm_core::Core,
+    session_id: &str,
+    saved: &[(String, String, String)], // (kind, 绝对路径, 文件名)
+) -> String {
+    let mut notes = String::new();
+    for (kind, path, name) in saved {
+        match kind.as_str() {
+            "image" => {
+                if let Ok(bytes) = std::fs::read(path) {
+                    use base64::Engine as _;
+                    let data = format!(
+                        "data:image/png;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    );
+                    exm_core::image_stash::stage(session_id, vec![data]);
+                    notes.push_str(&format!("\n（图片附件 {name} 已注入，可直接描述画面内容）"));
+                } else {
+                    notes.push_str(&format!("\n（图片附件 {name} 读取失败）"));
+                }
+            }
+            "voice" => {
+                notes.push_str(&format!("\n（语音附件 {name} 已保存：{path}，可按需处理）"));
+            }
+            _ => {
+                notes.push_str(&format!("\n（文件附件 {name} 已保存：{path}）"));
+            }
+        }
+    }
+    let _ = core;
+    notes
 }
 
 // ---------------------------------------------------------------- 通道运行状态
@@ -1683,5 +1758,51 @@ mod identity_gate_tests {
             _ => panic!("平台不匹配应拒绝"),
         }
         assert!(core.identity_of("tg-main", "u5").is_none());
+    }
+}
+
+#[cfg(test)]
+mod inbound_media_tests {
+    use super::*;
+
+    fn test_core() -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-inb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        exm_core::Core::create(&dir).expect("创建 Core 失败")
+    }
+
+    /// 入站注入：图片进多模态暂存（data URL），文件注入路径说明
+    #[tokio::test]
+    async fn 入站媒体_注入与暂存() {
+        let core = test_core();
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        let dir = std::env::temp_dir().join(format!("exm-inb-f-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("shot.png");
+        std::fs::write(&img, &png).unwrap();
+        let doc = dir.join("report.txt");
+        std::fs::write(&doc, b"hello").unwrap();
+
+        let saved = vec![
+            ("image".into(), img.display().to_string(), "shot.png".into()),
+            ("file".into(), doc.display().to_string(), "report.txt".into()),
+        ];
+        let note = stage_inbound_media(&core, "ses-inb", &saved);
+        assert!(note.contains("图片附件 shot.png 已注入"), "{note}");
+        assert!(note.contains("文件附件 report.txt 已保存"), "{note}");
+        // 图片确实进入多模态暂存（session 维度）
+        let staged = exm_core::image_stash::take("ses-inb");
+        assert_eq!(staged.len(), 1, "应有一条暂存图片");
+        assert!(staged[0].starts_with("data:image/png;base64,"));
+    }
+
+    /// 失败回退：文件缺失 → 注入失败说明而非 panic/丢弃
+    #[tokio::test]
+    async fn 入站媒体_读取失败回退() {
+        let core = test_core();
+        let saved = vec![("image".into(), "/nonexistent/x.png".into(), "x.png".into())];
+        let note = stage_inbound_media(&core, "ses-fail", &saved);
+        assert!(note.contains("读取失败"), "{note}");
+        assert!(exm_core::image_stash::take("ses-fail").is_empty(), "失败不应产生暂存");
     }
 }
