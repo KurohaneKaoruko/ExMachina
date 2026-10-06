@@ -5,7 +5,7 @@ export const zh = {
     "nav.agent": "智能体",
   "nav.groups": "智能体组",
   "nav.units": "子个体",
-  "nav.nexus": "智能连结网络",
+  "nav.nexus": "智能连结",
   "nav.skills": "技能",
   "nav.models": "模型",
   "nav.dag": "任务图",

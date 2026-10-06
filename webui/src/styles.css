@@ -2026,3 +2026,8 @@ input, textarea { caret-color: var(--accent); }
 
 /* 侧栏「实验」角标（智能连结网络） */
 .nav-menu .nav-exp-tag { margin-left: 4px; font-size: 10px; line-height: 16px; padding: 0 4px; border-radius: 2px; }
+
+/* 侧栏项：有角标时保持单行左对齐（角标浮右） */
+.nav-menu .ant-menu-item { text-align: left; }
+.nav-menu .nav-exp-tag { float: right; margin: 4px 8px 0 0; }
+.nav-menu .ant-menu-item span:not(.nav-exp-tag) { white-space: nowrap; }

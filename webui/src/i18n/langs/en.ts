@@ -7,7 +7,7 @@ export const en: Partial<Dict> = {
     "nav.agent": "Agents",
   "nav.groups": "Groups",
   "nav.units": "Units",
-  "nav.nexus": "Smart Link Network",
+  "nav.nexus": "Smart Link",
   "nav.skills": "Skills",
   "nav.models": "Models",
   "nav.dag": "Task Graph",
