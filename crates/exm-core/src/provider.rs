@@ -18,7 +18,7 @@ pub struct ToolSpec {
 /// 某些端点（MiniMax-M1 / DeepSeek R1 文本形态）把思考链以 `<think>…</think>`
 /// 内联在正文里——本机把它切到思维链轨道，正文只留答案。
 /// state：0 = 未判定（前缀不足以判定是否思考开头）1 = 思考中 2 = 正文。
-mod inline_think {
+pub mod inline_think {
     const OPEN: &str = "<think>";
     const CLOSE: &str = "</think>";
 

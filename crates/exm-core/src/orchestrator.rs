@@ -1134,7 +1134,8 @@ impl Orchestrator {
 
         let mut last_err = String::new();
         for _attempt in 0..3 {
-            let output = self.call_orch_stream(session_id, &messages).await?;
+            // 规划阶段：输出为内部协议 JSON，不进可见输出区（改道思维轨收起栏）
+            let output = self.call_orch_stream(session_id, &messages, false).await?;
             match parse::parse_plan(&output) {
                 Ok(plan) => {
                     let unknown: Vec<String> = plan
@@ -1225,13 +1226,15 @@ impl Orchestrator {
                 plan.acceptance.join("；")
             )),
         ];
-        self.call_orch_stream(session_id, &messages).await
+        // 收束阶段：输出为用户面最终结果，流式可见
+        self.call_orch_stream(session_id, &messages, true).await
     }
 
     async fn call_orch_stream(
         &self,
         session_id: &str,
         messages: &[ChatMessage],
+        visible_tokens: bool,
     ) -> anyhow::Result<String> {
         // 回退链逐档尝试：失败且未发出任何 token 时切换下一档案并冷却失败者
         let candidates = self.orch_candidates();
@@ -1253,7 +1256,10 @@ impl Orchestrator {
                     }
                     StreamDelta::Text(t) => {
                         acc.push_str(&t);
-                        self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": t }));
+                        // 规划阶段输出的是内部协议（OrchestratorPlan JSON），不是用户面文本：
+                        // 改道思维轨（收起栏），可见输出区只保留收束阶段的用户面文本
+                        let kind = if visible_tokens { "orchestrator.token" } else { "orchestrator.thinking" };
+                        self.emit(session_id, kind, serde_json::json!({ "delta": t }));
                     }
                 }
             }
@@ -1277,11 +1283,19 @@ impl Orchestrator {
                         if !fallback.reasoning.is_empty() {
                             self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": fallback.reasoning }));
                         }
-                        self.emit(
-                            session_id,
-                            "orchestrator.token",
-                            serde_json::json!({ "delta": fallback.content }),
-                        );
+                        // 非流式回退：内联 <think> 与协议正文按阶段分轨（不裸奔到可见输出）
+                        for (is_think, part) in crate::provider::inline_think::route(
+                            &mut (if resp.reasoning.is_empty() && fallback.content.starts_with("<think>") { 0u8 } else { 2u8 }),
+                            &mut String::new(),
+                            &fallback.content,
+                        ) {
+                            let kind = if is_think || !visible_tokens {
+                                "orchestrator.thinking"
+                            } else {
+                                "orchestrator.token"
+                            };
+                            self.emit(session_id, kind, serde_json::json!({ "delta": part }));
+                        }
                         return Ok(fallback.content);
                     }
                     return Ok(if resp.content.is_empty() { acc } else { resp.content });
