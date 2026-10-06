@@ -41,3 +41,5 @@ sha2 = "0.10"
 [dev-dependencies]
 # 端到端验收示例（crates/exm-gateway/examples/e2e.rs）用
 uuid.workspace = true
+# MCP HTTP 挂载接口测试（tests/mcp_http.rs）：直接调 Service::call
+tower = "0.5"

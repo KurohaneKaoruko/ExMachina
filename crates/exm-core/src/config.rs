@@ -461,6 +461,9 @@ pub struct McpServeConfig {
     pub http_path: String,
     /// 允许的组清单（空 = 全部组）
     pub allowed_groups: Vec<String>,
+    /// 允许的会话清单（会话亲和范围；空 = 全部会话）
+    #[serde(default)]
+    pub allowed_sessions: Vec<String>,
     /// 允许的工具清单（空 = 全部启用工具）
     pub allowed_tools: Vec<String>,
 }
@@ -471,6 +474,7 @@ impl Default for McpServeConfig {
             enabled: false,
             http_path: "/mcp".into(),
             allowed_groups: Vec::new(),
+            allowed_sessions: Vec::new(),
             allowed_tools: Vec::new(),
         }
     }

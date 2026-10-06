@@ -14,6 +14,7 @@ pub mod computer;
 pub mod fsdb;
 pub mod image_stash;
 pub mod mcp;
+pub mod mcp_server;
 pub mod memory;
 pub mod orchestrator;
 pub mod parse;

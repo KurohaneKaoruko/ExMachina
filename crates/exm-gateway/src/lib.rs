@@ -44,8 +44,13 @@ async fn auth_middleware(
 ) -> axum::response::Response {
     let required = !st.core.config().security.auth_key.is_empty();
     let path = req.uri().path();
-    // 守 /api/* 与 /ws（WS 在升级提取前完成鉴权）；静态资源（壳/登录页）与 verify 豁免
-    let guarded = path.starts_with("/api/") || path == "/ws";
+    // 守 /api/* 与 /ws（WS 在升级提取前完成鉴权）；静态资源（壳/登录页）与 verify 豁免。
+    // MCP HTTP 挂载（10.3）复用同一鉴权中间件：挂载路径启用时一并纳入守卫
+    let mcp_path = {
+        let c = st.core.config();
+        if c.mcp_serve.enabled { format!("/{}", c.mcp_serve.http_path.trim_matches('/')) } else { String::new() }
+    };
+    let guarded = path.starts_with("/api/") || path == "/ws" || (!mcp_path.is_empty() && path == mcp_path);
     if !required || path == "/api/auth/verify" || !guarded {
         return next.run(req).await;
     }
@@ -183,6 +188,9 @@ pub fn build_router(core: Arc<Core>) -> Router {
             axum::routing::delete(remove_agent_from_group),
         )
         .route("/api/auth/verify", post(verify_auth))
+        // MCP 服务端 HTTP 挂载（10.3）：配置启用时挂载（默认关闭 = 不挂载）；
+        // 挂载在鉴权中间件之前，复用同一鉴权口径
+        .merge(mcp_mount(core.clone()))
         // 工作区资产（截图 / 工具输出落盘）：沙箱内只读，聊天工具卡内联预览
         .route("/api/asset", get(get_asset))
         // 工作区文件浏览（编码页文件树与预览）：沙箱内只读
@@ -1760,6 +1768,63 @@ async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- MCP 服务端（HTTP 挂载，组 10.3）
+
+/// MCP HTTP 挂载路由（10.3）：配置的 http_path（默认 /mcp）；未启用 = 空路由（挂载点不可用，spec：默认关闭）。
+/// 位于鉴权中间件之前挂载（build_router 内 merge），复用全局鉴权。
+fn mcp_mount(core: Arc<Core>) -> Router<AppState> {
+    if !core.config().mcp_serve.enabled {
+        return Router::new();
+    }
+    let path = core.config().mcp_serve.http_path.trim_matches('/').to_string();
+    if path.is_empty() {
+        return Router::new();
+    }
+    Router::new().route(&format!("/{path}"), axum::routing::post(mcp_http_endpoint))
+}
+
+/// MCP HTTP 端点：JSON-RPC 单请求 → 单响应（与 stdio 共用 `McpServer` 处理面）。
+/// 鉴权由全局中间件承担（启用 authKey 时须 X-Auth-Key）；此处叠加 API 维度限流（外部入口口径）。
+/// pub 供挂载与接口测试复用（同一处理面，不出现第二套语义）。
+pub async fn mcp_http_endpoint(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(st): State<AppState>,
+    body: String,
+) -> impl IntoResponse {
+    // 未启用：挂载点不存在语义（404），不泄露端点存在性
+    if !st.core.config().mcp_serve.enabled {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "未找到" }))).into_response();
+    }
+    // 用量治理：与 /api 同维度限流（外部入口）
+    let limits = st.core.config().limits.clone();
+    if limits.enabled && limits.max_requests > 0 {
+        let now = exm_core::types::now_ms();
+        if !crate::limits::RateLimiter::check("api", limits.window_secs * 1000, limits.max_requests, now) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({ "error": "请求过于频繁", "retrySecs": limits.window_secs })),
+            )
+                .into_response();
+        }
+    }
+    let req: Value = match serde_json::from_str::<Value>(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("解析失败: {e}") } })),
+            )
+                .into_response()
+        }
+    };
+    let srv = exm_core::mcp_server::McpServer::new(st.core.clone(), format!("http:{addr}"));
+    match srv.handle_request(&req).await {
+        Some(resp) => Json(resp).into_response(),
+        // 通知类请求：无响应体（204）
+        None => StatusCode::NO_CONTENT.into_response(),
     }
 }
 
