@@ -879,6 +879,8 @@ export const en: Partial<Dict> = {
   "agents.soulReset": "Reset to default",
   "agents.soulCustom": "Custom persona (hot)",
   "agents.soulDefault": "Default persona",
+  "nexus.expTitle": "Experimental feature",
+  "nexus.expDesc": "Smart Link Network is in early experimentation: interfaces and behavior may change between versions, and the results/stability of external agents depend on their implementations. Best for non-critical workflows — feedback welcome.",
   "activity.desc": "Live dispatch stream and event replay: while a chat runs, dispatch / sync / arbitration / error roll by in order.",
   "activity.pickSession": "Pick a session",
   "activity.liveTitle": "Live Dispatch [LIVE · WS]",

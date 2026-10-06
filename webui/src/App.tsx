@@ -4,6 +4,7 @@ import { Menu, Tag } from "antd";
 import {
   ApartmentOutlined,
   BellOutlined,
+  ClusterOutlined,
   CloseOutlined,
   CodeOutlined,
   DatabaseOutlined,
@@ -64,11 +65,13 @@ export const NAV_ITEMS: {
   en: string;
   labelKey: string;
   icon: React.ReactNode;
+  /** 实验性功能标记：侧栏显示「实验」角标 */
+  experimental?: boolean;
 }[] = [
   { key: "chat", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
   { key: "agent", en: "AGENTS", labelKey: "nav.agent", icon: <UserOutlined /> },
   { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
-  { key: "nexus", en: "NEXUS", labelKey: "nav.nexus", icon: <ApartmentOutlined /> },
+  { key: "nexus", en: "NEXUS", labelKey: "nav.nexus", icon: <ClusterOutlined />, experimental: true },
   { key: "graph", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
   { key: "automations", en: "CRON", labelKey: "nav.cron", icon: <ClockCircleOutlined /> },
   { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
@@ -178,6 +181,7 @@ export default function App(): React.ReactElement {
             label: (
               <>
                 <span>{t(it.labelKey)}</span> <span className="label-en">[{it.en}]</span>
+                {it.experimental && <Tag className="nav-exp-tag" color="warning">实验</Tag>}
               </>
             ),
           }))}

@@ -877,6 +877,8 @@ export const zh = {
   "agents.soulReset": "恢复默认",
   "agents.soulCustom": "自定义人设（热生效）",
   "agents.soulDefault": "默认人设",
+  "nexus.expTitle": "实验性功能",
+  "nexus.expDesc": "智能连结网络处于早期实验阶段：接口与行为可能随版本调整，外部智能体的执行结果与稳定性依赖对端实现。建议仅在与非关键工作流联调时使用，发现问题欢迎反馈。",
   "activity.desc": "实时调度流与历史事件回放：对话执行时，这里按时间顺序滚动显示派发、回流、裁决与错误。",
   "activity.pickSession": "选择会话",
   "activity.liveTitle": "实时调度 [LIVE · WS]",
