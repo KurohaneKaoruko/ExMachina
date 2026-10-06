@@ -830,11 +830,12 @@ body {
 .model-card > .ant-card-head { min-height: 42px; }
 .model-card > .ant-card-head .ant-card-head-title { padding-block: 0; }
 .model-head {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
-  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
   overflow: hidden;
 }
 .model-head > span:not(.mono) {
@@ -1891,11 +1892,12 @@ body {
 .group-card { cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .group-card:hover { border-color: var(--accent-30); background: var(--accent-04); }
 .group-card .group-card-head {
-  display: flex;
+  display: inline-flex;
   align-items: baseline;
   gap: 8px;
   flex-wrap: nowrap;
-  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
 }
 .group-card .group-card-name { font-weight: 600; white-space: nowrap; flex: none; }
 .group-card .group-card-id {
@@ -1937,13 +1939,4 @@ body {
   line-height: 1.6;
 }
 
-/* 块级标题的卡片（组卡/模型卡/单体卡/技能卡）：标题装饰为内联元素，遇块级标题会折行成
-   「装饰行 + 文字行 + 装饰行」——这类卡片直接隐藏装饰，标题保持单行干净呈现 */
-.group-card .ant-card-head-title::before,
-.group-card .ant-card-head-title::after,
-.model-card .ant-card-head-title::before,
-.model-card .ant-card-head-title::after,
-.skill-card .ant-card-head-title::before,
-.skill-card .ant-card-head-title::after {
-  content: none;
-}
+/* 卡片标题装饰（荧光条/刻度条）与文字同行：标题内容用 inline-flex 参与行内排布，不把装饰挤下不行 */
