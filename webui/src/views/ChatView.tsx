@@ -190,7 +190,9 @@ export function ChatView(): React.ReactElement {
   const removeSession = async (id: string) => {
     try {
       await api.deleteSession(id);
-      const rest = sessions.filter((s) => s.id !== id);
+      // 从最新状态构建列表（不用渲染闭包的旧快照），无论删的是否为当前会话都先落列表
+      const rest = useExm.getState().sessions.filter((s) => s.id !== id);
+      useExm.setState({ sessions: rest });
       if (id === sessionId) {
         useExm.setState({ sessionId: undefined, messages: [], graph: null });
         if (rest.length > 0) {
@@ -198,8 +200,6 @@ export function ChatView(): React.ReactElement {
         } else {
           await newSession();
         }
-      } else {
-        useExm.setState({ sessions: rest });
       }
     } catch {
       // 删除失败静默：会话可能在运行中被网关拒绝
