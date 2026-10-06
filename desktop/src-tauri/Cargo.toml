@@ -2,7 +2,7 @@
 name = "exmachina-desktop"
 version = "1.0.0"
 edition = "2021"
-description = "EXMACHINA 桌面端：自带本地网关（同 OpenCode 单端口交付），亦可直连远程网关"
+description = "EXMACHINA 桌面端：自带本地网关（单端口交付），亦可直连远程网关"
 
 # 独立于主 workspace（壳与网关的发布节奏不同；tauri CLI 亦按独立工程管理）
 [workspace]
@@ -11,9 +11,15 @@ description = "EXMACHINA 桌面端：自带本地网关（同 OpenCode 单端口
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 事件桥（D11）：壳内订阅网关 WS 事件流 → 原生通知（审批/定时推送/任务完成）
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "native-tls"] }
+futures-util = "0.3"
 
 [profile.release]
 lto = "fat"

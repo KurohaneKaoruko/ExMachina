@@ -1,6 +1,6 @@
 # EXMACHINA 桌面端（Tauri v2）
 
-桌面端与 OpenCode 同款交付形态：**自带本地服务器**——捆绑的 `exm-gateway` 随应用启动，
+桌面端为**自带本地服务器**的单端口交付形态：捆绑的 `exm-gateway` 随应用启动，
 REST API / WebSocket / WebUI 共用一个端口；同时支持 `--remote` 直连远程网关（服务器上的后台服务）。
 
 > WebUI 由网关同端口托管，客户端「打开即连接」，无需在页面里配置服务器地址。

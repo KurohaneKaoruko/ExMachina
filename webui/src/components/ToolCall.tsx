@@ -22,7 +22,7 @@ const TOOL_ICON: Record<string, React.ReactNode> = {
   computer: <DesktopOutlined />,
 };
 
-/** 工具调用的单行摘要（对齐 OpenCode / Claude Code 的过程行） */
+/** 工具调用的单行摘要（对齐主流编码智能体的过程行） */
 function callTitle(c: ToolCallItem): string {
   const a = c.args as Record<string, string | undefined>;
   switch (c.tool) {

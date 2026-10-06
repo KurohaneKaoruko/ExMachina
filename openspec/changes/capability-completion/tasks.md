@@ -78,14 +78,14 @@
 
 ## 11. 桌面集成（P1）
 
-- [ ] 11.1 系统托盘（状态菜单/显隐/退出；关窗驻留默认开，配置可改完全退出；退出级联终止网关子进程）——验证：桌面手工验收清单通过
-- [ ] 11.2 原生通知（审批/定时推送/任务完成三类，点击聚焦定位，类别开关）——验证：桌面手工验收 + 事件映射单测
-- [ ] 11.3 全局快捷键（默认唤起/收起组合键可改绑，冲突提示）——验证：桌面手工验收
-- [ ] 11.4 WebUI/PWA 回归不受影响——验证：浏览器与 PWA 冒烟清单通过
+- [x] 11.1 系统托盘（状态菜单/显隐/退出；关窗驻留默认开，配置可改完全退出；退出级联终止网关子进程）——验证：桌面手工验收清单通过
+- [x] 11.2 原生通知（审批/定时推送/任务完成三类，点击聚焦定位，类别开关）——验证：桌面手工验收 + 事件映射单测
+- [x] 11.3 全局快捷键（默认唤起/收起组合键可改绑，冲突提示）——验证：桌面手工验收
+- [x] 11.4 WebUI/PWA 回归不受影响——验证：浏览器与 PWA 冒烟清单通过
 
 ## 12. 整体验收
 
-- [ ] 12.1 文档更新：docs/（使用指南新增能力章节、协议与契约补充新 REST/WS 事件）、README 功能清单——验证：文档审阅与示例命令可执行
-- [ ] 12.2 `doctor` 子命令纳入新配置项诊断——验证：`exm doctor` 输出新项且异常配置可检出
-- [ ] 12.3 原创性验收：全仓（crates/ webui/src/ desktop/ agents/ scripts/ docs/ README*.md）对禁用词清单（`openclaw`、`opencode`，大小写不敏感）检索零命中——验证：`grep -riE "openclaw|opencode" crates webui/src desktop agents scripts docs README.md README_EN.md | wc -l` 输出 0
+- [x] 12.1 文档更新：docs/（使用指南新增能力章节、协议与契约补充新 REST/WS 事件）、README 功能清单——验证：文档审阅与示例命令可执行
+- [x] 12.2 `doctor` 子命令纳入新配置项诊断——验证：`exm doctor` 输出新项且异常配置可检出
+- [x] 12.3 原创性验收：全仓（crates/ webui/src/ desktop/ agents/ scripts/ docs/ README*.md）对禁用词清单（`openclaw`、`opencode`，大小写不敏感）检索零命中——验证：`grep -riE "openclaw|opencode" crates webui/src desktop agents scripts docs README.md README_EN.md | wc -l` 输出 0
 - [ ] 12.4 `cargo test --workspace` + `npm run build:webui` + `openspec validate` 全绿；`docker compose up --build` 冒烟通过
