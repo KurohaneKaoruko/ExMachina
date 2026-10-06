@@ -12,9 +12,10 @@ import { StatementList } from "../components/Statements";
 import { Markdown } from "../components/Markdown";
 import { AsciiMeter } from "../components/Ascii";
 import { ToolCallList } from "../components/ToolCall";
+import { TurnOps } from "../components/HistoryOps";
 import type { ChatMessage } from "../types";
 
-function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
+function MessageBubble({ m, turn, ops }: { m: ChatMessage; turn?: number; ops?: React.ReactNode }): React.ReactElement {
   const tb = useT();
   const isUser = m.role === "user";
   const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? tb("chat.role.orchestrator") : (m.agentId ?? tb("chat.role.system"));
@@ -22,6 +23,8 @@ function MessageBubble({ m }: { m: ChatMessage }): React.ReactElement {
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
         {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
+        {turn != null && <span className="msg-turn mono">#{turn}</span>}
+        {ops && <span className="msg-ops">{ops}</span>}
       </div>
       {m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
@@ -194,6 +197,76 @@ export function ChatView(): React.ReactElement {
     }
   };
 
+  // ---- 会话历史管控（组 9.5）：撤销 / 编辑重发 / 分叉 ----
+  const [editing, setEditing] = useState<{ turn: number; text: string } | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+
+  const refreshSession = async () => {
+    if (sessionId) await selectSession(sessionId);
+  };
+
+  const doUndo = async (turn: number) => {
+    if (!sessionId) return;
+    setHistoryBusy(true);
+    try {
+      const info = await api.undoSession(sessionId, turn - 1, true);
+      message.success(t("chat.turn.undoDone", { n: String(info.archived) }));
+      await refreshSession();
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const openEdit = (turn: number) => {
+    // 原文 = 该轮的用户消息文本（本轮内第一条 user 陈述拼接）
+    let n = 0;
+    const msg = messages.find((m) => {
+      if (m.role === "user") n += 1;
+      return n === turn;
+    });
+    setEditing({ turn, text: msg ? msg.statements.map((s) => s.text).join("\n") : "" });
+  };
+
+  const doEdit = async () => {
+    if (!sessionId || !editing) return;
+    setHistoryBusy(true);
+    try {
+      await api.editSession(sessionId, editing.turn, editing.text);
+      message.success(t("chat.turn.resent"));
+      setEditing(null);
+      await refreshSession();
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const doFork = async (turn: number) => {
+    if (!sessionId) return;
+    setHistoryBusy(true);
+    try {
+      const fork = await api.forkSession(sessionId, turn);
+      useExm.setState({ sessions: [{ id: fork.id, title: fork.title } as never, ...useExm.getState().sessions] });
+      message.success(t("chat.turn.forkDone"));
+      await selectSession(fork.id);
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  // 消息 → 轮次映射：用户消息序号即轮次（1 起）
+  let userTurn = 0;
+  const renderMessages = messages.map((m) => {
+    if (m.role !== "user") return { m, turn: undefined as number | undefined };
+    userTurn += 1;
+    return { m, turn: userTurn };
+  });
+
   return (
     <div className="chat-shell">
       {/* 左栏：目标切换 + 会话列表 */}
@@ -343,8 +416,17 @@ export function ChatView(): React.ReactElement {
           </Card>
         ))}
         <div className="chat-scroll">
-          {messages.map((m) => (
-            <MessageBubble key={m.id} m={m} />
+          {renderMessages.map(({ m, turn }) => (
+            <MessageBubble
+              key={m.id}
+              m={m}
+              turn={turn}
+              ops={
+                turn != null && !running ? (
+                  <TurnOps turn={turn} onEdit={openEdit} onUndo={doUndo} onFork={doFork} />
+                ) : undefined
+              }
+            />
           ))}
 
           {running && (
@@ -468,6 +550,28 @@ export function ChatView(): React.ReactElement {
                 value={renaming.title}
                 onChange={(e) => setRenaming({ ...renaming, title: e.target.value })}
                 placeholder={t("chat.newTitle")}
+              />
+            </Modal>
+          )}
+          {editing && (
+            <Modal
+              open
+              title={t("chat.turn.editTitle", { turn: String(editing.turn) })}
+              onCancel={() => setEditing(null)}
+              onOk={() => void doEdit()}
+              okText={t("chat.turn.resend")}
+              confirmLoading={historyBusy}
+            >
+              <Alert
+                type="warning"
+                showIcon
+                message={t("chat.turn.editWarn")}
+                className="edit-warn"
+              />
+              <Input.TextArea
+                value={editing.text}
+                onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+                autoSize={{ minRows: 3, maxRows: 10 }}
               />
             </Modal>
           )}

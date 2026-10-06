@@ -48,6 +48,8 @@ impl Store {
             group_id: if group_id.trim().is_empty() { "default".into() } else { group_id.to_string() },
             rolling_summary: None,
             summary_upto: None,
+            parent_session: None,
+            parent_upto: None,
             ledger: SessionLedger::default(),
             created_at: now.clone(),
             updated_at: now,
@@ -149,6 +151,63 @@ impl Store {
 
     pub fn list_messages(&self, session_id: &str, limit: usize) -> Result<Vec<ChatMessage>> {
         self.db.read_lines("messages", session_id, limit)
+    }
+
+    // ---------------- 消息历史管控（undo / 编辑重发 / fork 基座） ----------------
+
+    /// 截断活跃消息流：保留前 keep 条，被截断部分**先归档**（归档可查，spec 硬性要求）
+    pub fn truncate_messages(&self, session_id: &str, keep: usize) -> Result<usize> {
+        let mut all: Vec<ChatMessage> = self.db.read_lines("messages", session_id, 0)?;
+        if keep >= all.len() {
+            return Ok(0);
+        }
+        let archived: Vec<ChatMessage> = all.split_off(keep);
+        let n = archived.len();
+        for m in archived {
+            self.db.append_line("message_archive", session_id, &m)?;
+        }
+        self.db.rewrite_lines("messages", session_id, &all)?;
+        Ok(n)
+    }
+
+    /// 被截断内容的归档视图（undo / 编辑重发的可查留痕）
+    pub fn list_archived_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
+        self.db.read_lines("message_archive", session_id, 0)
+    }
+
+    /// 复制会话历史前缀（fork 用）：把 src 的前 keep 条消息复制为 dst 的活跃历史
+    pub fn copy_messages_prefix(&self, src_session: &str, dst_session: &str, keep: usize) -> Result<usize> {
+        let all: Vec<ChatMessage> = self.db.read_lines("messages", src_session, 0)?;
+        let prefix: Vec<ChatMessage> = all.into_iter().take(keep).collect();
+        let n = prefix.len();
+        self.db.rewrite_lines("messages", dst_session, &prefix)?;
+        Ok(n)
+    }
+
+    /// 登记本轮写类工具产生的检查点引用（`date/rel`，轮次快照联动回滚用）
+    pub fn record_checkpoint_ref(&self, session_id: &str, date: &str, rel: &str) -> Result<()> {
+        self.db.append_line(
+            "turn_checkpoints",
+            session_id,
+            &serde_json::json!({ "ref": format!("{date}/{rel}"), "at": now_iso() }),
+        )
+    }
+
+    /// 取走本轮检查点引用（读出即清空；轮次收束时并入快照）
+    pub fn drain_checkpoint_refs(&self, session_id: &str) -> Result<Vec<String>> {
+        let items: Vec<serde_json::Value> = self.db.read_lines("turn_checkpoints", session_id, 0)?;
+        if !items.is_empty() {
+            self.db.rewrite_lines::<serde_json::Value>("turn_checkpoints", session_id, &[])?;
+        }
+        Ok(items
+            .into_iter()
+            .filter_map(|v| v.get("ref").and_then(|r| r.as_str()).map(|s| s.to_string()))
+            .collect())
+    }
+
+    /// 直接落一份会话文档（fork 的派生会话：完整元数据由调用方构造）
+    pub fn insert_session(&self, session: &Session) -> Result<()> {
+        self.db.put("sessions", &session.id, session)
     }
 
     // ---------------- 任务图 ----------------
@@ -320,7 +379,7 @@ impl Store {
         Ok(list)
     }
 
-    /// 删除会话及其派生数据（消息/任务图/事件/证据）
+    /// 删除会话及其派生数据（消息/任务图/事件/证据/归档/快照）
     pub fn delete_session(&self, id: &str) -> Result<()> {
         self.db.delete("sessions", id)?;
         for (col, key) in [
@@ -329,8 +388,14 @@ impl Store {
             ("graph_history", id),
             ("events", id),
             ("evidence", id),
+            ("message_archive", id),
+            ("turn_checkpoints", id),
         ] {
             let _ = self.db.delete(col, key);
+        }
+        // 轮次快照按 `{sessionId}:{turn}` 键存储，逐条清理
+        for snap in self.list_turn_snapshots(id)? {
+            let _ = self.db.delete("turn_snapshots", &snap.id);
         }
         Ok(())
     }

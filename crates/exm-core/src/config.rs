@@ -334,6 +334,10 @@ pub struct AutomationConfig {
     pub heartbeat_enabled: bool,
     pub heartbeat_interval_minutes: u32,
     pub heartbeat_prompt: String,
+    /// 心跳目标个体（per-agent 粒度）：以其所属组的身份巡检，产出进其组记忆体系；
+    /// 空/个体不存在 = 维持全局巡检（激活组 + 全局心跳会话）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_agent: Option<String>,
     /// 新教训达阈值时自动优化相关子个体（经验改进要点）
     pub auto_adapt: bool,
     /// 子个体单次派发的最大工具步数（主流的 20-50 步为长任务口径，取中档）
@@ -346,6 +350,7 @@ impl Default for AutomationConfig {
             heartbeat_enabled: false,
             heartbeat_interval_minutes: 30,
             heartbeat_prompt: "系统心跳巡检：检查未决任务、受阻节点与风险账，无事项则简短报告正常。".into(),
+            heartbeat_agent: None,
             auto_adapt: true,
             unit_max_steps: 16,
         }
@@ -749,6 +754,8 @@ struct AutomationFile {
     #[serde(default)]
     heartbeat_prompt: Option<String>,
     #[serde(default)]
+    heartbeat_agent: Option<String>,
+    #[serde(default)]
     auto_adapt: Option<bool>,
     #[serde(default)]
     unit_max_steps: Option<usize>,
@@ -881,6 +888,7 @@ impl ExmConfig {
             heartbeat_prompt: file_auto.heartbeat_prompt
                 .clone()
                 .unwrap_or_else(|| AutomationConfig::default().heartbeat_prompt),
+            heartbeat_agent: file_auto.heartbeat_agent.clone().filter(|s| !s.trim().is_empty()),
             auto_adapt: file_auto
                 .auto_adapt
                 .unwrap_or_else(|| AutomationConfig::default().auto_adapt),
@@ -1071,6 +1079,7 @@ impl ExmConfig {
                 heartbeat_enabled: Some(self.automation.heartbeat_enabled),
                 heartbeat_interval_minutes: Some(self.automation.heartbeat_interval_minutes),
                 heartbeat_prompt: Some(self.automation.heartbeat_prompt.clone()),
+                heartbeat_agent: self.automation.heartbeat_agent.clone(),
                 auto_adapt: Some(self.automation.auto_adapt),
                 unit_max_steps: Some(self.automation.unit_max_steps),
             }),
@@ -1284,6 +1293,9 @@ pub fn config_schema() -> serde_json::Value {
                     { "key": "automation.heartbeatPrompt", "label": "心跳提示词", "kind": "string",
                       "default": "系统心跳巡检：检查未决任务、受阻节点与风险账，无事项则简短报告正常。", "required": false,
                       "help": "每次心跳注入给指挥体的提示词" },
+                    { "key": "automation.heartbeatAgent", "label": "心跳目标个体", "kind": "string",
+                      "default": "", "required": false,
+                      "help": "个体 identifier（per-agent 粒度）：以其所属组身份巡检，产出进其组记忆；留空 = 全局巡检（激活组）" },
                     { "key": "automation.unitMaxSteps", "label": "子个体单次派发步数上限", "kind": "number",
                       "default": "16", "required": false, "min": 3, "max": 60,
                       "help": "一次派发内允许的「思考-调工具」轮次；复杂任务（多文件改动）需要更大的步数预算" }

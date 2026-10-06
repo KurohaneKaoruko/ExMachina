@@ -338,6 +338,11 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+/// 跨模块复用（cron 结果推送等出站路径的 URL 编码）
+pub(crate) fn url_encode_pub(s: &str) -> String {
+    url_encode(s)
+}
+
 /// 一条用户消息：组绑定 → 会话复用 → 订阅回复 → 执行 → 房间回帖
 #[allow(clippy::too_many_arguments)]
 async fn handle_message(

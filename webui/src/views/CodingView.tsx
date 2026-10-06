@@ -2,16 +2,17 @@
  *  左栏会话 ｜ 中栏对话流（思维链 / 工具卡 / diff / 审批） ｜ 右栏工作区（文件树 + 变更清单 + 代码预览）
  *  与聊天页共用同一会话与 WS 引擎，但以「写代码」为中心呈现：工具轨迹优先、文件视角常驻。 */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, Empty, Input, Spin, Tag, Tree, message } from "antd";
+import { Alert, Button, Card, Empty, Input, Modal, Spin, Tag, Tree, message } from "antd";
 import {
   CheckOutlined, CodeOutlined, EditOutlined, FileOutlined, FolderOutlined, PlusOutlined,
   ReloadOutlined, SaveOutlined, SendOutlined, StopOutlined,
 } from "@ant-design/icons";
-import { fsFile, fsList, fsSave, gitOp, gitOverview, workspaceChanges, type FsEntry, type GitOverview, type WorkspaceChanges } from "../api";
+import { api, fsFile, fsList, fsSave, gitOp, gitOverview, workspaceChanges, type FsEntry, type GitOverview, type WorkspaceChanges } from "../api";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 import { ToolCallList } from "../components/ToolCall";
 import { Markdown } from "../components/Markdown";
+import { TurnOps } from "../components/HistoryOps";
 import type { ChatMessage } from "../types";
 
 /** 文件树节点（antd Tree） */
@@ -361,6 +362,71 @@ export function CodingView(): React.ReactElement {
     setText("");
   };
 
+  // ---- 会话历史管控（组 9.5）：撤销 / 编辑重发 / 分叉（编码页同款入口） ----
+  const [editing, setEditing] = useState<{ turn: number; text: string } | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+
+  const doUndo = async (turn: number) => {
+    if (!sessionId) return;
+    setHistoryBusy(true);
+    try {
+      const info = await api.undoSession(sessionId, turn - 1, true);
+      message.success(t("chat.turn.undoDone", { n: String(info.archived) }));
+      await selectSession(sessionId);
+      void refreshChanges();
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const openEdit = (turn: number) => {
+    let n = 0;
+    const msg = messages.find((m) => {
+      if (m.role === "user") n += 1;
+      return n === turn;
+    });
+    setEditing({ turn, text: msg ? msg.statements.map((s) => s.text).join("\n") : "" });
+  };
+
+  const doEdit = async () => {
+    if (!sessionId || !editing) return;
+    setHistoryBusy(true);
+    try {
+      await api.editSession(sessionId, editing.turn, editing.text);
+      message.success(t("chat.turn.resent"));
+      setEditing(null);
+      await selectSession(sessionId);
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const doFork = async (turn: number) => {
+    if (!sessionId) return;
+    setHistoryBusy(true);
+    try {
+      const fork = await api.forkSession(sessionId, turn);
+      useExm.setState({ sessions: [{ id: fork.id, title: fork.title } as never, ...useExm.getState().sessions] });
+      message.success(t("chat.turn.forkDone"));
+      await selectSession(fork.id);
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  let userTurnCode = 0;
+  const renderMessages = messages.map((m) => {
+    if (m.role !== "user") return { m, turn: undefined as number | undefined };
+    userTurnCode += 1;
+    return { m, turn: userTurnCode };
+  });
+
   return (
     <div className="code-shell">
       {/* 左栏：会话 */}
@@ -421,8 +487,14 @@ export function CodingView(): React.ReactElement {
         ))}
 
         <div className="code-scroll">
-          {messages.map((m) => (
+          {renderMessages.map(({ m, turn }) => (
             <div key={m.id} className={`code-msg ${m.role === "user" ? "code-msg-user" : "code-msg-agent"}`}>
+              {turn != null && !running && (
+                <div className="code-msg-head">
+                  <span className="mono dim">#{turn}</span>
+                  <TurnOps turn={turn} onEdit={openEdit} onUndo={doUndo} onFork={doFork} />
+                </div>
+              )}
               {m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
               <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
             </div>
@@ -468,6 +540,23 @@ export function CodingView(): React.ReactElement {
           <Button type="primary" icon={<SendOutlined />} loading={running} onClick={doSend}>
             {t("chat.send")}
           </Button>
+          {editing && (
+            <Modal
+              open
+              title={t("chat.turn.editTitle", { turn: String(editing.turn) })}
+              onCancel={() => setEditing(null)}
+              onOk={() => void doEdit()}
+              okText={t("chat.turn.resend")}
+              confirmLoading={historyBusy}
+            >
+              <Alert type="warning" showIcon message={t("chat.turn.editWarn")} className="edit-warn" />
+              <Input.TextArea
+                value={editing.text}
+                onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+                autoSize={{ minRows: 3, maxRows: 10 }}
+              />
+            </Modal>
+          )}
         </div>
       </section>
 

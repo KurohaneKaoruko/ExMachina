@@ -210,6 +210,7 @@ mod tests {
                 last_run_at: None,
                 last_status: None,
                 last_run_minute: None,
+                notify_channels: Vec::new(),
                 created_at: String::new(),
             })
             .unwrap();

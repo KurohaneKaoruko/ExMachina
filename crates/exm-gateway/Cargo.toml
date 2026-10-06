@@ -31,6 +31,12 @@ async-trait.workspace = true
 parking_lot = "0.12"
 # NapCat 媒体段 base64:// 数据（远程部署免文件系统共享）
 base64 = "0.22"
+# 事件触发器（7.1）：工作区文件监听；glob 模式匹配复用 globset（ignore 同源实现）
+notify = "8"
+globset = "0.4"
+# 事件 webhook（7.2）：HMAC-SHA256 签名校验
+hmac = "0.12"
+sha2 = "0.10"
 
 [dev-dependencies]
 # 端到端验收示例（crates/exm-gateway/examples/e2e.rs）用

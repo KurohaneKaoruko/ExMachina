@@ -128,6 +128,15 @@ pub enum ToolName {
     Browser,
     /// Computer Use：截屏 + 鼠标 / 键盘控制本机桌面（配置开启后下发，输入类动作过审批闸门）
     Computer,
+    /// 记忆检索：按查询返回组内命中条目（含其个体私有层）
+    #[serde(rename = "memory_read")]
+    MemoryRead,
+    /// 记忆写入：内容哈希去重，来源标注智能体自写（source=agent）
+    #[serde(rename = "memory_write")]
+    MemoryWrite,
+    /// 记忆关联与主题列示：建立条目关联 / 列示主题下条目及关联链
+    #[serde(rename = "memory_link")]
+    MemoryLink,
 }
 
 impl ToolName {
@@ -146,14 +155,22 @@ impl ToolName {
             ToolName::Schedule => "schedule",
             ToolName::Browser => "browser",
             ToolName::Computer => "computer",
+            ToolName::MemoryRead => "memory_read",
+            ToolName::MemoryWrite => "memory_write",
+            ToolName::MemoryLink => "memory_link",
         }
     }
 
-    /// 只读工具（无副作用）：同轮可并发执行
+    /// 只读工具（无副作用）：同轮可并发执行（memory_link 混合读/写语义，按写工具串行口径处理）
     pub fn is_readonly(self) -> bool {
         matches!(
             self,
-            ToolName::Read | ToolName::Grep | ToolName::Glob | ToolName::WebSearch | ToolName::WebFetch
+            ToolName::Read
+                | ToolName::Grep
+                | ToolName::Glob
+                | ToolName::WebSearch
+                | ToolName::WebFetch
+                | ToolName::MemoryRead
         )
     }
 
@@ -172,6 +189,9 @@ impl ToolName {
             "schedule" => Some(ToolName::Schedule),
             "browser" => Some(ToolName::Browser),
             "computer" => Some(ToolName::Computer),
+            "memory_read" => Some(ToolName::MemoryRead),
+            "memory_write" => Some(ToolName::MemoryWrite),
+            "memory_link" => Some(ToolName::MemoryLink),
             _ => None,
         }
     }
@@ -509,6 +529,11 @@ pub struct Session {
     /// 摘要已覆盖到的消息条数（增量压缩从此续起）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_upto: Option<usize>,
+    /// 派生来源（fork 分支）：原会话 id 与截至轮次；非派生会话为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_upto: Option<usize>,
     pub ledger: SessionLedger,
     pub created_at: String,
     pub updated_at: String,
@@ -890,6 +915,9 @@ pub struct CronJob {
     /// 上次运行的分钟戳（同一分钟只跑一次的去重键）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_minute: Option<String>,
+    /// 结果推送订阅的通道 id 清单（空 = 不推送，维持现状：仅落会话与运行日志）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notify_channels: Vec<String>,
     #[serde(default)]
     pub created_at: String,
 }

@@ -138,6 +138,17 @@ export const en: Partial<Dict> = {
   "chat.send": "Send",
   "chat.renameTitle": "Rename session",
   "chat.newTitle": "New title",
+  "chat.turn.edit": "Edit & resend (rewind to before this turn, re-run with new content)",
+  "chat.turn.undo": "Undo to before this turn (later content archived, file changes rolled back)",
+  "chat.turn.fork": "Fork a new session from this turn (original untouched)",
+  "chat.turn.undoConfirm": "Undo to turn {turn}? Later messages will be archived and file changes rolled back.",
+  "chat.turn.undoDone": "Undone ({n} messages archived)",
+  "chat.turn.resent": "Re-executed with new content",
+  "chat.turn.forkDone": "Fork session created",
+  "chat.turn.failed": "Operation failed: {err}",
+  "chat.turn.editTitle": "Edit user message of turn {turn}",
+  "chat.turn.editWarn": "Resend = rewind to before this turn and re-run with the new content; the original stays queryable in the archive.",
+  "chat.turn.resend": "Resend",
 
   // ── 提供商页 ──
   "models.desc": "Add providers and configure each provider's model list: mark vision / audio capabilities per model, then pick capability models for speech synthesis, speech recognition, vision relay and embedding. Agents / groups without an explicit model follow the global default.",

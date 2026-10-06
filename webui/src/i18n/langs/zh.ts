@@ -136,6 +136,17 @@ export const zh = {
   "chat.send": "发送",
   "chat.renameTitle": "重命名会话",
   "chat.newTitle": "新标题",
+  "chat.turn.edit": "编辑重发（回退本轮并以新内容重执行）",
+  "chat.turn.undo": "撤销到本轮之前（其后内容归档可查，文件变更联动回滚）",
+  "chat.turn.fork": "从此轮分叉新会话（原会话不变）",
+  "chat.turn.undoConfirm": "撤销到第 {turn} 轮？其后消息将归档，写类文件变更联动回滚。",
+  "chat.turn.undoDone": "已撤销（归档 {n} 条消息）",
+  "chat.turn.resent": "已以新内容重新执行",
+  "chat.turn.forkDone": "分支会话已创建",
+  "chat.turn.failed": "操作失败：{err}",
+  "chat.turn.editTitle": "编辑第 {turn} 轮的用户消息",
+  "chat.turn.editWarn": "重发 = 撤销到本轮之前并以新内容重新执行；原内容在归档中可查。",
+  "chat.turn.resend": "重发",
 
   // ── 模型设置页 ──
   "models.desc": "添加提供商并为其配置模型清单：勾选每个模型的视觉 / 语音能力，再指定语音合成、语音识别、视觉转述、嵌入等能力模型。未单独指定模型的智能体 / 组跟随「全局默认」。",

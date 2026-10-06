@@ -592,6 +592,8 @@ pub struct ToolGateway {
     mcp: Arc<crate::mcp::McpRegistry>,
     /// 声明式自定义工具（配置驱动，免写 MCP 服务器；按 agents 可见性放行）
     custom: Vec<crate::config::CustomTool>,
+    /// 记忆库（memory_read/write/link 三工具的受控入口；组隔离在工具层强制）
+    memory: Option<Arc<crate::memory::MemoryStore>>,
 }
 
 impl ToolGateway {
@@ -619,7 +621,14 @@ impl ToolGateway {
             computer: Arc::new(tokio::sync::Mutex::new(None)),
             mcp: crate::mcp::McpRegistry::shared(),
             custom: Vec::new(),
+            memory: None,
         }
+    }
+
+    /// 注入记忆库（memory_read/write/link 三工具；未注入时三工具执行返回明确错误）
+    pub fn with_memory(mut self, memory: Arc<crate::memory::MemoryStore>) -> Self {
+        self.memory = Some(memory);
+        self
     }
 
     /// 注入联网搜索后端配置（未配置时 web_search 不下发给模型）
@@ -898,11 +907,33 @@ impl ToolGateway {
         }
     }
 
+    /// 派发时的运行时工具白名单（8.2 口径）：
+    /// - 个体 = 编成 JSON 的 tools 清单（未授权工具不在其工具面，不可见亦不可调用）
+    /// - 组主智能体 = 额外获得组内个体管理工具（自定义组）与记忆三工具（默认授权）
+    /// - 单体（tier=orchestrator 且不在组内）按编成清单，可经 tools 显式授权记忆工具
+    pub fn runtime_allowlist(
+        def: &AgentDefinition,
+        group_meta: Option<&crate::types::GroupMeta>,
+    ) -> Vec<ToolName> {
+        let mut allowlist = def.tools.clone();
+        let is_primary = group_meta.map(|m| m.primary.as_deref() == Some(def.identifier.as_str())).unwrap_or(false);
+        if is_primary {
+            if !group_meta.map(|m| m.builtin).unwrap_or(true) && !allowlist.contains(&ToolName::AgentManage) {
+                allowlist.push(ToolName::AgentManage);
+            }
+            for t in [ToolName::MemoryRead, ToolName::MemoryWrite, ToolName::MemoryLink] {
+                if !allowlist.contains(&t) {
+                    allowlist.push(t);
+                }
+            }
+        }
+        allowlist
+    }
+
     /// 原生 function calling：按白名单生成工具 schema（docs/协议与契约.md）。
     /// `search_ready` / `browser_ready` 决定联网搜索与浏览器工具是否下发——
     /// 后端能力未就绪时不承诺该工具（避免模型调用必然失败的工具）。
-    pub fn tool_specs(
-        allowlist: &[ToolName],
+    pub fn tool_specs(        allowlist: &[ToolName],
         search_ready: bool,
         browser_ready: bool,
         computer_ready: bool,
@@ -1058,6 +1089,37 @@ impl ToolGateway {
                 "setPrimary": { "type": "boolean" }
             },
             "required": ["op"]
+        }));
+        push(ToolName::MemoryRead, "检索本组记忆（含你的个体私有层）：按关键词返回相关度排序的条目（内容/类型/置信度/重要性/来源）。执行中需要历史结论、约定或教训时先查再断言", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "检索关键词（标题/正文/标签分词匹配）" },
+                "limit": { "type": "integer", "description": "返回条数（默认 5，上限 20）" }
+            },
+            "required": ["query"]
+        }));
+        push(ToolName::MemoryWrite, "写入一条本组记忆：六类之一（fact/decision/preference/evidence/digest/lesson），内容哈希去重（重复写入提升既有条目重要性而非新建）。仅固化跨会话有价值的知识，不写过程性流水", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": ["fact", "decision", "preference", "evidence", "digest", "lesson"], "description": "fact=基础事实 decision=决策取舍 preference=用户偏好 evidence=证据 digest=摘要 lesson=教训" },
+                "title": { "type": "string", "description": "一句话标题（去重按标题+内容判定）" },
+                "body": { "type": "string", "description": "条目正文（精炼、可独立理解）" },
+                "tags": { "type": "array", "items": { "type": "string" }, "description": "标签（可选，辅助检索）" },
+                "importance": { "type": "number", "description": "重要性 0-1（默认 0.5）" }
+            },
+            "required": ["kind", "title", "body"]
+        }));
+        push(ToolName::MemoryLink, "记忆关联与主题列示：op=link 把两条记忆标注关联（如 derives-from/contradicts/supports，后续检索可见）；op=list 列示某主题下的条目及其关联链", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "op": { "type": "string", "enum": ["link", "list"], "description": "默认 link" },
+                "from": { "type": "string", "description": "op=link：起始条目 id" },
+                "to": { "type": "string", "description": "op=link：目标条目 id" },
+                "relation": { "type": "string", "description": "op=link：关系（derives-from / contradicts / supports / related）" },
+                "query": { "type": "string", "description": "op=list：主题关键词" },
+                "limit": { "type": "integer", "description": "op=list：返回条数（默认 5）" }
+            },
+            "required": []
         }));
         specs
     }
@@ -1275,8 +1337,8 @@ impl ToolGateway {
     async fn dispatch(&self, agent_id: &str, session_id: &str, tool: ToolName, args: &serde_json::Value) -> ToolResult {
         match tool {
             ToolName::Read => self.tool_read(args),
-            ToolName::Edit => self.tool_edit(args),
-            ToolName::Patch => self.tool_patch(args),
+            ToolName::Edit => self.tool_edit(session_id, args),
+            ToolName::Patch => self.tool_patch(session_id, args),
             ToolName::Grep => self.tool_grep(args),
             ToolName::Glob => self.tool_glob(args),
             ToolName::Filesystem => self.tool_fs(session_id, args),
@@ -1287,6 +1349,191 @@ impl ToolGateway {
             ToolName::Schedule => self.tool_schedule(args),
             ToolName::Browser => self.tool_browser(session_id, args).await,
             ToolName::Computer => self.tool_computer(agent_id, session_id, args).await,
+            ToolName::MemoryRead => self.tool_memory_read(agent_id, args),
+            ToolName::MemoryWrite => self.tool_memory_write(agent_id, args),
+            ToolName::MemoryLink => self.tool_memory_link(agent_id, args),
+        }
+    }
+
+    // ---------------------------------------------------------------- 记忆工具（组隔离，design D7）
+
+    /// 调用者是否当前组主智能体（memory_read 全层视角 / memory_write 默认授权的判定口径）
+    fn is_primary(&self, agent_id: &str) -> bool {
+        self.registry.primary().map(|p| p.identifier == agent_id).unwrap_or(false)
+    }
+
+    /// memory_read：组内检索（主智能体全层视角 = 群体 + 所有个体私有；个体 = 私有 + 群体）。
+    /// 组隔离在工具层强制：范围恒为「激活组 + 全局条目」，其他组条目不可见。
+    fn tool_memory_read(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
+        let Some(memory) = &self.memory else {
+            return ToolResult::err("记忆系统未接入（内部装配缺失）");
+        };
+        let Some(query) = args.get("query").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+            return ToolResult::err("query 不能为空");
+        };
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| (v as usize).min(20))
+            .unwrap_or(5)
+            .max(1);
+        let gid = self.registry.active_group();
+        let hits = if self.is_primary(agent_id) {
+            memory.recall_all(query, limit, Some(&gid), None)
+        } else {
+            memory.recall_for_agent(agent_id, query, limit, Some(&gid), None)
+        };
+        match hits {
+            Ok(list) if list.is_empty() => ToolResult::ok(format!("记忆检索「{query}」：组内无命中条目。")),
+            Ok(list) => {
+                let mut lines = vec![format!("记忆检索「{query}」：{} 条命中（按相关度排序）", list.len())];
+                for h in list {
+                    let source = match (&h.entry.agent_id, &h.entry.group_id) {
+                        (Some(a), _) => format!("个体:{a}"),
+                        (None, Some(g)) => format!("组:{g}"),
+                        (None, None) => "全局".to_string(),
+                    };
+                    lines.push(format!(
+                        "- [{}|{}|置信{:.2}|重要{:.2}|{}] {}：{}（id: {}）",
+                        h.entry.kind.key(),
+                        source,
+                        h.entry.confidence,
+                        h.entry.importance,
+                        if h.entry.pinned { "置顶" } else { "常规" },
+                        h.entry.title,
+                        h.entry.body.replace('\n', " "),
+                        h.entry.id
+                    ));
+                }
+                ToolResult::ok(lines.join("\n"))
+            }
+            Err(e) => ToolResult::err(format!("记忆检索失败：{e}")),
+        }
+    }
+
+    /// memory_write：写入组内记忆（哈希去重由 MemoryStore 承担）；来源标注智能体自写（source=agent）
+    fn tool_memory_write(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
+        let Some(memory) = &self.memory else {
+            return ToolResult::err("记忆系统未接入（内部装配缺失）");
+        };
+        let Some(kind) = args.get("kind").and_then(|v| v.as_str()).and_then(crate::memory::MemoryKind::parse) else {
+            return ToolResult::err("kind 须为 fact/decision/preference/evidence/digest/lesson 之一");
+        };
+        let Some(title) = args.get("title").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+            return ToolResult::err("title 不能为空");
+        };
+        let Some(body) = args.get("body").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+            return ToolResult::err("body 不能为空");
+        };
+        let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
+        let tags: Vec<String> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let mut draft = crate::memory::MemoryDraft::new(kind, title, body)
+            .importance(importance)
+            .agent(agent_id)
+            .group(&self.registry.active_group());
+        draft.tags = tags;
+        // 来源标注：智能体自写（与归纳写入可区分，管理视图可过滤）
+        draft.source_ref = Some("agent".into());
+        match memory.remember(&draft) {
+            Ok(entry) => ToolResult::ok(format!(
+                "已写入记忆：{}（id: {}，类型 {}，重要性 {:.2}）；同内容重复写入会被去重并提升既有条目",
+                entry.title,
+                entry.id,
+                entry.kind.key(),
+                entry.importance
+            )),
+            Err(e) => ToolResult::err(format!("记忆写入失败：{e}")),
+        }
+    }
+
+    /// memory_link：关联建立（组隔离校验双端）与主题列示（条目 + 关联链）
+    fn tool_memory_link(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
+        let Some(memory) = &self.memory else {
+            return ToolResult::err("记忆系统未接入（内部装配缺失）");
+        };
+        let gid = self.registry.active_group();
+        let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("link");
+        match op {
+            "list" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| (v as usize).min(20))
+                    .unwrap_or(5)
+                    .max(1);
+                let hits = if query.is_empty() {
+                    memory.recent(limit, Some(&gid))
+                } else if self.is_primary(agent_id) {
+                    memory.recall_all(query, limit, Some(&gid), None)
+                } else {
+                    memory.recall_for_agent(agent_id, query, limit, Some(&gid), None)
+                };
+                match hits {
+                    Ok(list) if list.is_empty() => ToolResult::ok("主题下无记忆条目。".to_string()),
+                    Ok(list) => {
+                        let mut lines = vec![format!("主题「{query}」列示（{} 条，含关联链）：", list.len())];
+                        for h in list {
+                            let links = memory.links_of(&h.entry.id).unwrap_or_default();
+                            let chain = links
+                                .iter()
+                                .filter_map(|l| {
+                                    let to = l.get("to").and_then(|v| v.as_str())?;
+                                    let rel = l.get("relation").and_then(|v| v.as_str()).unwrap_or("related");
+                                    let dir = if l.get("from").and_then(|v| v.as_str()) == Some(h.entry.id.as_str()) {
+                                        format!("{rel} → {to}")
+                                    } else {
+                                        let from = l.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+                                        format!("{from} →{rel}→ 本条")
+                                    };
+                                    Some(dir)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("；");
+                            lines.push(format!(
+                                "- [{}] {}（id: {}）{}",
+                                h.entry.kind.key(),
+                                h.entry.title,
+                                h.entry.id,
+                                if chain.is_empty() { String::new() } else { format!("｜关联：{chain}") }
+                            ));
+                        }
+                        ToolResult::ok(lines.join("\n"))
+                    }
+                    Err(e) => ToolResult::err(format!("记忆列示失败：{e}")),
+                }
+            }
+            _ => {
+                let Some(from) = args.get("from").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+                    return ToolResult::err("from 不能为空（关联起始条目 id）");
+                };
+                let Some(to) = args.get("to").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+                    return ToolResult::err("to 不能为空（关联目标条目 id）");
+                };
+                let relation = args.get("relation").and_then(|v| v.as_str()).unwrap_or("related").trim();
+                // 组隔离：双端条目都必须在调用者可见范围（激活组 + 全局），越组拒绝
+                let visible = |id: &str| -> Option<bool> {
+                    memory.get_entry_public(id).ok().flatten().map(|e| {
+                        e.group_id.as_deref().is_none_or(|g| g == gid)
+                    })
+                };
+                match (visible(from), visible(to)) {
+                    (Some(true), Some(true)) => match memory.link(from, to, relation) {
+                        Ok(_) => ToolResult::ok(format!(
+                            "已建立关联：{from} —{relation}→ {to}（后续列示与检索可见）"
+                        )),
+                        Err(e) => ToolResult::err(format!("关联写入失败：{e}")),
+                    },
+                    (Some(false), _) | (_, Some(false)) => {
+                        ToolResult::err("关联被拒绝：条目不在你的组范围内（越组隔离）")
+                    }
+                    _ => ToolResult::err("条目不存在（检查 from/to 的条目 id，可先用 memory_link op=list 列示）"),
+                }
+            }
         }
     }
 
@@ -1557,7 +1804,8 @@ impl ToolGateway {
 
     /// 写前快照（检查点）：原文件复制到 .exmachina/checkpoints/<日期>/<相对路径>。
     /// 同日同名已存在则跳过 —— 保存的是「当日首次改动前」的版本，供 `exm checkpoint restore` 回滚。
-    fn checkpoint(&self, target: &Path) -> anyhow::Result<()> {
+    /// `session_id` 非空时把检查点引用（date/rel）登记进该会话的轮次链（undo 联动回滚用）。
+    fn checkpoint(&self, target: &Path, session_id: &str) -> anyhow::Result<()> {
         if !target.is_file() {
             return Ok(());
         }
@@ -1570,15 +1818,20 @@ impl ToolGateway {
             .workspace_root
             .join(".exmachina")
             .join("checkpoints")
-            .join(day)
+            .join(&day)
             .join(rel);
-        if dst.exists() {
-            return Ok(());
+        let fresh = !dst.exists();
+        if fresh {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(target, &dst).context("写检查点失败")?;
         }
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
+        // 轮次检查点链：仅登记当日首次快照（重复跳过的文件其既有检查点已可回滚）
+        if fresh && !session_id.is_empty() {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let _ = self.store.record_checkpoint_ref(session_id, &day, &rel_str);
         }
-        std::fs::copy(target, &dst).context("写检查点失败")?;
         Ok(())
     }
 
@@ -1676,7 +1929,7 @@ impl ToolGateway {
     }
 
     /// 精确编辑：old_string → new_string（唯一命中校验；支持 replace_all）
-    fn tool_edit(&self, args: &serde_json::Value) -> ToolResult {
+    fn tool_edit(&self, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let old = args.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
         let new = args.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
@@ -1720,7 +1973,7 @@ impl ToolGateway {
         } else {
             (content.replacen(old, new, 1), 1)
         };
-        if let Err(e) = self.checkpoint(&p) {
+        if let Err(e) = self.checkpoint(&p, session_id) {
             return ToolResult::err(format!("写前检查点失败，已中止编辑：{e}"));
         }
         if let Err(e) = std::fs::write(&p, &updated) {
@@ -1736,7 +1989,7 @@ impl ToolGateway {
 
     /// 统一 diff 补丁：逐文件在内存中校验并计算新内容，任一文件失败则整体拒绝；
     /// 全部通过后统一落检查点再写入（多文件原子语义）
-    fn tool_patch(&self, args: &serde_json::Value) -> ToolResult {
+    fn tool_patch(&self, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let patch_text = args.get("patch").and_then(|v| v.as_str()).unwrap_or("");
         if patch_text.trim().is_empty() {
             return ToolResult::err("patch 不能为空：请提供统一 diff 格式的补丁全文");
@@ -1823,7 +2076,7 @@ impl ToolGateway {
 
         // 全部通过：检查点 → 写入（/删除）
         for plan in &plans {
-            if let Err(e) = self.checkpoint(&plan.path) {
+            if let Err(e) = self.checkpoint(&plan.path, session_id) {
                 return ToolResult::err(format!("写前检查点失败，已中止补丁应用：{e}"));
             }
             if plan.delete {
@@ -1966,7 +2219,7 @@ impl ToolGateway {
                 if let Some(parent) = target.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Err(e) = self.checkpoint(&target) {
+                if let Err(e) = self.checkpoint(&target, session_id) {
                     return ToolResult::err(format!("写前检查点失败，已中止写入：{e}"));
                 }
                 match std::fs::write(&target, content).context("写入失败") {
@@ -2649,6 +2902,7 @@ impl ToolGateway {
                     last_run_at: None,
                     last_status: None,
                     last_run_minute: None,
+                    notify_channels: Vec::new(),
                     created_at: crate::types::now_iso(),
                 };
                 match cron.upsert(job) {
@@ -2883,5 +3137,256 @@ fn shell_quote(v: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         format!("'{v}'")
+    }
+}
+
+// ---------------------------------------------------------------- 记忆工具与工具面快照（组 8 单测）
+
+#[cfg(test)]
+mod memory_tool_tests {
+    use super::*;
+    use crate::types::{AgentDefinition, GroupMeta, Tier};
+
+    struct TestRig {
+        gw: ToolGateway,
+        dir: std::path::PathBuf,
+    }
+
+    fn rig() -> TestRig {
+        let dir = std::env::temp_dir().join(format!("exm-tools-{}", crate::types::new_id()));
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        let store = Arc::new(Store::open(dir.join("data")).unwrap());
+        let registry = Arc::new(LocalRegistry::new(dir.join("agents")).unwrap());
+        // 自定义测试组（内置组定义受保护，不可增删个体）：注册主智能体与个体
+        registry.create_group(Some("t".into()), "测试组", "").unwrap();
+        let _ = registry.upsert_agent(
+            "t",
+            crate::types::AgentDefinition {
+                name: "orch-1".into(),
+                identifier: "orch-1".into(),
+                domain: "测试".into(),
+                tier: Tier::Orchestrator,
+                description: "测试主智能体".into(),
+                capabilities: vec![],
+                tools: vec![],
+                when_to_call: String::new(),
+                dependencies: vec![],
+                composable_with: vec![],
+                input_schema: Default::default(),
+                output_schema: Default::default(),
+                prompt_file: String::new(),
+                model_hint: None,
+            },
+            None,
+        );
+        registry.set_primary("t", "orch-1").unwrap();
+        registry.set_active_group("t").unwrap();
+        let (events, _rx) = tokio::sync::broadcast::channel(64);
+        let memory = Arc::new(crate::memory::MemoryStore::open(dir.join("data")).unwrap());
+        let gw = ToolGateway::new(&dir, store, registry, events, SecurityConfig::default()).with_memory(memory);
+        TestRig { gw, dir }
+    }
+
+    fn def(identifier: &str, tier: Tier, tools: &[ToolName]) -> AgentDefinition {
+        AgentDefinition {
+            name: identifier.into(),
+            identifier: identifier.into(),
+            domain: "测试".into(),
+            tier,
+            description: "测试个体".into(),
+            capabilities: vec![],
+            tools: tools.to_vec(),
+            when_to_call: String::new(),
+            dependencies: vec![],
+            composable_with: vec![],
+            input_schema: Default::default(),
+            output_schema: Default::default(),
+            prompt_file: String::new(),
+            model_hint: None,
+        }
+    }
+
+    fn group_meta(primary: &str, builtin: bool) -> GroupMeta {
+        GroupMeta {
+            id: "default".into(),
+            name: "测试组".into(),
+            description: String::new(),
+            primary: Some(primary.into()),
+            workspace: None,
+            model: None,
+            capabilities: None,
+            builtin,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn 工具面快照_主智能体默认可见记忆三工具() {
+        let primary = def("orch-1", Tier::Orchestrator, &[ToolName::Read]);
+        let allow = ToolGateway::runtime_allowlist(&primary, Some(&group_meta("orch-1", true)));
+        for t in [ToolName::MemoryRead, ToolName::MemoryWrite, ToolName::MemoryLink] {
+            assert!(allow.contains(&t), "主智能体应默认获得 {t:?}（内置组）");
+        }
+        assert!(!allow.contains(&ToolName::AgentManage), "内置组主智能体不获得个体管理工具");
+
+        // 自定义组主智能体：记忆三工具 + 个体管理
+        let allow2 = ToolGateway::runtime_allowlist(&primary, Some(&group_meta("orch-1", false)));
+        assert!(allow2.contains(&ToolName::AgentManage));
+        assert!(allow2.contains(&ToolName::MemoryWrite));
+    }
+
+    #[test]
+    fn 工具面快照_个体未经编成授权不可见() {
+        let unit = def("unit-1", Tier::Unit, &[ToolName::Read, ToolName::Terminal]);
+        let allow = ToolGateway::runtime_allowlist(&unit, Some(&group_meta("orch-1", true)));
+        assert!(!allow.contains(&ToolName::MemoryRead), "未授权个体不应看到记忆检索");
+        assert!(!allow.contains(&ToolName::MemoryWrite), "未授权个体不应看到记忆写入");
+        assert!(!allow.contains(&ToolName::MemoryLink));
+
+        // 编成 JSON 显式授权：仅授权的工具可见（memory_write 授权但 memory_read 未授权）
+        let granted = def("unit-2", Tier::Unit, &[ToolName::Read, ToolName::MemoryWrite]);
+        let allow2 = ToolGateway::runtime_allowlist(&granted, Some(&group_meta("orch-1", true)));
+        assert!(allow2.contains(&ToolName::MemoryWrite));
+        assert!(!allow2.contains(&ToolName::MemoryRead), "逐工具授权，不整组放行");
+    }
+
+    #[test]
+    fn 工具面快照_schema按白名单下发() {
+        let primary = def("orch-1", Tier::Orchestrator, &[ToolName::Read]);
+        let allow = ToolGateway::runtime_allowlist(&primary, Some(&group_meta("orch-1", true)));
+        let specs = ToolGateway::tool_specs(&allow, false, false, false);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"memory_read") && names.contains(&"memory_write") && names.contains(&"memory_link"));
+        assert!(!names.contains(&"web_search"), "后端未就绪不下发（口径不因新工具改变）");
+
+        // 未授权个体：schema 不含记忆工具
+        let unit = def("unit-1", Tier::Unit, &[ToolName::Read]);
+        let specs2 = ToolGateway::tool_specs(&ToolGateway::runtime_allowlist(&unit, None), false, false, false);
+        assert!(specs2.iter().all(|s| !s.name.starts_with("memory_")));
+    }
+
+    #[test]
+    fn 记忆写入_哈希去重提升既有条目() {
+        let r = rig();
+        let args = serde_json::json!({ "kind": "fact", "title": "部署约定", "body": "生产环境用 docker compose 部署", "tags": ["deploy"], "importance": 0.4 });
+        let out = r.gw.tool_memory_write("orch-1", &args);
+        assert!(out.ok, "{}", out.error.unwrap_or_default());
+        let again = r.gw.tool_memory_write("orch-1", &args);
+        assert!(again.ok);
+        // 同内容二次写入：库内仅一条，重要性按既有规则提升（+0.08）
+        let entries = r.gw.memory.as_ref().unwrap().list(None, 100).unwrap();
+        assert_eq!(entries.len(), 1, "哈希去重：相同内容不得产生重复条目");
+        assert!(entries[0].importance > 0.4, "重复写入应提升重要性：{}", entries[0].importance);
+        assert_eq!(entries[0].source_ref.as_deref(), Some("agent"), "来源标注 source=agent");
+        assert_eq!(entries[0].agent_id.as_deref(), Some("orch-1"), "归属调用个体");
+        assert_eq!(entries[0].group_id.as_deref(), Some("t"), "归属激活组");
+    }
+
+    #[test]
+    fn 记忆检索_相关度排序与来源标注() {
+        let r = rig();
+        let mk = |t: &str, b: &str| serde_json::json!({ "kind": "fact", "title": t, "body": b });
+        r.gw.tool_memory_write("orch-1", &mk("redis 部署手册", "redis 用 compose 起单实例"));
+        r.gw.tool_memory_write("orch-1", &mk("前端构建", "npm run build:webui 产出 dist"));
+        r.gw.tool_memory_write("unit-1", &mk("redis 持久化教训", "redis 未开 AOF 重启丢数据"));
+        // 群体共享条目（无个体归属）：来源应标 "组:t"
+        r.gw
+            .memory
+            .as_ref()
+            .unwrap()
+            .remember(&crate::memory::MemoryDraft::new(
+                crate::memory::MemoryKind::Fact,
+                "redis 端口约定",
+                "统一用 6379",
+            )
+            .group("t"))
+            .unwrap();
+
+        let out = r.gw.tool_memory_read("orch-1", &serde_json::json!({ "query": "redis", "limit": 5 }));
+        assert!(out.ok, "{}", out.error.unwrap_or_default());
+        let text = out.output;
+        assert!(text.contains("2 条命中") || text.contains("3 条命中"), "应含全部 redis 条目：{text}");
+        assert!(text.contains("redis 部署手册"), "标题命中应排前：{text}");
+        assert!(text.contains("个体:unit-1"), "主智能体可见个体私有层并标注来源：{text}");
+        assert!(text.contains("组:t"), "群体条目标注来源：{text}");
+        // 个体视角：只见自己私有 + 群体，不见他体私有
+        let unit_view = r.gw.tool_memory_read("unit-1", &serde_json::json!({ "query": "redis" }));
+        assert!(unit_view.output.contains("redis 持久化教训"), "自己的私有层可见");
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn 记忆检索_越组隔离() {
+        let r = rig();
+        // 在 default 组写入一条
+        let w = r.gw.tool_memory_write("orch-1", &serde_json::json!({ "kind": "fact", "title": "机密暗号", "body": "仅 default 组可见的暗号 xyzzy" }));
+        assert!(w.ok, "{}", w.error.unwrap_or_default());
+        assert!(r.gw.registry.create_group(Some("other".into()), "他组", "").is_ok());
+        r.gw.registry.set_active_group("other").unwrap();
+        let out = r.gw.tool_memory_read("orch-1", &serde_json::json!({ "query": "机密暗号 xyzzy" }));
+        assert!(out.output.contains("无命中"), "越组检索不得返回他组条目：{}", out.output);
+        // 写入归属切换后的组：不串组
+        let w2 = r.gw.tool_memory_write("orch-1", &serde_json::json!({ "kind": "fact", "title": "他组约定", "body": "other 组的约定" }));
+        assert!(w2.ok);
+        r.gw.registry.set_active_group("default").unwrap();
+        let back = r.gw.tool_memory_read("orch-1", &serde_json::json!({ "query": "他组约定" }));
+        assert!(back.output.contains("无命中"), "other 组条目不得泄漏进 default 视图：{}", back.output);
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    /// 从写入结果文本提取条目 id（输出格式：…（id: <id>，类型 …)
+    fn id_of(r: &ToolResult) -> String {
+        r.output
+            .rsplit("id: ")
+            .next()
+            .unwrap_or("")
+            .split('，')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn 记忆关联_建立与列示_越组拒绝() {
+        let r = rig();
+        let mk = |t: &str, b: &str| serde_json::json!({ "kind": "decision", "title": t, "body": b });
+        let a = r.gw.tool_memory_write("orch-1", &mk("决策A", "采用方案 A"));
+        let b = r.gw.tool_memory_write("orch-1", &mk("决策B", "由 A 派生方案 B"));
+        assert!(a.ok && b.ok, "{} {}", a.error.unwrap_or_default(), b.error.unwrap_or_default());
+        let id_a = id_of(&a);
+        let id_b = id_of(&b);
+        assert!(!id_a.is_empty() && !id_b.is_empty(), "id 解析：{} / {}", a.output, b.output);
+
+        let link = r.gw.tool_memory_link("orch-1", &serde_json::json!({ "op": "link", "from": id_a, "to": id_b, "relation": "derives-from" }));
+        assert!(link.ok, "{}", link.error.unwrap_or_default());
+
+        // 列示可见关联链
+        let list = r.gw.tool_memory_link("orch-1", &serde_json::json!({ "op": "list", "query": "决策", "limit": 10 }));
+        assert!(list.ok);
+        assert!(list.output.contains("derives-from"), "列示应含关联链：{}", list.output);
+
+        // 越组关联拒绝
+        assert!(r.gw.registry.create_group(Some("elsewhere".into()), "他组", "").is_ok());
+        r.gw.registry.set_active_group("elsewhere").unwrap();
+        let c = r.gw.tool_memory_write("orch-1", &mk("他组条目", "other 组的决策"));
+        r.gw.registry.set_active_group("default").unwrap();
+        assert!(c.ok);
+        let id_c = id_of(&c);
+        let denied = r.gw.tool_memory_link("orch-1", &serde_json::json!({ "op": "link", "from": id_a, "to": id_c, "relation": "related" }));
+        assert!(!denied.ok, "越组关联应被拒绝");
+        assert!(denied.error.unwrap_or_default().contains("越组隔离"));
+
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn 记忆写入_参数校验() {
+        let r = rig();
+        let bad_kind = r.gw.tool_memory_write("orch-1", &serde_json::json!({ "kind": "nope", "title": "t", "body": "b" }));
+        assert!(!bad_kind.ok, "非法类型应拒绝");
+        let no_body = r.gw.tool_memory_write("orch-1", &serde_json::json!({ "kind": "fact", "title": "t" }));
+        assert!(!no_body.ok, "缺 body 应拒绝");
+        let _ = std::fs::remove_dir_all(&r.dir);
     }
 }

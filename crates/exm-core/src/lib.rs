@@ -474,6 +474,140 @@ impl Core {
         Ok(format!("已回滚 {} → {rel}（来自检查点 {day}）", dst.display()))
     }
 
+    // ---------------- 会话历史管控（undo / 编辑重发 / fork，组 9） ----------------
+
+    /// 会话运行锁句柄（外部历史操作先 try_lock：处理中一律拒绝）
+    fn run_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.run_locks
+            .lock()
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// 快照定位：turn 的消息游标（turn <= 0 = 空，即回退到会话起点）
+    fn cursor_at_turn(&self, session_id: &str, turn: usize) -> anyhow::Result<usize> {
+        if turn == 0 {
+            return Ok(0);
+        }
+        let snaps = self.store.list_turn_snapshots(session_id)?;
+        snaps
+            .iter()
+            .find(|s| s.turn == turn)
+            .map(|s| s.message_count)
+            .ok_or_else(|| anyhow::anyhow!("轮次快照不存在: turn {turn}（该轮未落快照或已被裁剪）"))
+    }
+
+    /// 消息撤销（9.2）：空闲强校验 → 游标回退（截断部分归档可查）→ 上下文重建
+    /// → 可选检查点联动回滚 → 审计事件。返回 {archived, restored, cursor}。
+    pub async fn undo_session(&self, session_id: &str, upto_turn: usize, restore_files: bool) -> anyhow::Result<serde_json::Value> {
+        let lock = self.run_lock(session_id);
+        // 空闲校验：处理中拒绝（spec 硬性要求）
+        let _guard = lock.try_lock().map_err(|_| anyhow::anyhow!("会话正在处理中，请等待当前任务完成后再撤销"))?;
+        self.store
+            .get_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("会话不存在: {session_id}"))?;
+        let cursor = self.cursor_at_turn(session_id, upto_turn)?;
+
+        // 游标回退 + 归档（spec：被截断内容保留归档视图）
+        let archived = self.store.truncate_messages(session_id, cursor)?;
+
+        // 上下文重建：截断后滚动摘要失效（摘要覆盖越过游标即重置，按截断后历史重建）
+        let session = self.store.get_session(session_id)?.unwrap();
+        if session.summary_upto.map(|u| u > cursor).unwrap_or(false) {
+            let _ = self.store.update_compaction(session_id, "", 0);
+        }
+
+        // 检查点联动回滚：该轮之后各快照登记的文件变更，按轮次倒序恢复
+        let mut restored: Vec<String> = Vec::new();
+        if restore_files {
+            let mut later: Vec<TurnSnapshot> = self
+                .store
+                .list_turn_snapshots(session_id)?
+                .into_iter()
+                .filter(|s| s.turn > upto_turn && !s.checkpoint_ids.is_empty())
+                .collect();
+            later.sort_by(|a, b| b.turn.cmp(&a.turn)); // 后轮先回滚（后者覆盖前者的场景）
+            for snap in later {
+                for cp in snap.checkpoint_ids.iter().rev() {
+                    let Some((date, rel)) = cp.split_once('/') else { continue };
+                    match self.restore_checkpoint(Some(date), rel) {
+                        Ok(_) => restored.push(cp.clone()),
+                        Err(e) => eprintln!("[undo] 检查点恢复失败 {cp}: {e}"),
+                    }
+                }
+            }
+        }
+
+        // 孤儿快照清理 + 审计 + 事件
+        let _ = self.store.prune_turn_snapshots_after(session_id, upto_turn);
+        let _ = self.store.audit_tool(
+            "webui",
+            "session_undo",
+            &serde_json::json!({ "session": session_id, "uptoTurn": upto_turn, "restoreFiles": restore_files }),
+            &format!("撤销至第 {upto_turn} 轮：归档 {archived} 条，联动回滚 {} 个文件", restored.len()),
+            0,
+        );
+        let payload = serde_json::json!({
+            "session": session_id, "uptoTurn": upto_turn, "cursor": cursor,
+            "archived": archived, "restored": restored,
+        });
+        let _ = self.events.send(CoreEvent { kind: "session.undo".into(), session_id: session_id.to_string(), payload: payload.clone() });
+        Ok(payload)
+    }
+
+    /// 编辑重发（9.3）：撤销至该轮之前（原内容归档可查）后以新内容触发新一轮处理。
+    /// `turn` 为被编辑的用户消息所在轮次。
+    pub async fn edit_resend(&self, session_id: &str, turn: usize, new_text: &str) -> anyhow::Result<serde_json::Value> {
+        if new_text.trim().is_empty() {
+            anyhow::bail!("新内容不能为空");
+        }
+        let upto = turn.saturating_sub(1);
+        let info = self.undo_session(session_id, upto, true).await?;
+        // 以新内容重新执行（原内容已在归档中可查）
+        self.chat(session_id, new_text).await?;
+        Ok(serde_json::json!({ "undone": info, "resent": true, "turn": turn }))
+    }
+
+    /// 会话分支派生（9.4）：新会话携带截至该轮的完整历史副本与派生来源标注；
+    /// 组归属（= 权限与成员上下文）继承，原会话不变。返回新会话。
+    pub fn fork_session(&self, session_id: &str, upto_turn: usize) -> anyhow::Result<Session> {
+        let src = self
+            .store
+            .get_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("会话不存在: {session_id}"))?;
+        let cursor = self.cursor_at_turn(session_id, upto_turn)?;
+        let now = now_iso();
+        let fork = Session {
+            id: new_id(),
+            title: format!("{}（分支·至第 {upto_turn} 轮）", src.title),
+            status: "active".into(),
+            group_id: src.group_id.clone(), // 权限与组继承
+            rolling_summary: None,          // 摘要按副本历史重建
+            summary_upto: None,
+            parent_session: Some(src.id.clone()),
+            parent_upto: Some(upto_turn),
+            ledger: src.ledger.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.store.insert_session(&fork)?;
+        let copied = self.store.copy_messages_prefix(session_id, &fork.id, cursor)?;
+        let _ = self.store.audit_tool(
+            "webui",
+            "session_fork",
+            &serde_json::json!({ "source": session_id, "uptoTurn": upto_turn, "fork": fork.id }),
+            &format!("派生分支会话 {}（复制 {copied} 条消息）", fork.id),
+            0,
+        );
+        let _ = self.events.send(CoreEvent {
+            kind: "session.fork".into(),
+            session_id: fork.id.clone(),
+            payload: serde_json::json!({ "source": session_id, "uptoTurn": upto_turn, "fork": fork.id, "copied": copied }),
+        });
+        Ok(fork)
+    }
+
     pub async fn chat(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
         // 预算闸门：估算口径超限即拒绝新轮次（0 = 不限）
         let budget = self.config().max_session_tokens;
@@ -863,6 +997,44 @@ impl Core {
         });
     }
 
+    /// 注入一条事件提示词到目标组会话（事件触发器共用通路，design D6：
+    /// 组切换 + 会话复用 + prompt 注入；与 cron 同路但独立记账，不进 cron 运行日志）。
+    /// 返回执行的会话 id。标题缺省 = `event-<group>`（同组事件复用同一会话）。
+    pub async fn run_event_prompt(
+        &self,
+        title: &str,
+        group: Option<&str>,
+        prompt: &str,
+    ) -> anyhow::Result<String> {
+        let prev_group = self.registry.active_group();
+        let mut switched = false;
+        if let Some(g) = group {
+            if *g != prev_group && self.group_meta(g).is_some() {
+                switched = self.registry.set_active_group(g).is_ok();
+            }
+        }
+        let gid = self.registry.active_group();
+        let title = if title.trim().is_empty() { format!("event-{gid}") } else { title.to_string() };
+        let result = async {
+            let existing = self
+                .store
+                .list_sessions_in_group(&gid)
+                .ok()
+                .and_then(|list| list.into_iter().find(|s| s.title == title));
+            let session = match existing {
+                Some(s) => s,
+                None => self.create_session(&title)?,
+            };
+            self.chat(&session.id, prompt).await?;
+            Ok::<String, anyhow::Error>(session.id)
+        }
+        .await;
+        if switched {
+            let _ = self.registry.set_active_group(&prev_group);
+        }
+        result
+    }
+
     /// 执行一条定时任务：复用同名会话（缺省 job-<id>），注入提示词并等待收束
     pub async fn run_cron_job(&self, job: &CronJob) -> CronRun {
         let started = now_iso();
@@ -980,6 +1152,8 @@ pub fn build_orchestrator(
     if let Some(c) = &cron {
         gateway = gateway.with_cron(c.clone());
     }
+    // 记忆工具（memory_read/write/link）的受控入口：组隔离在工具层强制
+    gateway = gateway.with_memory(memory.clone());
     let tools = Arc::new(gateway);
     let unit_runtime = Arc::new(AgentRuntime::new(
         registry.clone(),
@@ -1039,4 +1213,241 @@ pub fn build_orchestrator(
         max_unit_steps: cfg.automation.unit_max_steps,
         auto_adapt: cfg.automation.auto_adapt,
     })
+}
+
+// ---------------------------------------------------------------- 会话历史管控（组 9 单测）
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use crate::types::{AgentDefinition, Tier};
+
+    fn mock_core() -> Core {
+        let dir = std::env::temp_dir().join(format!("exm-hist-{}", crate::types::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = ExmConfig::load(&dir);
+        cfg.use_mock = true;
+        cfg.memory_enabled = false; // 历史管控测试不关心记忆写入
+        let core = Core::with_config(cfg).expect("创建 Core 失败");
+        core.registry().create_group(Some("t".into()), "历史测试组", "").unwrap();
+        let def = AgentDefinition {
+            name: "问答体".into(),
+            identifier: "hist-orch".into(),
+            domain: "测试".into(),
+            tier: Tier::Orchestrator,
+            description: "测试主智能体".into(),
+            capabilities: vec![],
+            tools: vec![],
+            when_to_call: String::new(),
+            dependencies: vec![],
+            composable_with: vec![],
+            input_schema: Default::default(),
+            output_schema: Default::default(),
+            prompt_file: String::new(),
+            model_hint: None,
+        };
+        core.registry().upsert_agent("t", def, None).unwrap();
+        core.registry().set_primary("t", "hist-orch").unwrap();
+        core.registry().set_active_group("t").unwrap();
+        core
+    }
+
+    async fn three_rounds(core: &Core, sid: &str) {
+        core.chat(sid, "第一轮问题").await.unwrap();
+        core.chat(sid, "第二轮问题").await.unwrap();
+        core.chat(sid, "第三轮问题").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn 轮次快照_多轮对话后快照链完整() {
+        let core = mock_core();
+        let s = core.create_session("快照链").unwrap();
+        three_rounds(&core, &s.id).await;
+        let snaps = core.store.list_turn_snapshots(&s.id).unwrap();
+        assert_eq!(snaps.len(), 3, "每轮一条快照");
+        for (i, snap) in snaps.iter().enumerate() {
+            assert_eq!(snap.turn, i + 1, "轮次从 1 递增");
+            assert_eq!(snap.status, "done");
+        }
+        // 游标单调不减且等于当前消息总数
+        let total = core.store.list_messages(&s.id, 0).unwrap().len();
+        assert_eq!(snaps.last().unwrap().message_count, total);
+        assert!(snaps.windows(2).all(|w| w[0].message_count <= w[1].message_count), "游标单调");
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
+
+    #[tokio::test]
+    async fn undo_空闲回退_归档可查_快照裁剪() {
+        let core = mock_core();
+        let s = core.create_session("撤销").unwrap();
+        three_rounds(&core, &s.id).await;
+        let total = core.store.list_messages(&s.id, 0).unwrap().len();
+
+        let info = core.undo_session(&s.id, 2, false).await.unwrap();
+        assert_eq!(info["archived"].as_u64().unwrap() as usize, total - snaps_at(&core, &s.id, 2), "归档数 = 第 2 轮之后的消息数");
+        // 活跃流截断到第 2 轮游标
+        let cursor = core.store.list_turn_snapshots(&s.id).unwrap().last().unwrap().message_count;
+        let now_len = core.store.list_messages(&s.id, 0).unwrap().len();
+        assert_eq!(now_len, cursor, "截断后游标一致");
+        assert!(now_len < total, "确实发生了截断");
+        // 归档可查：被截断内容保留
+        let archive = core.store.list_archived_messages(&s.id).unwrap();
+        assert_eq!(archive.len(), total - now_len);
+        assert!(archive.iter().any(|m| m.statements.iter().any(|st| st.text.contains("第三轮"))), "第三轮内容在归档中");
+        // 孤儿快照已裁剪
+        assert_eq!(snaps_len(&core, &s.id), 2);
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
+
+    fn snaps_len(core: &Core, sid: &str) -> usize {
+        core.store.list_turn_snapshots(sid).unwrap().len()
+    }
+
+    fn snaps_at(core: &Core, sid: &str, turn: usize) -> usize {
+        core.store
+            .list_turn_snapshots(sid)
+            .unwrap()
+            .iter()
+            .find(|s| s.turn == turn)
+            .map(|s| s.message_count)
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn undo_处理中拒绝() {
+        let core = mock_core();
+        let s = core.create_session("忙碌").unwrap();
+        core.chat(&s.id, "先来一轮").await.unwrap();
+        // 占住运行锁（模拟处理中）
+        let lock = core.run_lock(&s.id);
+        let guard = lock.lock().await;
+        let err = core.undo_session(&s.id, 1, false).await.unwrap_err();
+        assert!(err.to_string().contains("处理中"), "应拒绝：{err}");
+        drop(guard);
+        // 空闲后可撤销
+        assert!(core.undo_session(&s.id, 1, false).await.is_ok());
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
+
+    #[tokio::test]
+    async fn undo_检查点联动回滚文件() {
+        let core = mock_core();
+        let s = core.create_session("文件联动").unwrap();
+        // 构造两轮：第 1 轮登记检查点（文件 v1 → v2），第 2 轮普通
+        let file = core.config().workspace_root.join("a.txt");
+        std::fs::write(&file, "v1").unwrap();
+        let day: String = now_iso().chars().take(10).collect();
+        // 检查点文件（写类工具写前快照的同款落点）+ 轮次链登记
+        let cp = core.config().workspace_root.join(".exmachina").join("checkpoints").join(&day).join("a.txt");
+        std::fs::create_dir_all(cp.parent().unwrap()).unwrap();
+        std::fs::write(&cp, "v1").unwrap();
+        core.store.record_checkpoint_ref(&s.id, &day, "a.txt").unwrap();
+        std::fs::write(&file, "v2").unwrap();
+        core.store
+            .put_turn_snapshot(&TurnSnapshot {
+                id: format!("{}:1", s.id),
+                session_id: s.id.clone(),
+                turn: 1,
+                message_count: 2,
+                checkpoint_ids: vec![format!("{day}/a.txt")],
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                status: "done".into(),
+                created_at: now_iso(),
+            })
+            .unwrap();
+        core.store
+            .add_message(&s.id, MessageRole::User, None, vec![Statement::new(SpeechTag::要求, "改文件")])
+            .unwrap();
+        core.store
+            .put_turn_snapshot(&TurnSnapshot {
+                id: format!("{}:2", s.id),
+                session_id: s.id.clone(),
+                turn: 2,
+                message_count: 3,
+                checkpoint_ids: vec![],
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                status: "done".into(),
+                created_at: now_iso(),
+            })
+            .unwrap();
+
+        // 撤销到第 1 轮（保留）→ 第 2 轮无检查点；撤销到第 0 轮 → 第 1 轮的检查点回滚文件
+        let info = core.undo_session(&s.id, 0, true).await.unwrap();
+        let restored: Vec<String> = serde_json::from_value(info["restored"].clone()).unwrap();
+        assert_eq!(restored, vec![format!("{day}/a.txt")], "检查点引用被联动回滚");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "v1", "文件内容回到检查点版本");
+        assert_eq!(core.store.list_messages(&s.id, 0).unwrap().len(), 0, "游标回退到 0");
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
+
+    #[tokio::test]
+    async fn 编辑重发_原内容归档_新内容重执行() {
+        let core = mock_core();
+        let s = core.create_session("改写").unwrap();
+        three_rounds(&core, &s.id).await;
+        let before = core.store.list_messages(&s.id, 0).unwrap().len();
+
+        core.edit_resend(&s.id, 2, "第二轮问题（已修改）").await.unwrap();
+        // 原内容归档可查
+        let archive_text: String = core
+            .store
+            .list_archived_messages(&s.id)
+            .unwrap()
+            .iter()
+            .flat_map(|m| m.statements.iter().map(|st| st.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(archive_text.contains("第二轮问题"), "原第 2 轮内容在归档中：{archive_text}");
+        assert!(archive_text.contains("第三轮问题"), "第 3 轮一并被回退归档");
+        // 新内容重执行：活跃流 = 第 1 轮 + 新一轮，最后一条用户消息为新文本
+        let msgs = core.store.list_messages(&s.id, 0).unwrap();
+        assert!(msgs.len() < before + 2, "重发后活跃流短于原全程");
+        let last_user = msgs.iter().rev().find(|m| matches!(m.role, MessageRole::User)).unwrap();
+        assert!(last_user.statements[0].text.contains("已修改"), "以编辑后的内容重执行");
+        // 新一轮也落了快照
+        let snaps = core.store.list_turn_snapshots(&s.id).unwrap();
+        assert_eq!(snaps.len(), 2, "第 1 轮保留 + 重发轮新快照");
+        assert_eq!(snaps.last().unwrap().turn, 2);
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
+
+    #[tokio::test]
+    async fn fork_派生独立演进_原会话不变() {
+        let core = mock_core();
+        let s = core.create_session("分叉源").unwrap();
+        three_rounds(&core, &s.id).await;
+        let src_msgs = core.store.list_messages(&s.id, 0).unwrap().len();
+        let src_snaps = snaps_len(&core, &s.id);
+
+        let fork = core.fork_session(&s.id, 2).unwrap();
+        assert_ne!(fork.id, s.id);
+        assert_eq!(fork.parent_session.as_deref(), Some(s.id.as_str()), "派生来源标注");
+        assert_eq!(fork.parent_upto, Some(2));
+        assert_eq!(fork.group_id, "t", "组归属继承");
+        // 历史副本 = 截至第 2 轮
+        let copied = core.store.list_messages(&fork.id, 0).unwrap();
+        let cursor = core.store.list_turn_snapshots(&s.id).unwrap().iter().find(|x| x.turn == 2).unwrap().message_count;
+        assert_eq!(copied.len(), cursor, "副本 = 前缀游标");
+        assert!(copied.len() < src_msgs);
+        // 原会话不变
+        assert_eq!(core.store.list_messages(&s.id, 0).unwrap().len(), src_msgs);
+        assert_eq!(snaps_len(&core, &s.id), src_snaps);
+        // 分支独立演进：新消息只进分支
+        core.chat(&fork.id, "分支上的新问题").await.unwrap();
+        assert!(core.store.list_messages(&fork.id, 0).unwrap().len() > copied.len());
+        assert_eq!(core.store.list_messages(&s.id, 0).unwrap().len(), src_msgs, "原会话不受分支影响");
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
+
+    #[tokio::test]
+    async fn undo_不存在的轮次与会话报错() {
+        let core = mock_core();
+        let s = core.create_session("边界").unwrap();
+        assert!(core.undo_session(&s.id, 5, false).await.is_err(), "无快照轮次拒绝");
+        assert!(core.undo_session("no-such-session", 1, false).await.is_err(), "不存在会话拒绝");
+        assert!(core.fork_session("no-such-session", 1).is_err());
+        let _ = std::fs::remove_dir_all(&core.config().workspace_root);
+    }
 }

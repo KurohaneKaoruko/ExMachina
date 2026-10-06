@@ -28,6 +28,7 @@ pub mod platform;
 pub mod qqbot;
 pub mod slack;
 pub mod telegram;
+pub mod triggers;
 pub mod worker_hub;
 
 #[derive(Clone)]
@@ -47,6 +48,13 @@ async fn auth_middleware(
     let guarded = path.starts_with("/api/") || path == "/ws";
     if !required || path == "/api/auth/verify" || !guarded {
         return next.run(req).await;
+    }
+    // 事件 webhook 豁免（7.2）：自带 HMAC 签名校验（独立密钥），不走全局访问密钥
+    if path == "/api/events/webhook" && req.method() == axum::http::Method::POST {
+        let ew = &st.core.config().triggers.event_webhook;
+        if ew.enabled && !ew.secret.trim().is_empty() {
+            return next.run(req).await;
+        }
     }
     // 通道入站豁免（保守口径）：webhook 通道配置了自有凭据（secret 非空）时放行，
     // 凭据真伪由 inbound handler 自行校验（不符返回 401）；无自有凭据的通道仍被全局鉴权拦截
@@ -123,6 +131,12 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/sessions/:id/graph", get(get_graph))
         .route("/api/sessions/:id/evidence", get(get_evidence))
         .route("/api/sessions/:id/title", axum::routing::put(rename_session))
+        // 会话历史管控（组 9）：撤销 / 编辑重发 / 分支派生 / 归档与快照视图
+        .route("/api/sessions/:id/undo", post(session_undo))
+        .route("/api/sessions/:id/edit", post(session_edit))
+        .route("/api/sessions/:id/fork", post(session_fork))
+        .route("/api/sessions/:id/archive", get(session_archive))
+        .route("/api/sessions/:id/snapshots", get(session_snapshots))
         .route("/api/agents", get(list_agents).post(create_agent))
         .route(
             "/api/agents/:identifier",
@@ -163,6 +177,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(limits::routes())
         .merge(singles::routes())
         .merge(worker_hub::routes())
+        .merge(triggers::routes())
         .route(
             "/api/groups/:gid/agents/:identifier",
             axum::routing::delete(remove_agent_from_group),
@@ -530,6 +545,7 @@ async fn get_config(State(st): State<AppState>) -> impl IntoResponse {
             "heartbeatEnabled": cfg.automation.heartbeat_enabled,
             "heartbeatIntervalMinutes": cfg.automation.heartbeat_interval_minutes,
             "heartbeatPrompt": cfg.automation.heartbeat_prompt,
+            "heartbeatAgent": cfg.automation.heartbeat_agent,
             "autoAdapt": cfg.automation.auto_adapt,
             "unitMaxSteps": cfg.automation.unit_max_steps,
         },
@@ -700,6 +716,8 @@ struct PartialAutomation {
     #[serde(default)]
     heartbeat_prompt: Option<String>,
     #[serde(default)]
+    heartbeat_agent: Option<String>,
+    #[serde(default)]
     auto_adapt: Option<bool>,
     #[serde(default)]
     unit_max_steps: Option<usize>,
@@ -769,6 +787,7 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
         heartbeat_enabled: None,
         heartbeat_interval_minutes: None,
         heartbeat_prompt: None,
+        heartbeat_agent: None,
         auto_adapt: None,
         unit_max_steps: None,
     });
@@ -868,6 +887,14 @@ async fn put_config(State(st): State<AppState>, Json(body): Json<ConfigBody>) ->
                 .heartbeat_interval_minutes
                 .unwrap_or(current.automation.heartbeat_interval_minutes),
             heartbeat_prompt: auto.heartbeat_prompt.unwrap_or_else(|| current.automation.heartbeat_prompt.clone()),
+            // 个体目标：显式空串 = 清除（回到全局巡检）；缺省 = 沿用旧值
+            heartbeat_agent: match auto.heartbeat_agent {
+                Some(s) => {
+                    let t = s.trim().to_string();
+                    if t.is_empty() { None } else { Some(t) }
+                }
+                None => current.automation.heartbeat_agent.clone(),
+            },
             auto_adapt: auto.auto_adapt.unwrap_or(current.automation.auto_adapt),
             unit_max_steps: auto.unit_max_steps.unwrap_or(current.automation.unit_max_steps),
         },
@@ -1013,6 +1040,97 @@ async fn rename_session(
 async fn get_evidence(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     match st.core.store.list_evidence(&id) {
         Ok(v) => Json(Value::Array(v)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- 会话历史管控（组 9）
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UndoBody {
+    /// 撤销目标轮次（保留至该轮，其后全部回退）
+    turn: usize,
+    /// 是否联动回滚该轮之后由写类工具产生的文件变更（经检查点；默认 true）
+    #[serde(default)]
+    restore_files: Option<bool>,
+}
+
+/// 消息撤销（POST /api/sessions/:id/undo）：处理中返回 409
+async fn session_undo(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<UndoBody>,
+) -> impl IntoResponse {
+    match st.core.undo_session(&id, b.turn, b.restore_files.unwrap_or(true)).await {
+        Ok(info) => Json(info).into_response(),
+        Err(e) => {
+            let busy = e.to_string().contains("处理中");
+            let code = if busy { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+            (code, Json(json!({ "error": e.to_string() }))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditResendBody {
+    /// 被编辑的用户消息所在轮次
+    turn: usize,
+    /// 编辑后的新内容
+    text: String,
+}
+
+/// 编辑重发（POST /api/sessions/:id/edit）：= 撤销至该轮之前 + 新内容重执行（原内容归档可查）
+async fn session_edit(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<EditResendBody>,
+) -> impl IntoResponse {
+    if b.text.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "text 不能为空" }))).into_response();
+    }
+    match st.core.edit_resend(&id, b.turn, &b.text).await {
+        Ok(info) => (StatusCode::ACCEPTED, Json(info)).into_response(),
+        Err(e) => {
+            let busy = e.to_string().contains("处理中");
+            let code = if busy { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+            (code, Json(json!({ "error": e.to_string() }))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForkBody {
+    /// 分支截至的历史轮次（携带前 N 轮完整副本）
+    turn: usize,
+}
+
+/// 分支派生（POST /api/sessions/:id/fork）：原会话不变，返回新会话
+async fn session_fork(State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<ForkBody>) -> impl IntoResponse {
+    match st.core.fork_session(&id, b.turn) {
+        Ok(s) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(s).unwrap_or(Value::Null)),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 归档视图（GET /api/sessions/:id/archive）：被撤销/编辑回退内容的可查留痕
+async fn session_archive(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.store.list_archived_messages(&id) {
+        Ok(msgs) => Json(serde_json::to_value(msgs).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 轮次快照清单（GET /api/sessions/:id/snapshots）：undo / fork 的可选轮次与游标
+async fn session_snapshots(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.store.list_turn_snapshots(&id) {
+        Ok(snaps) => Json(serde_json::to_value(snaps).unwrap_or(Value::Null)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -1659,6 +1777,8 @@ pub async fn serve(core: Arc<Core>, port: u16, host: Option<&str>) -> anyhow::Re
     discord::spawn_supervisor(core.clone());
     slack::spawn_supervisor(core.clone());
     matrix::spawn_supervisor(core.clone());
+    // 事件触发器（7.1）：文件监听（配置启用时才启动）
+    triggers::spawn_file_watcher(core.clone());
     // 分布式执行：工作者池注入（有工作者在线即自动路由远程，失败回落本地）
     {
         let st = AppState { core: core.clone() };
@@ -1695,8 +1815,7 @@ pub async fn serve(core: Arc<Core>, port: u16, host: Option<&str>) -> anyhow::Re
         anyhow::anyhow!("invalid --host/EXM_HOST value {host_str:?}: {e}")
     })?;
     let addr = std::net::SocketAddr::from((bind_addr, port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("[gateway] EXMACHINA Gateway 已启动");
+    let listener = tokio::net::TcpListener::bind(addr).await?;    println!("[gateway] EXMACHINA Gateway 已启动");
     println!("[gateway]   REST  http://{addr}/api");
     println!("[gateway]   WS    ws://{addr}/ws?sessionId=<id>");
     println!(
@@ -1719,6 +1838,10 @@ pub async fn serve(core: Arc<Core>, port: u16, host: Option<&str>) -> anyhow::Re
         "[gateway]   WebUI {}",
         if dist.exists() { format!("{}", dist.display()) } else { "未构建（运行 npm run build:webui 后可由本网关托管）".to_string() }
     );
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
