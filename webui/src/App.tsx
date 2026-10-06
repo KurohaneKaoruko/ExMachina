@@ -174,7 +174,7 @@ export default function App(): React.ReactElement {
             setNavOpen(false); // 移动端：选中即收起抽屉
           }}
         />
-        <AsciiDivider label="CHANNEL" className="sider-divider" />
+        <AsciiDivider className="sider-divider" />
         <div className={`theme-switcher ${themeOpen ? "open" : ""}`}>
           <button className="theme-toggle" onClick={() => setThemeOpen(!themeOpen)}>
             <span className="theme-label">{t("theme.label")}</span>
