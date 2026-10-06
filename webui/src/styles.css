@@ -758,29 +758,7 @@ body {
   background: transparent;
   position: relative;
 }
-/* 内容区四角测量标记：标示「工作台视口」的边界 */
-.app-content::before,
-.app-content::after {
-  content: "";
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  pointer-events: none;
-  z-index: 5;
-  opacity: 0.55;
-}
-.app-content::before {
-  top: 10px;
-  right: 12px;
-  border-top: 1px solid var(--accent-30);
-  border-right: 1px solid var(--accent-30);
-}
-.app-content::after {
-  bottom: 10px;
-  right: 12px;
-  border-bottom: 1px solid var(--accent-30);
-  border-right: 1px solid var(--accent-30);
-}
+/* 内容区四角测量标记已移除：小面积卡片上会形成压角杂讯 */
 
 /* 域分组标题加程序注释前缀 */
 .agents-group .ant-card-head-title::before { content: none; }
@@ -1940,3 +1918,52 @@ body {
 }
 
 /* 卡片标题装饰（荧光条/刻度条）与文字同行：标题内容用 inline-flex 参与行内排布，不把装饰挤下不行 */
+
+/* ============ 细节打磨（整体质感层） ============ */
+
+/* 文本选中与输入光标跟随强调色 */
+::selection { background: rgba(var(--accent-rgb), 0.28); color: var(--text-hi); }
+input, textarea { caret-color: var(--accent); }
+
+/* 控件圆角统一仪器面板口径 */
+.ant-tag, .ant-modal .ant-modal-content, .ant-input, .ant-input-affix-wrapper,
+.ant-select .ant-select-selector, .ant-input-number, .ant-picker,
+.ant-input-number-group-wrapper .ant-input-number-group-addon {
+  border-radius: 2px;
+}
+
+/* 卡片悬停：边框微亮（网格卡片统一反馈） */
+.skill-grid > .ant-card { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.skill-grid > .ant-card:hover { border-color: var(--accent-30); }
+
+/* 表格行悬停反馈（plain-table 与 antd 表格统一） */
+.plain-table tbody tr { transition: background 0.12s ease; }
+.plain-table tbody tr:hover { background: rgba(var(--accent-rgb), 0.05); }
+.ant-table-tbody > tr { transition: background 0.12s ease; }
+
+/* 弹窗质感：标题字距 + 头部压暗 + 底部按键区与内容分隔 */
+.ant-modal .ant-modal-header { border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 14px; }
+.ant-modal .ant-modal-title { letter-spacing: 0.5px; font-weight: 600; }
+.ant-modal .ant-modal-footer { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
+
+/* 空状态图标压暗，避免高饱和插画抢戏 */
+.ant-empty-image svg { opacity: 0.45; }
+
+/* 内联代码：微底色 + 圆角 2px，避免裸等宽字体的突兀 */
+:not(pre) > code {
+  background: rgba(var(--accent-rgb), 0.07);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 4px;
+  font-size: 0.92em;
+}
+
+/* 菜单选中项左侧 2px 强调线（与 session-row 口径一致） */
+.nav-menu .ant-menu-item-selected { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* 滚动条再细一档（9px → 7px），减少粗滚动条的笨重感 */
+*::-webkit-scrollbar { width: 7px; height: 7px; }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* 数字读数（chip-num 等）字距收紧 */
+.chip-num { letter-spacing: 0.5px; }

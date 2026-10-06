@@ -179,7 +179,7 @@ export function SettingsView(): React.ReactElement {
   }, [config]);
 
   const groups = useMemo(() => schema?.groups ?? [], [schema]);
-  const current = groups.find((g) => g.key === selected) ?? groups[0];
+  const current = groups.find((g) => g.key === selected) ?? null;
   const meta = current ? SECTIONS[current.key] : undefined;
 
   const setField = (key: string, v: unknown) => setValues((p) => ({ ...p, [key]: v }));
