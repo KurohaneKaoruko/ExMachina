@@ -47,7 +47,9 @@ mod inline_think {
                 // else：不足判定长度，继续攒（流结束时的收尾统一冲刷）
             }
             _ => {
-                // 1 = 思考中：找闭合标签；找不到则放出安全前缀（保留可能的半截 "</…"）
+                // 1 = 思考中：找闭合标签；找不到则放出安全前缀（保留可能的半截 "</…"）。
+                // 注意 drain 的截断点必须落在字符边界上——按字节回退到最近的合法边界，
+                // 否则中文等多字节内容会触发 is_char_boundary 断言（线上已踩）。
                 buf.push_str(delta);
                 if let Some(pos) = buf.find(CLOSE) {
                     let th = buf[..pos].to_string();
@@ -60,7 +62,10 @@ mod inline_think {
                     out.extend(route(state, buf, &rest));
                 } else {
                     let keep = CLOSE.len().saturating_sub(1).min(buf.len());
-                    let emit = buf.len() - keep;
+                    let mut emit = buf.len() - keep;
+                    while emit > 0 && !buf.is_char_boundary(emit) {
+                        emit -= 1;
+                    }
                     if emit > 0 {
                         let th: String = buf.drain(..emit).collect();
                         out.push((true, th));
@@ -69,6 +74,76 @@ mod inline_think {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod inline_think_tests {
+    use super::inline_think;
+
+    /// 思考中含中文：小步增量喂入，截断点必须落在字符边界（回归：is_char_boundary 断言恐慌）
+    #[test]
+    fn 思考中多字节字符不恐慌且内容完整() {
+        let mut state: u8 = 1; // 已进入思考段
+        let mut buf = String::new();
+        let mut thinking = String::new();
+        let mut text = String::new();
+        let payload = "思考中包含中文与 emoji 🎉 以及Mixed内容，用来压边界。";
+        // 逐字符小步喂入（模拟 SSE 小增量），反复走 drain 截断路径
+        for ch in payload.chars() {
+            for (is_think, part) in inline_think::route(&mut state, &mut buf, &ch.to_string()) {
+                if is_think {
+                    thinking.push_str(&part);
+                } else {
+                    text.push_str(&part);
+                }
+            }
+        }
+        // 收尾冲刷
+        if !buf.is_empty() {
+            let t = std::mem::take(&mut buf);
+            if state == 1 {
+                thinking.push_str(&t);
+            } else {
+                text.push_str(&t);
+            }
+        }
+        assert_eq!(thinking, payload, "思考内容应逐段完整重组");
+        assert_eq!(text, "", "未出现闭合标签前不应有正文");
+    }
+
+    /// 完整闭环：<think>中文</think>正文 → 思考轨 + 正文轨分离
+    #[test]
+    fn 完整思考段分离() {
+        let mut state: u8 = 0;
+        let mut buf = String::new();
+        let mut thinking = String::new();
+        let mut text = String::new();
+        for (is_think, part) in inline_think::route(&mut state, &mut buf, "<think>用户在问\n我是谁？</think>我是 Machina。") {
+            if is_think {
+                thinking.push_str(&part);
+            } else {
+                text.push_str(&part);
+            }
+        }
+        assert_eq!(thinking, "用户在问\n我是谁？");
+        assert_eq!(text, "我是 Machina。");
+        assert_eq!(state, 2);
+    }
+
+    /// 非思考正文直通（前缀判定）
+    #[test]
+    fn 正文前缀判定直通() {
+        let mut state: u8 = 0;
+        let mut buf = String::new();
+        let mut text = String::new();
+        for piece in ["<", "p", ">", "正文"] {
+            for (_, part) in inline_think::route(&mut state, &mut buf, piece) {
+                text.push_str(&part);
+            }
+        }
+        assert_eq!(text, "<p>正文");
+        assert_eq!(state, 2);
     }
 }
 
