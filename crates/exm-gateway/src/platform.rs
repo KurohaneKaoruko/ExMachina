@@ -1145,6 +1145,21 @@ pub(crate) async fn download_bytes(url: &str) -> Option<Vec<u8>> {
         .map(|b| b.to_vec())
 }
 
+/// 带鉴权下载（slack url_private 等）：Bearer token
+pub(crate) async fn download_bytes_auth(url: &str, token: &str) -> Option<Vec<u8>> {
+    reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()
+        .map(|b| b.to_vec())
+}
+
 /// 入站媒体注入会话：图片走多模态暂存（data URL），文件/语音注入路径说明。
 /// 追加到消息文本后由模型一并感知。返回注入说明文本。
 pub(crate) fn stage_inbound_media(

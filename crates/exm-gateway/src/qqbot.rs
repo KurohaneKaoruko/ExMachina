@@ -254,7 +254,23 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                     }
                                     "GROUP_AT_MESSAGE_CREATE" | "C2C_MESSAGE_CREATE" | "AT_MESSAGE_CREATE" => {
                                         let Some((peer, msg_id, content)) = parse_message(t, &d) else { continue };
-                                        if content.trim().is_empty() {
+                                        // 入站媒体（组 6.4）：attachments 下载
+                                        let mut inbound: Vec<(String, String, String, Vec<u8>)> = Vec::new();
+                                        if let Some(atts) = d.get("attachments").and_then(|x| x.as_array()) {
+                                            for att in atts {
+                                                let url = att.get("url").and_then(|x| x.as_str()).unwrap_or("");
+                                                let name = att.get("filename").and_then(|x| x.as_str()).unwrap_or("attachment.bin");
+                                                if url.is_empty() {
+                                                    continue;
+                                                }
+                                                let full = if url.starts_with("http") { url.to_string() } else { format!("https://multimedia.qq.com{url}") };
+                                                let kind = if name.contains(".png") || name.contains(".jpg") || name.contains(".jpeg") { "image" } else { "file" };
+                                                if let Some(bytes) = crate::platform::download_bytes(&full).await {
+                                                    inbound.push((kind.into(), name.into(), peer.key().to_string(), bytes));
+                                                }
+                                            }
+                                        }
+                                        if content.trim().is_empty() && inbound.is_empty() {
                                             continue;
                                         }
                                         if !ch.allowed_chats.is_empty()
@@ -291,7 +307,13 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                         let ch2 = ch.clone();
                                         let creds2 = creds.clone();
                                         tokio::spawn(async move {
-                                            handle_message(&core, &ch2, &creds2, base, peer, &external_id, msg_id, content.trim()).await;
+                                            let mut saved: Vec<(String, String, String)> = Vec::new();
+                                            for (kind, name, _ck, bytes) in inbound {
+                                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes).await {
+                                                    saved.push((kind, p, name));
+                                                }
+                                            }
+                                            handle_message(&core, &ch2, &creds2, base, peer, &external_id, saved, msg_id, content.trim()).await;
                                         });
                                     }
                                     _ => {}
@@ -403,6 +425,7 @@ async fn handle_message(
     base: &str,
     peer: Peer,
     external_id: &str,
+    media: Vec<(String, String, String)>,
     msg_id: String,
     text: &str,
 ) {
@@ -410,6 +433,9 @@ async fn handle_message(
         return;
     };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
+    // 入站媒体注入（组 6.4）
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     // 回复任务：被动回复须带原消息 msg_id + 递增 msg_seq
     let seq = Arc::new(AtomicU64::new(0));
     let max_chars = peer.max_chars();
@@ -432,7 +458,7 @@ async fn handle_message(
         },
         move |_item: MediaItem| async { false },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }
 

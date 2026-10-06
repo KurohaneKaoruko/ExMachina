@@ -167,7 +167,42 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                             "ok",
                             if self_user.is_empty() { "轮询中".into() } else { format!("账号 {self_user}") },
                         );
-                        for (room, sender, mentioned, text) in parse_events(&body, &self_user) {
+                        for (room, sender, mentioned, raw_text) in parse_events(&body, &self_user) {
+                            // 入站媒体（组 6.4）：标记行解析 → mxc 下载 → 注入
+                            let mut saved: Vec<(String, String, String)> = Vec::new();
+                            let text = if let Some(rest) = raw_text.strip_prefix(US) {
+                                let parts: Vec<&str> = rest.split(US).collect();
+                                if parts.len() == 3 {
+                                    let (kind, mxc, _room) = (parts[0], parts[1], parts[2]);
+                                    let dl = format!(
+                                        "{}/_matrix/media/v3/download/{}",
+                                        hs,
+                                        url_encode(mxc.trim_start_matches("mxc://"))
+                                    );
+                                    match client.get(dl).bearer_auth(&token).send().await {
+                                        Ok(r) if r.status().is_success() => {
+                                            let name = format!("matrix-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" });
+                                            if let Some(bytes) = r.bytes().await.ok().map(|b| b.to_vec()) {
+                                                if let Some(p) = crate::platform::save_inbound_media(core.as_ref(), &ch, &name, bytes).await {
+                                                    saved.push((kind.to_string(), p, name));
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            saved.push((kind.to_string(), String::new(), "下载失败附件".into()));
+                                        }
+                                        Ok(_) => {
+                                            saved.push((kind.to_string(), String::new(), "下载失败附件".into()));
+                                        }
+                                    }
+                                    // 媒体消息无文本正文
+                                    String::new()
+                                } else {
+                                    raw_text
+                                }
+                            } else {
+                                raw_text
+                            };
                             if text.trim().is_empty() {
                                 continue;
                             }
@@ -234,6 +269,8 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
     }
 }
 
+const US: char = '\u{1}'; // 入站媒体标记行分隔符（媒体消息正文形如 \u{1}kind\u{1}mxc\u{1}room）
+
 /// /sync 响应 → [(房间 id, 发送者, 是否提及, 正文)]。自己发的消息与非文本消息一律忽略。
 fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, String)> {
     let mut out = Vec::new();
@@ -249,11 +286,30 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
                 continue;
             }
             let content = e.get("content").cloned().unwrap_or(Value::Null);
-            if content.get("msgtype").and_then(|x| x.as_str()) != Some("m.text") {
-                continue;
-            }
             let sender = e.get("sender").and_then(|x| x.as_str()).unwrap_or("");
             if !self_user.is_empty() && sender == self_user {
+                continue;
+            }
+            // 入站媒体（组 6.4）：m.image / m.file / m.audio → (kind, mxc, 文件名)
+            let msgtype = content.get("msgtype").and_then(|x| x.as_str()).unwrap_or("");
+            if matches!(msgtype, "m.image" | "m.file" | "m.audio") {
+                let url = content.get("url").and_then(|x| x.as_str()).unwrap_or("");
+                if !url.is_empty() {
+                    let kind = match msgtype {
+                        "m.image" => "image",
+                        "m.audio" => "voice",
+                        _ => "file",
+                    };
+                    out.push((
+                        room_id.clone(),
+                        sender.to_string(),
+                        false,
+                        format!("{US}media{US}{kind}{US}{url}{US}{room_id}"),
+                    ));
+                    continue;
+                }
+            }
+            if msgtype != "m.text" {
                 continue;
             }
             let text = content.get("body").and_then(|x| x.as_str()).unwrap_or("");

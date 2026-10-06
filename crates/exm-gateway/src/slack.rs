@@ -206,12 +206,25 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                     }
                     let payload = v.get("payload").cloned().unwrap_or(Value::Null);
                     let Some((channel, mentioned, text)) = parse_event(&payload) else { continue };
-                    if text.trim().is_empty() {
+                    if text.trim().is_empty() && payload.pointer("/event/files").and_then(|x| x.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
                         continue;
                     }
                     if !ch.allowed_chats.is_empty() && !ch.allowed_chats.iter().any(|a| a == &channel) {
                         eprintln!("[slack:{}] {channel} 不在白名单，已忽略", ch.id);
                         continue;
+                    }
+                    // 入站媒体（组 6.4）：event.files → url_private_download（带 bot token）
+                    let mut inbound: Vec<(String, String, String, String)> = Vec::new();
+                    if let Some(files) = payload.pointer("/event/files").and_then(|x| x.as_array()) {
+                        for f in files {
+                            let url = f.get("url_private_download").or_else(|| f.get("url_private")).and_then(|x| x.as_str()).unwrap_or("");
+                            let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("file.bin");
+                            if url.is_empty() {
+                                continue;
+                            }
+                            let kind = if f.get("mimetype").and_then(|x| x.as_str()).unwrap_or("").starts_with("image/") { "image" } else { "file" };
+                            inbound.push((kind.to_string(), url.to_string(), name.to_string(), bot_token.clone()));
+                        }
                     }
                     // DM（channel 以 D 开头）豁免群聊门控；app_mention 事件即提及信号
                     let is_group = !channel.starts_with('D');
@@ -237,7 +250,16 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                     let client2 = client.clone();
                     let token2 = bot_token.clone();
                     tokio::spawn(async move {
-                        handle_message(&core, &ch2, &client2, &token2, &channel, &external_id, text.trim()).await;
+                        // 入站媒体（组 6.4）：下载落 inbox → 注入
+                        let mut saved: Vec<(String, String, String)> = Vec::new();
+                        for (kind, url, name, tk) in inbound {
+                            if let Some(bytes) = crate::platform::download_bytes_auth(&url, &tk).await {
+                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes).await {
+                                    saved.push((kind, p, name));
+                                }
+                            }
+                        }
+                        handle_message(&core, &ch2, &client2, &token2, &channel, &external_id, saved, text.trim()).await;
                     });
                 }
                 _ => {}
@@ -286,10 +308,14 @@ async fn handle_message(
     bot_token: &str,
     channel: &str,
     external_id: &str,
+    media: Vec<(String, String, String)>,
     text: &str,
 ) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, channel).await else { return };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
+    // 入站媒体注入（组 6.4）
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     let client2 = client.clone();
     let token2 = bot_token.to_string();
     let chan = channel.to_string();
@@ -315,7 +341,7 @@ async fn handle_message(
             async move { slack_send_media(&client2, &token2, &chan, item).await }
         },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }
 
