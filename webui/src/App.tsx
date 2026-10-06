@@ -181,7 +181,6 @@ export default function App(): React.ReactElement {
             label: (
               <>
                 <span>{t(it.labelKey)}</span> <span className="label-en">[{it.en}]</span>
-                {it.experimental && <Tag className="nav-exp-tag" color="warning">实验</Tag>}
               </>
             ),
           }))}

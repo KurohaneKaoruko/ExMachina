@@ -2024,8 +2024,6 @@ input, textarea { caret-color: var(--accent); }
 .member-line1 { display: flex; align-items: center; gap: 6px; }
 .member-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
-/* 侧栏「实验」角标（智能连结网络） */
-.nav-menu .nav-exp-tag { margin-left: 4px; font-size: 10px; line-height: 16px; padding: 0 4px; border-radius: 2px; }
 
 /* 侧栏项：有角标时保持单行左对齐（角标浮右） */
 .nav-menu .ant-menu-item { text-align: left; }
