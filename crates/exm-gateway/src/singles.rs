@@ -118,6 +118,7 @@ pub async fn create_single(State(st): State<AppState>, Json(b): Json<SingleBody>
         output_schema: Default::default(),
         prompt_file: String::new(),
         model_hint: b.model.filter(|s| !s.trim().is_empty()),
+        link: None,
     };
     match st.core.registry().upsert_single(def, b.prompt) {
         Ok(saved) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),

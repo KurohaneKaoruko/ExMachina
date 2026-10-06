@@ -480,6 +480,49 @@ impl Default for McpServeConfig {
     }
 }
 
+/// 智能连结网络（实验性）：外部连结体清单。
+/// 连结体 = 可被当作「子个体代理」调用的外部智能体：
+/// - exmachina：另一台机器/进程的 EXMACHINA 网关（REST 调用）
+/// - opencode / codex / claude：本机 CLI 智能体（命令行调用，其子代理即子个体）
+/// - custom：完全自定义命令（提示词作为最后一个参数追加）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkTarget {
+    pub id: String,
+    pub name: String,
+    /// exmachina | opencode | codex | claude | custom
+    pub kind: String,
+    /// exmachina：网关基址（http://host:4173）；custom：完整命令行
+    #[serde(default)]
+    pub endpoint: String,
+    /// exmachina：对端 authKey
+    #[serde(default)]
+    pub api_key: String,
+    /// CLI 覆盖：完整命令行（提示词追加为末参数）
+    #[serde(default)]
+    pub command: String,
+    #[serde(default = "link_enabled")]
+    pub enabled: bool,
+}
+
+fn link_enabled() -> bool {
+    true
+}
+
+impl Default for LinkTarget {
+    fn default() -> Self {
+        LinkTarget { id: String::new(), name: String::new(), kind: "exmachina".into(), endpoint: String::new(), api_key: String::new(), command: String::new(), enabled: true }
+    }
+}
+
+/// 智能连结网络配置段
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusConfig {
+    #[serde(default)]
+    pub links: Vec<LinkTarget>,
+}
+
 /// 推送（定时任务结果通道订阅的全局口径）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -561,6 +604,8 @@ pub struct ExmConfig {
     pub mcp_serve: McpServeConfig,
     /// 推送（定时任务结果通道订阅）
     pub notify: NotifyConfig,
+    /// 智能连结网络（实验性）
+    pub nexus: NexusConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -612,6 +657,8 @@ struct ConfigFile {
     mcp_serve: Option<McpServeConfig>,
     #[serde(default)]
     notify: Option<NotifyConfig>,
+    #[serde(default)]
+    nexus: Option<NexusConfig>,
 }
 
 /// 能力模型槽位（模型设置页配置）：语音合成 / 语音识别 / 视觉转述。
@@ -1022,6 +1069,7 @@ impl ExmConfig {
             limits: file.limits.clone().unwrap_or_default(),
             mcp_serve: file.mcp_serve.clone().unwrap_or_default(),
             notify: file.notify.clone().unwrap_or_default(),
+            nexus: file.nexus.clone().unwrap_or_default(),
         }
     }
 
@@ -1097,6 +1145,7 @@ impl ExmConfig {
             limits: Some(self.limits.clone()),
             mcp_serve: Some(self.mcp_serve.clone()),
             notify: Some(self.notify.clone()),
+            nexus: Some(self.nexus.clone()),
         };
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)?;

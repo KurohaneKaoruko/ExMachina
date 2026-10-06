@@ -114,7 +114,7 @@ impl LocalRegistry {
             let meta = GroupMeta {
                 id: "default".into(),
                 name: "智械集群".into(),
-                description: "内置默认组：全连结指挥体 + 子个体集群（定义受保护）".into(),
+                description: "内置默认组：指挥体 + 子个体集群（定义受保护）".into(),
                 primary: Some("orchestrator".into()),
                 workspace: None,
                 model: None,

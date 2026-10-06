@@ -426,6 +426,11 @@ pub struct AgentDefinition {
     pub prompt_file: String,
     #[serde(default)]
     pub model_hint: Option<String>,
+    /// 连结体代理声明（智能连结网络，实验性）：该个体是外部连结体的代理——
+    /// 派发到此个体的任务节点转交连结体执行，其回报作为本节点回流。
+    /// 值 = nexus.links 中的连结体 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 // ---------------------------------------------------------------- 消息与三账

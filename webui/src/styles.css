@@ -2012,3 +2012,9 @@ input, textarea { caret-color: var(--accent); }
   margin: 0;
 }
 .usage-body .timeline-item { padding: 2px 0; }
+
+/* 智能连结网络（实验性） */
+.nexus-card { margin-bottom: 12px; }
+.nexus-links { display: flex; flex-direction: column; gap: 4px; }
+.nexus-link-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-bottom: 1px dashed var(--line); }
+.nexus-endpoint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }

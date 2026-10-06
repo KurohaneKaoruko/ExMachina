@@ -214,6 +214,17 @@ export interface CronRun {
   summary: string;
 }
 
+/** 智能连结网络连结体（实验性） */
+export interface NexusLink {
+  id: string;
+  name: string;
+  kind: string;
+  endpoint?: string;
+  apiKey?: string;
+  command?: string;
+  enabled: boolean;
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -385,6 +396,10 @@ export const api = {
   sessionSnapshots: (id: string) =>
     req<{ turn: number; messageCount: number; status: string }[]>(`/sessions/${id}/snapshots`),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
+  nexusLinks: () => req<{ links: NexusLink[] }>("/nexus/links"),
+  saveNexusLink: (body: NexusLink) =>
+    req<{ ok: boolean; link: NexusLink }>("/nexus/links", { method: "POST", body: JSON.stringify(body) }),
+  deleteNexusLink: (id: string) => req<{ ok: boolean }>(`/nexus/links/${id}`, { method: "DELETE" }),
   stopSession: (id: string) =>
     req<{ ok: boolean; toolsExecuted: number }>(`/sessions/${id}/stop`, { method: "POST", body: JSON.stringify({}) }),
   audit: (params: { agent?: string; tool?: string; limit?: number }) =>

@@ -20,6 +20,7 @@ pub mod orchestrator;
 pub mod parse;
 pub mod patch;
 pub mod provider;
+pub mod nexus;
 pub mod registry;
 pub mod remote;
 pub mod round_trace;
@@ -1234,6 +1235,7 @@ pub fn build_orchestrator(
         max_concurrency: cfg.max_concurrency,
         max_unit_steps: cfg.automation.unit_max_steps,
         auto_adapt: cfg.automation.auto_adapt,
+        config_snapshot: Arc::new(parking_lot::RwLock::new(cfg.clone())),
     })
 }
 

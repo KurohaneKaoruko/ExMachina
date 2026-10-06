@@ -122,11 +122,18 @@ pub struct Orchestrator {
     pub max_concurrency: usize,
     /// 子个体单次派发的最大工具步数（配置分档：L0 直答 3 / 一般 8 / 编码类 20）
     pub max_unit_steps: usize,
+    /// 智能连结等路径读取的全量配置快照（apply/构建时写入）
+    pub config_snapshot: Arc<parking_lot::RwLock<crate::config::ExmConfig>>,
     /// 新教训达阈值时自动提炼经验改进要点（docs/10 §5）
     pub auto_adapt: bool,
 }
 
 impl Orchestrator {
+    /// 配置快照（智能连结等需要读全量配置的路径用）
+    pub fn config_snapshot(&self) -> crate::config::ExmConfig {
+        self.config_snapshot.read().clone()
+    }
+
     /// 能力槽位目标（组覆盖优先）：激活组的组级覆盖 → 全局槽位（模型设置页）。
     /// 返回 None = 该槽位全局与组都未配置（调用方回落出厂默认）。
     fn capability_target(&self, slot: &str) -> Option<String> {
@@ -1007,7 +1014,7 @@ impl Orchestrator {
     // ---------------------------------------------------------- 分解
 
     async fn plan(self: &Arc<Self>, session_id: &str, text: &str) -> anyhow::Result<OrchestratorPlan> {
-        // 组感知：规划提示统一取组内主智能体的职责提示词；内置组即全连结指挥体
+        // 组感知：规划提示统一取组内主智能体的职责提示词；内置组即指挥体
         let primary = self.registry.primary().ok_or_else(|| {
             anyhow::anyhow!("当前组未设置主智能体（exm group info 查看；用 agent_manage 或 exm agent create 创建）")
         })?;
@@ -1424,6 +1431,62 @@ impl ExecCtx {
                 format!("注册表不存在个体: {}", node.agent_identifier),
             );
         };
+
+        // 智能连结（实验性）：连结体代理个体 → 任务转交外部连结体执行，
+        // 回流走与本地一致的 SyncReport 口径（存储/消息/事件齐全）
+        if let Some(link_id) = &def.link {
+            let objective = if node.objective.is_empty() { node.title.clone() } else { node.objective.clone() };
+            let (status, statements, summary, confidence) =
+                match crate::nexus::execute_link(&o.config_snapshot(), link_id, &objective, &node.acceptance).await {
+                    Ok((summary, output)) => (SyncStatus::Done, vec![Statement::report(output)], summary, 0.85),
+                    Err(e) => (
+                        SyncStatus::Blocked,
+                        vec![Statement::warn(format!("连结体执行失败：{e}"))],
+                        format!("连结体执行失败: {e}"),
+                        0.2,
+                    ),
+                };
+            let report = SyncReport {
+                source_agent: def.identifier.clone(),
+                task_node_id: node.id.clone(),
+                status,
+                statements: statements.clone(),
+                summary: summary.clone(),
+                evidence: vec![],
+                risks: vec![],
+                blockers: vec![],
+                conflicts: None,
+                next_suggestion: Default::default(),
+                confidence,
+            };
+            let _ = o.store.add_sync_report(&report);
+            let _ = o.store.add_message(
+                &self.session_id,
+                MessageRole::Unit,
+                Some(def.identifier.as_str()),
+                statements,
+            );
+            o.emit(
+                &self.session_id,
+                "sync.received",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "report": serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
+                    "nexus": true
+                }),
+            );
+            let outcome_status = if report.status == SyncStatus::Done {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Failed
+            };
+            return NodeOutcome {
+                node_id: node.id.clone(),
+                status: outcome_status,
+                error: (outcome_status == TaskStatus::Failed).then_some(summary),
+                appends: vec![],
+            };
+        }
 
         let order = DispatchOrder {
             task_node_id: node.id.clone(),

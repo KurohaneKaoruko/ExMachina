@@ -1750,6 +1750,7 @@ impl ToolGateway {
                         output_schema: Default::default(),
                         prompt_file: String::new(),
                         model_hint: None,
+                        link: None,
                     },
                 };
                 if !name.is_empty() {

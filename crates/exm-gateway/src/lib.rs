@@ -24,6 +24,7 @@ pub mod singles;
 pub mod discord;
 pub mod matrix;
 pub mod napcat;
+pub mod nexus_api;
 pub mod platform;
 pub mod qqbot;
 pub mod slack;
@@ -184,6 +185,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(singles::routes())
         .merge(worker_hub::routes())
         .merge(triggers::routes())
+        .merge(nexus_api::routes())
         .route(
             "/api/groups/:gid/agents/:identifier",
             axum::routing::delete(remove_agent_from_group),
@@ -1271,6 +1273,7 @@ async fn create_agent(State(st): State<AppState>, Json(b): Json<CreateAgentBody>
         output_schema: Default::default(),
         prompt_file: String::new(),
         model_hint: b.model.filter(|s| !s.trim().is_empty()),
+        link: None,
     };
     // 目标组：显式指定时写入该组（首个个体自动成为该组主智能体），否则激活组
     let result = match &b.group {
