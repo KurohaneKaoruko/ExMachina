@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 pub mod git_panel;
 pub mod identity;
+pub mod limits;
 pub mod llm_admin;
 pub mod singles;
 pub mod discord;
@@ -69,7 +70,21 @@ async fn auth_middleware(
                 .and_then(|s| s.strip_prefix("Bearer ").map(|s| s.to_string()))
         });
     match provided {
-        Some(k) if k == st.core.config().security.auth_key => next.run(req).await,
+        Some(k) if k == st.core.config().security.auth_key => {
+            // 用量治理：API 维度滑动窗口限流（仅外部入口；组内派发不经 HTTP）
+            let limits = st.core.config().limits.clone();
+            if limits.enabled && limits.max_requests > 0 {
+                let now = exm_core::types::now_ms();
+                if !crate::limits::RateLimiter::check("api", limits.window_secs * 1000, limits.max_requests, now) {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({ "error": "请求过于频繁", "retrySecs": limits.window_secs })),
+                    )
+                        .into_response();
+                }
+            }
+            next.run(req).await
+        }
         _ => (StatusCode::UNAUTHORIZED, Json(json!({ "error": "需要访问密钥" }))).into_response(),
     }
 }
@@ -145,6 +160,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(llm_admin::routes())
         .merge(git_panel::routes())
         .merge(identity::routes())
+        .merge(limits::routes())
         .merge(singles::routes())
         .merge(worker_hub::routes())
         .route(

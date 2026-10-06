@@ -27,17 +27,17 @@
 
 ## 4. 用量治理基础（P0）
 
-- [ ] 4.1 令牌桶限流中间件（维度键 `channel:<id>:<user>` / `user:<id>` / `key:<id>`），超限返回可读错误与重试提示并发事件——验证：并发单测"超频拒绝、维度互不影响"
-- [ ] 4.2 周期配额读既有 usage 台账，耗尽拒新会话/新轮次，进行中策略可配置——验证：单测覆盖"耗尽拒绝/完成当前策略"
-- [ ] 4.3 确认限流只作用于外部入口（通道/WebUI/REST/CLI 远程），组内派发不受限——验证：单测断言组内派发路径无限流计数
-- [ ] 4.4 控制台用量视图（实时计数/阈值/余量）与热生效保存——验证：修改阈值后无需重启即生效的接口测试
+- [x] 4.1 令牌桶限流中间件（维度键 `channel:<id>:<user>` / `user:<id>` / `key:<id>`），超限返回可读错误与重试提示并发事件——验证：并发单测"超频拒绝、维度互不影响"
+- [x] 4.2 周期配额读既有 usage 台账，耗尽拒新会话/新轮次，进行中策略可配置——验证：单测覆盖"耗尽拒绝/完成当前策略"
+- [x] 4.3 确认限流只作用于外部入口（通道/WebUI/REST/CLI 远程），组内派发不受限——验证：单测断言组内派发路径无限流计数
+- [x] 4.4 控制台用量视图（实时计数/阈值/余量）与热生效保存——验证：修改阈值后无需重启即生效的接口测试
 
 ## 5. P0 闸门验收
 
-- [ ] 5.1 `cargo test --workspace` 全绿 + `cargo clippy` 无新增告警
-- [ ] 5.2 `npm run build:webui` 通过 + CodingView/设置页手工冒烟通过
-- [ ] 5.3 e2e 冒烟（`exm-cli` chat + 通道模拟）覆盖：patch→diff→保存、member 触发审批升级、超频拒绝
-- [ ] 5.4 `openspec validate capability-completion` 通过，向用户汇报 P0 交付与偏差
+- [x] 5.1 `cargo test --workspace` 全绿 + `cargo clippy` 无新增告警
+- [x] 5.2 `npm run build:webui` 通过 + CodingView/设置页手工冒烟通过
+- [x] 5.3 e2e 冒烟（`exm-cli` chat + 通道模拟）覆盖：patch→diff→保存、member 触发审批升级、超频拒绝
+- [x] 5.4 `openspec validate capability-completion` 通过，向用户汇报 P0 交付与偏差
 
 ## 6. 通道媒体双向（P1）
 

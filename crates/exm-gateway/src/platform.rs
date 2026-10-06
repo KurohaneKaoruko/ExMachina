@@ -655,6 +655,37 @@ pub(crate) async fn admit(core: &exm_core::Core, ch: &Channel, ctx: &InboundCtx<
             );
         }
     }
+
+    // ④ 用量治理：通道主体滑动窗口限流 + 周期请求数配额（仅外部入口；组内派发不经此处）
+    let limits = &core.config().limits;
+    if limits.enabled {
+        let subject = match core.identity_of(&ch.id, ctx.external_id) {
+            Some(i) => format!("user:{}", i.id),
+            None => format!("ch:{}:{}", ch.id, ctx.external_id),
+        };
+        let now = exm_core::types::now_ms();
+        if limits.max_requests > 0
+            && !crate::limits::RateLimiter::check(
+                &format!("ch:{subject}"),
+                limits.window_secs * 1000,
+                limits.max_requests,
+                now,
+            )
+        {
+            return GateDecision::Deny(format!(
+                "【报告】请求过于频繁：受用量限制，请在 {} 秒后重试。",
+                limits.window_secs
+            ));
+        }
+        if limits.quota_requests > 0 {
+            let (qkey, qwin) = crate::limits::quota_key(&subject, &limits.quota_period, now);
+            if !crate::limits::RateLimiter::check(&qkey, qwin, limits.quota_requests, now) {
+                return GateDecision::Deny(
+                    "【报告】周期请求数配额已耗尽，请等待周期刷新或联系管理员调整配额。".into(),
+                );
+            }
+        }
+    }
     GateDecision::Allow
 }
 
@@ -747,6 +778,28 @@ impl ChannelRun {
 
     /// 执行本轮；返回后组上下文已还原
     pub(crate) async fn run(self, text: &str) {
+        // 周期 token 配额（外部来源会话）：耗尽即拒绝新轮次并经 run.error 回帖提示；
+        // 组内派发会话无来源登记，天然不受限（设计 D10）
+        let limits = self.core.config().limits.clone();
+        if limits.enabled && limits.quota_tokens > 0 {
+            if let Some((subject, _role)) = self.core.session_origin(&self.session_id) {
+                let used = self.core.session_tokens_estimate(&self.session_id);
+                if used >= limits.quota_tokens {
+                    self.core.emit_run_error(
+                        &self.session_id,
+                        &format!(
+                            "【报告】周期 token 配额已耗尽（已用 {used} / 上限 {}）：本轮拒绝执行，请联系管理员调整配额。",
+                            limits.quota_tokens
+                        ),
+                    );
+                    if self.switched {
+                        let _ = self.core.registry().set_active_group(&self.prev_group);
+                    }
+                    return;
+                }
+            }
+        }
+        let _ = limits;
         if let Err(e) = self.core.chat(&self.session_id, text).await {
             eprintln!("[channel:{}] 执行失败：{e}", self.session_id);
         }

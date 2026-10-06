@@ -278,7 +278,7 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_i
     let Some((run, rx)) = ChannelRun::begin(core, ch, &chat_id.to_string()).await else {
         return;
     };
-    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let token = ch.token.clone().unwrap_or_default();
     let reply = spawn_reply(&run, rx, 3800, move |text| async move {
         send_message(&token, chat_id, &text).await;

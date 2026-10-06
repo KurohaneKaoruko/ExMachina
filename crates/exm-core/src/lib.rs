@@ -442,6 +442,15 @@ impl Core {
         Ok(identity)
     }
 
+    /// 供网关在执行前拒绝时发运行错误事件（配额 / 治理类短路，走既有回帖通路）
+    pub fn emit_run_error(&self, session_id: &str, message: &str) {
+        let _ = self.events.send(crate::types::CoreEvent {
+            kind: "run.error".into(),
+            session_id: session_id.to_string(),
+            payload: serde_json::json!({ "message": message }),
+        });
+    }
+
     /// 回滚检查点：`date` 为空取最近一份；返回被覆盖的文件相对路径
     pub fn restore_checkpoint(&self, date: Option<&str>, rel: &str) -> anyhow::Result<String> {
         let target = self.config().workspace_root.join(".exmachina").join("checkpoints");

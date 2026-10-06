@@ -689,3 +689,18 @@ export function identitySetRole(id: string, role: string): Promise<{ ok: boolean
 export function identityUnbind(id: string): Promise<{ ok: boolean }> {
   return req(`/identity/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+export interface LimitsStats {
+  enabled: boolean;
+  windowSecs: number;
+  maxRequests: number;
+  quotaPeriod: string;
+  quotaTokens: number;
+  quotaRequests: number;
+  counters: { key: string; count: number }[];
+}
+
+/** 用量治理：限流计数快照 + 配置口径 */
+export function limitsStats(): Promise<LimitsStats> {
+  return req(`/limits/stats`);
+}

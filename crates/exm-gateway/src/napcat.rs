@@ -266,7 +266,7 @@ async fn handle_message(
     let Some((run, rx)) = ChannelRun::begin(core, ch, &peer).await else {
         return;
     };
-    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let tx = tx.clone();
     let reply = spawn_reply(&run, rx, 3500, move |text| async move {
         let action = match group_id {

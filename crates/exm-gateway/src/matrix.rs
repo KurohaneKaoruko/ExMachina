@@ -296,7 +296,7 @@ async fn handle_message(
 ) {
     // 会话键用房间 id，房间内多人共享同一会话（Matrix 房间即群）
     let Some((run, rx)) = ChannelRun::begin(core, ch, room).await else { return };
-    core.stamp_session_origin(&run.session_id, sender, core.identity_of(&ch.id, sender).map(|i| i.role).as_deref().unwrap_or(""));
+    core.stamp_session_origin(&run.session_id, sender, core.identity_of(&ch.id, sender).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, sender)).as_str());
     let client2 = client.clone();
     let hs2 = hs.to_string();
     let token2 = token.to_string();

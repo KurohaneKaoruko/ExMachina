@@ -289,7 +289,7 @@ async fn handle_message(
     text: &str,
 ) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, channel).await else { return };
-    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.role).as_deref().unwrap_or(""));
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let client2 = client.clone();
     let token2 = bot_token.to_string();
     let chan = channel.to_string();
