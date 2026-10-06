@@ -2,7 +2,7 @@
 //! 每个启用的 telegram 通道 = 一个账号 = 一个独立轮询任务；账号绑定组后消息在该组上下文执行。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -244,6 +244,20 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
     }
 }
 
+/// typing 指示（组 6.5）：sendChatAction typing；失败静默（指示属尽力而为）
+async fn send_typing(token: &str, chat_id: i64) {
+    if token.trim().is_empty() {
+        return;
+    }
+    let api = format!("https://api.telegram.org/bot{}/sendChatAction", token.trim());
+    let _ = reqwest::Client::new()
+        .post(&api)
+        .json(&serde_json::json!({ "chat_id": chat_id, "action": "typing" }))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await;
+}
+
 /// bot 身份缓存（token → (id, username)）：群聊提及归一化用，懒获取一次
 async fn bot_info(token: &str) -> (String, String) {
     static CACHE: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
@@ -275,13 +289,18 @@ async fn bot_info(token: &str) -> (String, String) {
 
 /// 一条用户消息：组绑定 → 会话复用 → 订阅回复 → 执行 → sendMessage
 async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_id: &str, text: &str) {
+    // typing 指示（组 6.5）：平台支持即发送，处理结束随回帖自然覆盖
+    if caps("telegram").typing {
+        send_typing(&ch.token.clone().unwrap_or_default(), chat_id).await;
+    }
     let Some((run, rx)) = ChannelRun::begin(core, ch, &chat_id.to_string()).await else {
         return;
     };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let token = ch.token.clone().unwrap_or_default();
-    let reply = spawn_reply(&run, rx, 3800, move |text| async move {
-        send_message(&token, chat_id, &text).await;
+    let reply = spawn_reply(&run, rx, 3800, move |text| {
+        let token = token.clone();
+        async move { send_message(&token, chat_id, &text).await; }
     });
     run.run(text).await;
     let _ = reply.await;

@@ -293,8 +293,13 @@ async fn handle_message(
     let client2 = client.clone();
     let token2 = bot_token.to_string();
     let chan = channel.to_string();
-    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| async move {
+    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| {
+        let client2 = client2.clone();
+        let token2 = token2.clone();
+        let chan = chan.clone();
+        async move {
         send_message(&client2, &token2, &chan, &text).await;
+        }
     });
     run.run(text).await;
     let _ = reply.await;

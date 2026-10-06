@@ -604,6 +604,220 @@ impl Channel {
     }
 }
 
+// ---------------------------------------------------------------- 出站能力矩阵与回复整形（组 6）
+
+/// 平台出站能力矩阵（按 kind 静态声明）：媒体直发与 typing 支持
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChannelCaps {
+    pub image: bool,
+    pub file: bool,
+    pub voice: bool,
+    pub typing: bool,
+}
+
+/// 能力矩阵：telegram/discord/slack/napcat/matrix 直发媒体（或部分），qqbot 官方 API 受限全降级。
+/// 与各适配器实际发送实现保持同步——新增实现即开位。
+pub(crate) fn caps(kind: &str) -> ChannelCaps {
+    match kind {
+        "telegram" => ChannelCaps { image: true, file: true, voice: true, typing: true },
+        "discord" => ChannelCaps { image: true, file: true, voice: false, typing: true },
+        "slack" => ChannelCaps { image: true, file: true, voice: false, typing: false },
+        "napcat" => ChannelCaps { image: true, file: true, voice: false, typing: false },
+        "matrix" => ChannelCaps { image: true, file: true, voice: false, typing: false },
+        _ => ChannelCaps { image: false, file: false, voice: false, typing: false },
+    }
+}
+
+/// 媒体降级决策：平台支持则原生直发；否则按类型降级（spec: 图片→链接/文本描述、文件→链接、语音→文本摘要）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaFallback {
+    /// 平台原生直发
+    Native,
+    /// 降级：文本描述 + 可访问链接（由调用方拼装）
+    LinkNote,
+}
+
+pub(crate) fn media_fallback(kind: &str, kind_want: &str) -> MediaFallback {
+    let c = caps(kind);
+    let supported = match kind_want {
+        "image" => c.image,
+        "file" => c.file,
+        "voice" => c.voice,
+        _ => false,
+    };
+    if supported { MediaFallback::Native } else { MediaFallback::LinkNote }
+}
+
+/// 长回复分段（spec 6.6）：段落边界优先；代码块与结构化陈述前缀保持完整；
+/// 单块超限才硬切并标注续接序号。max_chars 为平台上限。
+pub(crate) fn split_reply(text: &str, max_chars: usize) -> Vec<String> {
+    let text = text.trim_end();
+    if text.chars().count() <= max_chars {
+        return vec![text.to_string()];
+    }
+    // 切分单元：段落（\n\n），代码块视为不可分单元（与前后段落独立）
+    let mut units: Vec<(String, bool)> = Vec::new(); // (内容, 是否代码块)
+    let mut para = String::new();
+    let mut in_code = false;
+    for line in text.split('\n') {
+        let is_fence = line.trim_start().starts_with("```");
+        if is_fence {
+            in_code = !in_code;
+            para.push_str(line);
+            para.push('\n');
+            if !in_code {
+                units.push((std::mem::take(&mut para), true));
+            }
+            continue;
+        }
+        if in_code {
+            para.push_str(line);
+            para.push('\n');
+            continue;
+        }
+        if line.is_empty() && !para.is_empty() {
+            units.push((std::mem::take(&mut para), false));
+            continue;
+        }
+        para.push_str(line);
+        para.push('\n');
+    }
+    if !para.trim().is_empty() {
+        units.push((para, false));
+    }
+
+    // 聚合：按字符预算把相邻单元拼进同一消息（超预算即开新消息）
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut hard_parts: Vec<String> = Vec::new();
+    let mut flush_hard = |buf: &mut String, out: &mut Vec<String>| {
+        if !buf.trim().is_empty() {
+            out.push(buf.trim_end().to_string());
+        }
+        buf.clear();
+    };
+    for (unit, _is_code) in &units {
+        let unit = unit.trim_end().to_string();
+        if unit.chars().count() > max_chars {
+            flush_hard(&mut buf, &mut out);
+            // 硬切：按行聚合，超过预算开新片，带续接标注
+            hard_parts.clear();
+            let mut piece = String::new();
+            for line in unit.split_inclusive('\n') {
+                if piece.chars().count() + line.chars().count() > max_chars && !piece.is_empty() {
+                    hard_parts.push(piece.trim_end().to_string());
+                    piece.clear();
+                }
+                // 超长单行：按字符预算行内硬切
+                if line.chars().count() > max_chars {
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut idx = 0usize;
+                    while idx < chars.len() {
+                        let end = (idx + max_chars).min(chars.len());
+                        let seg: String = chars[idx..end].iter().collect();
+                        if end < chars.len() {
+                            hard_parts.push(seg);
+                        } else {
+                            piece.push_str(&seg);
+                        }
+                        idx = end;
+                    }
+                    continue;
+                }
+                piece.push_str(line);
+            }
+            if !piece.trim().is_empty() {
+                hard_parts.push(piece.trim_end().to_string());
+            }
+            let total = hard_parts.len();
+            for (i, p) in hard_parts.iter().enumerate() {
+                if total > 1 {
+                    out.push(format!("{p}\n（续 {}/{}）", i + 1, total));
+                } else {
+                    out.push(p.clone());
+                }
+            }
+            continue;
+        }
+        if buf.chars().count() + unit.chars().count() + 2 > max_chars && !buf.is_empty() {
+            flush_hard(&mut buf, &mut out);
+        }
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        buf.push_str(&unit);
+        buf.push('\n');
+    }
+    flush_hard(&mut buf, &mut out);
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+#[cfg(test)]
+mod reply_split_tests {
+    use super::*;
+
+    #[test]
+    fn 短文本不分段() {
+        assert_eq!(split_reply("hello", 100), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn 段落边界优先切分() {
+        let text = "第一段。\n\n第二段比较长一些的内容。\n\n第三段。";
+        let out = split_reply(text, 20);
+        assert!(out.len() >= 2, "应切成多条: {out:?}");
+        // 每条不超限
+        assert!(out.iter().all(|s| s.chars().count() <= 20), "{out:?}");
+        // 顺序保持
+        let joined = out.join("\n");
+        assert!(joined.contains("第一段") && joined.contains("第三段"));
+    }
+
+    #[test]
+    fn 代码块不被切断() {
+        let code = "```rust\nfn a() {\n    println!(\"x\");\n}\n```";
+        let text = format!("说明：\n\n{code}\n\n结尾。");
+        // max 60：代码块（约 46 字符）可完整容纳，聚合时不得跨消息断裂
+        let out = split_reply(&text, 60);
+        for s in &out {
+            let fences = s.matches("```").count();
+            assert_eq!(fences % 2, 0, "代码块围栏应成对出现: {s:?}");
+        }
+        assert!(out.iter().any(|s| s.contains("println!")), "代码块应完整在某条里: {out:?}");
+    }
+
+    #[test]
+    fn 超长单元硬切带续接序号() {
+        let block = format!("```text\n{}\n```", "x".repeat(200));
+        let out = split_reply(&block, 60);
+        assert!(out.len() >= 3, "硬切应多片: {}", out.len());
+        assert!(out.first().unwrap().contains("（续 1/"));
+        assert!(out.last().unwrap().contains("）") && out.last().unwrap().contains("（续 "));
+        // 每片（含标注）接近但不远超预算
+        for s in &out {
+            assert!(s.chars().count() <= 60 + 20, "{}", s.chars().count());
+        }
+    }
+
+    #[test]
+    fn 降级决策_矩阵覆盖() {
+        // telegram 全支持
+        assert_eq!(media_fallback("telegram", "image"), MediaFallback::Native);
+        assert_eq!(media_fallback("telegram", "voice"), MediaFallback::Native);
+        // discord 不支持语音
+        assert_eq!(media_fallback("discord", "voice"), MediaFallback::LinkNote);
+        assert_eq!(media_fallback("discord", "image"), MediaFallback::Native);
+        // qqbot 全降级
+        assert_eq!(media_fallback("qqbot", "image"), MediaFallback::LinkNote);
+        assert_eq!(media_fallback("qqbot", "file"), MediaFallback::LinkNote);
+        // 未知平台全降级
+        assert_eq!(media_fallback("webhook", "image"), MediaFallback::LinkNote);
+    }
+}
+
 // ---------------------------------------------------------------- 通道入站闸门（身份 + 群聊唤醒）
 
 /// 入站消息上下文：由各适配器从平台消息归一化提取
@@ -818,7 +1032,7 @@ pub(crate) fn spawn_reply<F, Fut>(
     send: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: FnOnce(String) -> Fut + Send + 'static,
+    F: Fn(String) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
     let run = run.clone();
@@ -829,7 +1043,10 @@ where
                 continue;
             }
             if let Some(text) = run.take_reply(&evt, max_chars) {
-                send(text).await;
+                // 长回复分段推送（组 6.6）：按平台上限逐段送达，顺序保持
+                for seg in split_reply(&text, max_chars) {
+                    send(seg).await;
+                }
                 break;
             }
         }

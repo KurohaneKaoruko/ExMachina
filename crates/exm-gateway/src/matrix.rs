@@ -301,8 +301,14 @@ async fn handle_message(
     let hs2 = hs.to_string();
     let token2 = token.to_string();
     let room2 = room.to_string();
-    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| async move {
-        send_message(&client2, &hs2, &token2, &room2, &text).await;
+    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| {
+        let client2 = client2.clone();
+        let hs2 = hs2.clone();
+        let token2 = token2.clone();
+        let room2 = room2.clone();
+        async move {
+            send_message(&client2, &hs2, &token2, &room2, &text).await;
+        }
     });
     run.run(text).await;
     let _ = reply.await;

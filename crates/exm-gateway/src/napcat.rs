@@ -268,18 +268,21 @@ async fn handle_message(
     };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let tx = tx.clone();
-    let reply = spawn_reply(&run, rx, 3500, move |text| async move {
-        let action = match group_id {
-            Some(g) => serde_json::json!({
-                "action": "send_group_msg",
-                "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
-            }),
-            None => serde_json::json!({
-                "action": "send_private_msg",
-                "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
-            }),
-        };
-        let _ = tx.send(action);
+    let reply = spawn_reply(&run, rx, 3500, move |text| {
+        let tx = tx.clone();
+        async move {
+            let action = match group_id {
+                Some(g) => serde_json::json!({
+                    "action": "send_group_msg",
+                    "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
+                }),
+                None => serde_json::json!({
+                    "action": "send_private_msg",
+                    "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
+                }),
+            };
+            let _ = tx.send(action);
+        }
     });
     run.run(text).await;
     let _ = reply.await;

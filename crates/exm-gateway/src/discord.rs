@@ -8,7 +8,7 @@
 //! 断线优先 Resume(op6，补发漏掉的事件)；op9 Invalid Session 回退重新 Identify。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -335,13 +335,26 @@ async fn handle_message(
     external_id: &str,
     text: &str,
 ) {
+    // typing 指示（组 6.5）：触发输入中状态
+    if caps("discord").typing {
+        let _ = client
+            .post(format!("{API}/channels/{channel_id}/typing"))
+            .header("Authorization", format!("Bot {token}"))
+            .send()
+            .await;
+    }
     let Some((run, rx)) = ChannelRun::begin(core, ch, channel_id).await else { return };
     core.stamp_session_origin(&run.session_id, &external_id, core.identity_of(&ch.id, &external_id).map(|i| i.role).as_deref().unwrap_or(""));
     let client2 = client.clone();
     let token2 = token.to_string();
     let cid = channel_id.to_string();
-    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| async move {
-        send_message(&client2, &token2, &cid, &text).await;
+    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| {
+        let client2 = client2.clone();
+        let token2 = token2.clone();
+        let cid = cid.clone();
+        async move {
+            send_message(&client2, &token2, &cid, &text).await;
+        }
     });
     run.run(text).await;
     let _ = reply.await;
