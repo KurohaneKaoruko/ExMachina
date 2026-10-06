@@ -34,6 +34,7 @@ import { LedgerView } from "./views/LedgerView";
 import { MemoryView } from "./views/MemoryView";
 import { SettingsView } from "./views/SettingsView";
 import { GroupsView } from "./views/GroupsView";
+import { NexusView } from "./views/NexusView";
 import { SinglesView } from "./views/SinglesView";
 import { SkillsView } from "./views/SkillsView";
 import { AutomationsView } from "./views/AutomationsView";
@@ -46,6 +47,7 @@ type ViewKey =
   | "graph"
   | "agent"
   | "groups"
+  | "nexus"
   | "skills"
   | "models"
   | "automations"
@@ -66,6 +68,7 @@ export const NAV_ITEMS: {
   { key: "chat", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
   { key: "agent", en: "AGENTS", labelKey: "nav.agent", icon: <UserOutlined /> },
   { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
+  { key: "nexus", en: "NEXUS", labelKey: "nav.nexus", icon: <ApartmentOutlined /> },
   { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
   { key: "models", en: "MODELS", labelKey: "nav.models", icon: <ApiOutlined /> },
   { key: "graph", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
@@ -245,6 +248,7 @@ export default function App(): React.ReactElement {
         {view === "graph" && <GraphView />}
         {view === "agent" && <SinglesView />}
         {view === "groups" && <GroupsView />}
+        {view === "nexus" && <NexusView />}
         {view === "skills" && <SkillsView />}
         {view === "models" && <ModelsView />}
         {view === "automations" && <AutomationsView />}

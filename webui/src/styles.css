@@ -2018,3 +2018,8 @@ input, textarea { caret-color: var(--accent); }
 .nexus-links { display: flex; flex-direction: column; gap: 4px; }
 .nexus-link-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-bottom: 1px dashed var(--line); }
 .nexus-endpoint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+
+/* 成员单元格：中文名一行，id 另起一行小字 */
+.member-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.member-line1 { display: flex; align-items: center; gap: 6px; }
+.member-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }

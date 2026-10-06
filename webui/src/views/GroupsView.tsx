@@ -8,7 +8,7 @@ import {
   ArrowLeftOutlined, DeleteOutlined, EditOutlined, FormOutlined, PlusOutlined,
   SettingOutlined, UndoOutlined, UsergroupDeleteOutlined,
 } from "@ant-design/icons";
-import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile, type NexusLink } from "../api";
+import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
 import { buildCapabilityOptions, buildModelOptions, groupIdEn } from "../models";
@@ -38,10 +38,11 @@ export function GroupsView(): React.ReactElement {
   const [editForm] = Form.useForm();
   const [editFormProfiles, setEditFormProfiles] = useState<LlmProfile[]>([]);
   const [promptLoading, setPromptLoading] = useState(false);
-  // 智能连结网络（实验性）
-  const [nexusLinks, setNexusLinks] = useState<NexusLink[]>([]);
-  const [nexusModal, setNexusModal] = useState<{ mode: "edit"; link: NexusLink | null } | null>(null);
-  const [nexusForm] = Form.useForm();
+  // 成员 SOUL.md（人设）编辑
+  const [personaOf, setPersonaOf] = useState<AgentDefinition | null>(null);
+  const [personaInfo, setPersonaInfo] = useState<import("../api").PersonaInfo | null>(null);
+  const [personaDraft, setPersonaDraft] = useState("");
+  const [personaSaving, setPersonaSaving] = useState(false);
 
   const meta: GroupMeta | undefined = groups.find((g) => g.id === entered) ?? undefined;
 
@@ -67,9 +68,6 @@ export function GroupsView(): React.ReactElement {
         setProfiles(p);
         setEditFormProfiles(p);
       } catch { /* noop */ }
-    })();
-    void (async () => {
-      try { setNexusLinks((await api.nexusLinks()).links); } catch { /* noop */ }
     })();
   }, []);
 
@@ -143,33 +141,6 @@ export function GroupsView(): React.ReactElement {
 
   const isBuiltin = meta?.builtin ?? true;
 
-  const submitNexus = async () => {
-    const v = await nexusForm.validateFields();
-    try {
-      const r = await api.saveNexusLink({
-        id: v.id.trim(), name: v.name.trim(), kind: v.kind,
-        endpoint: (v.endpoint ?? "").trim(), apiKey: (v.apiKey ?? "").trim(),
-        command: (v.command ?? "").trim(), enabled: true,
-      });
-      message.success(t("nexus.saved", { name: r.link.name }));
-      setNexusModal(null);
-      nexusForm.resetFields();
-      setNexusLinks((await api.nexusLinks()).links);
-    } catch (e) {
-      message.error(t("common.saveFailed", { err: String(e).slice(0, 140) }));
-    }
-  };
-
-  const removeNexusLink = async (id: string) => {
-    try {
-      await api.deleteNexusLink(id);
-      setNexusLinks((await api.nexusLinks()).links);
-      message.success(t("nexus.deleted"));
-    } catch (e) {
-      message.error(t("common.saveFailed", { err: String(e).slice(0, 140) }));
-    }
-  };
-
   // ---- 组设置（工作区 / 默认模型 / 能力覆盖） ----
   const openSettings = () => {
     setWsDraft(meta?.workspace ?? "");
@@ -208,6 +179,46 @@ export function GroupsView(): React.ReactElement {
   );
 
   // ---- 成员编辑 / 人设（并入原「子个体」页能力） ----
+  const openPersona = async (a: AgentDefinition) => {
+    setPersonaOf(a);
+    setPersonaInfo(null);
+    setPersonaDraft("");
+    try {
+      const info = await api.getPersona(a.identifier);
+      setPersonaInfo(info);
+      setPersonaDraft(info.persona);
+    } catch (e) {
+      message.error(t("agents.personaReadFailed", { err: String(e).slice(0, 120) }));
+      setPersonaOf(null);
+    }
+  };
+
+  const savePersona = async () => {
+    if (!personaOf) return;
+    setPersonaSaving(true);
+    try {
+      await api.putPersona(personaOf.identifier, personaDraft);
+      message.success(t("agents.personaSaved"));
+      setPersonaInfo(await api.getPersona(personaOf.identifier));
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e).slice(0, 120) }));
+    } finally {
+      setPersonaSaving(false);
+    }
+  };
+
+  const resetPersona = async () => {
+    if (!personaOf) return;
+    try {
+      await api.resetPersona(personaOf.identifier);
+      setPersonaInfo(await api.getPersona(personaOf.identifier));
+      setPersonaDraft("");
+      message.success(t("agents.personaReset"));
+    } catch (e) {
+      message.error(t("agents.resetFailed", { err: String(e).slice(0, 120) }));
+    }
+  };
+
   const openEdit = async (a: AgentDefinition) => {
     setEditing(a);
     editForm.setFieldsValue({
@@ -336,10 +347,12 @@ export function GroupsView(): React.ReactElement {
                     title: t("agents.colUnit"),
                     key: "name",
                     render: (_, a: AgentDefinition) => (
-                      <span>
-                        <b>{a.name}</b>
-                        {meta.primary === a.identifier && <Tag color="blue">{t("agents.primaryTag")}</Tag>}
-                        <code>{a.identifier}</code>
+                      <span className="member-cell">
+                        <span className="member-line1">
+                          <b>{a.name}</b>
+                          {meta.primary === a.identifier && <Tag color="blue">{t("agents.primaryTag")}</Tag>}
+                        </span>
+                        <code className="member-id">{a.identifier}</code>
                       </span>
                     ),
                   },
@@ -366,6 +379,9 @@ export function GroupsView(): React.ReactElement {
                       <Space size={4}>
                         <Button size="small" icon={<FormOutlined />} onClick={() => void openEdit(a)}>
                           {t("agents.edit")}
+                        </Button>
+                        <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
+                          {t("agents.soulBtn")}
                         </Button>
                         {!isBuiltin && meta.primary !== a.identifier && (
                           <>
@@ -460,52 +476,40 @@ export function GroupsView(): React.ReactElement {
         </Modal>
 
 
-        {/* 连结体编辑弹窗 */}
+        {/* 成员 SOUL.md 编辑弹窗 */}
         <Modal
-          open={nexusModal !== null}
-          title={t("nexus.modal")}
-          onCancel={() => setNexusModal(null)}
-          onOk={() => void submitNexus()}
-          okText={t("common.save")}
+          open={personaOf !== null}
+          title={personaOf ? t("agents.soulTitle", { name: personaOf.name }) : ""}
+          onCancel={() => setPersonaOf(null)}
+          width={640}
+          footer={
+            <Space>
+              <Popconfirm
+                title={t("agents.resetConfirm")}
+                onConfirm={() => void resetPersona()}
+                disabled={personaInfo ? !personaInfo.custom : false}
+              >
+                <Button disabled={personaInfo ? !personaInfo.custom : false}>{t("agents.soulReset")}</Button>
+              </Popconfirm>
+              <Button onClick={() => setPersonaOf(null)}>{t("common.close")}</Button>
+              <Button type="primary" loading={personaSaving} onClick={() => void savePersona()}>
+                {t("agents.saveHot")}
+              </Button>
+            </Space>
+          }
         >
-          <Form form={nexusForm} layout="vertical" initialValues={{ kind: "exmachina", enabled: true }}>
-            <Form.Item name="id" label={t("nexus.f.id")} rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
-              <Input placeholder={t("nexus.f.idPh")} disabled={nexusModal?.link != null} />
-            </Form.Item>
-            <Form.Item name="name" label={t("nexus.f.name")} rules={[{ required: true }]}>
-              <Input placeholder={t("nexus.f.namePh")} />
-            </Form.Item>
-            <Form.Item name="kind" label={t("nexus.f.kind")} rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { value: "exmachina", label: t("nexus.kind.exmachina") },
-                  { value: "opencode", label: t("nexus.kind.opencode") },
-                  { value: "codex", label: t("nexus.kind.codex") },
-                  { value: "claude", label: t("nexus.kind.claude") },
-                  { value: "custom", label: t("nexus.kind.custom") },
-                ]}
-                onChange={(k) => nexusForm.setFieldsValue({ endpoint: "", command: "" })}
-              />
-            </Form.Item>
-            <Form.Item noStyle shouldUpdate={(a, b) => a.kind !== b.kind}>
-              {({ getFieldValue }) =>
-                getFieldValue("kind") === "exmachina" ? (
-                  <>
-                    <Form.Item name="endpoint" label={t("nexus.f.endpoint")} rules={[{ required: true, whitespace: true, message: t("nexus.f.endpointReq") }]}>
-                      <Input placeholder="http://192.168.2.10:4173" />
-                    </Form.Item>
-                    <Form.Item name="apiKey" label={t("nexus.f.apiKey")} extra={t("nexus.f.apiKeyExtra")}>
-                      <Input.Password placeholder="******" />
-                    </Form.Item>
-                  </>
-                ) : getFieldValue("kind") === "custom" ? (
-                  <Form.Item name="command" label={t("nexus.f.command")} extra={t("nexus.f.commandExtra")} rules={[{ required: true, whitespace: true, message: t("nexus.f.commandReq") }]}>
-                    <Input placeholder="my-agent --task" />
-                  </Form.Item>
-                ) : null
-              }
-            </Form.Item>
-          </Form>
+          {personaInfo && (
+            <div style={{ marginBottom: 8 }}>
+              {personaInfo.custom ? <Tag color="gold">{t("agents.soulCustom")}</Tag> : <Tag>{t("agents.soulDefault")}</Tag>}
+            </div>
+          )}
+          <Input.TextArea
+            rows={14}
+            className="prompt-editor"
+            spellCheck={false}
+            value={personaDraft}
+            onChange={(e) => setPersonaDraft(e.target.value)}
+          />
         </Modal>
 
         {/* 组设置弹窗 */}
@@ -553,34 +557,6 @@ export function GroupsView(): React.ReactElement {
       />
 
       <div className="pane-body">
-        {/* 智能连结网络（实验性）：外部连结体清单与管理 */}
-        <Card size="small" className="hud nexus-card" title={t("nexus.title")} extra={
-          <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setNexusModal({ mode: "edit", link: null })}>
-            {t("nexus.add")}
-          </Button>
-        }>
-          <div className="dim" style={{ marginBottom: 8 }}>{t("nexus.desc")}</div>
-          {nexusLinks.length === 0 ? (
-            <Empty description={t("nexus.empty")} image={Empty.PRESENTED_IMAGE_SIMPLE} />
-          ) : (
-            <div className="nexus-links">
-              {nexusLinks.map((l) => (
-                <div key={l.id} className="nexus-link-row">
-                  <Tag color={l.enabled ? "cyan" : "default"}>{t("nexus.kind." + l.kind)}</Tag>
-                  <b>{l.name}</b> <span className="mono dim">{l.id}</span>
-                  {(l.endpoint || l.command) && <span className="dim mono nexus-endpoint">{l.endpoint || l.command}</span>}
-                  <Space size={4} style={{ marginLeft: "auto" }}>
-                    <Button size="small" icon={<SettingOutlined />} onClick={() => setNexusModal({ mode: "edit", link: l })} />
-                    <Popconfirm title={t("nexus.delConfirm", { name: l.name })} onConfirm={() => void removeNexusLink(l.id)}>
-                      <Button size="small" danger icon={<UsergroupDeleteOutlined />} />
-                    </Popconfirm>
-                  </Space>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-
         <div className="group-grid">
           {groups.map((g) => (
             <Card
