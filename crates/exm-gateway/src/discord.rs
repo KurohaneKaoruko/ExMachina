@@ -8,7 +8,7 @@
 //! 断线优先 Resume(op6，补发漏掉的事件)；op9 Invalid Session 回退重新 Identify。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -348,20 +348,65 @@ async fn handle_message(
     let client2 = client.clone();
     let token2 = token.to_string();
     let cid = channel_id.to_string();
-    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| {
-        let client2 = client2.clone();
-        let token2 = token2.clone();
-        let cid = cid.clone();
-        async move {
-            send_message(&client2, &token2, &cid, &text).await;
-        }
-    });
+    let media_client = client.clone();
+    let media_token = token.to_string();
+    let media_cid = channel_id.to_string();
+    let reply = spawn_reply(
+        &run,
+        rx,
+        MAX_CHARS,
+        move |text| {
+            let client2 = client2.clone();
+            let token2 = token2.clone();
+            let cid = cid.clone();
+            async move {
+                send_message(&client2, &token2, &cid, &text).await;
+            }
+        },
+        move |item| {
+            let client2 = media_client.clone();
+            let token2 = media_token.clone();
+            let cid = media_cid.clone();
+            async move { dc_send_media(&client2, &token2, &cid, item).await }
+        },
+    );
     run.run(text).await;
     let _ = reply.await;
 }
 
-async fn send_message(client: &reqwest::Client, token: &str, channel_id: &str, text: &str) {
-    if token.trim().is_empty() {
+/// discord 媒体直发（组 6.2）：multipart file[0] + caption；图片与文档同端点
+async fn dc_send_media(
+    client: &reqwest::Client,
+    token: &str,
+    channel_id: &str,
+    item: MediaItem,
+) -> bool {
+    let Ok(bytes) = tokio::fs::read(&item.path).await else {
+        return false;
+    };
+    let name = item
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "media".into());
+    let form = reqwest::multipart::Form::new()
+        .text("payload_json", json!({ "content": item.caption }).to_string())
+        .part(
+            "files[0]",
+            reqwest::multipart::Part::bytes(bytes).file_name(name),
+        );
+    client
+        .post(format!("{API}/channels/{channel_id}/messages"))
+        .header("Authorization", format!("Bot {token}"))
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+async fn send_message(client: &reqwest::Client, token: &str, channel_id: &str, text: &str) {    if token.trim().is_empty() {
         return;
     }
     match client

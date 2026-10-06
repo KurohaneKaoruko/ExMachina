@@ -9,7 +9,7 @@
 //! config.sandbox = "true" 时走沙箱 openapi（sandbox.api.sgroup.qq.com）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -415,17 +415,23 @@ async fn handle_message(
     let max_chars = peer.max_chars();
     let creds = creds.clone();
     let base = base.to_string();
-    let reply = spawn_reply(&run, rx, max_chars, move |text| {
-        let creds = creds.clone();
-        let base = base.clone();
-        let peer = peer.clone();
-        let msg_id = msg_id.clone();
-        let seq = seq.clone();
-        async move {
-            let n = seq.fetch_add(1, Ordering::Relaxed) + 1;
-            send_passive(&creds, &base, &peer, &msg_id, n, &text).await;
-        }
-    });
+    let reply = spawn_reply(
+        &run,
+        rx,
+        max_chars,
+        move |text| {
+            let creds = creds.clone();
+            let base = base.clone();
+            let peer = peer.clone();
+            let msg_id = msg_id.clone();
+            let seq = seq.clone();
+            async move {
+                let n = seq.fetch_add(1, Ordering::Relaxed) + 1;
+                send_passive(&creds, &base, &peer, &msg_id, n, &text).await;
+            }
+        },
+        move |_item: MediaItem| async { false },
+    );
     run.run(text).await;
     let _ = reply.await;
 }

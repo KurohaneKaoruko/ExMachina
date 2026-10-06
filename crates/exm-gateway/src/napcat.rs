@@ -6,7 +6,7 @@
 //! 收发解耦：入站读取不阻塞（消息处理全部 spawn），动作经 mpsc 通道交给专职写任务，
 //! 避免长运行期间无法应答 WS 层 Ping 被服务端断开。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -268,22 +268,28 @@ async fn handle_message(
     };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let tx = tx.clone();
-    let reply = spawn_reply(&run, rx, 3500, move |text| {
-        let tx = tx.clone();
-        async move {
-            let action = match group_id {
-                Some(g) => serde_json::json!({
-                    "action": "send_group_msg",
-                    "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
-                }),
-                None => serde_json::json!({
-                    "action": "send_private_msg",
-                    "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
-                }),
-            };
-            let _ = tx.send(action);
-        }
-    });
+    let reply = spawn_reply(
+        &run,
+        rx,
+        3500,
+        move |text| {
+            let tx = tx.clone();
+            async move {
+                let action = match group_id {
+                    Some(g) => serde_json::json!({
+                        "action": "send_group_msg",
+                        "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
+                    }),
+                    None => serde_json::json!({
+                        "action": "send_private_msg",
+                        "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
+                    }),
+                };
+                let _ = tx.send(action);
+            }
+        },
+        move |_item: MediaItem| async { false },
+    );
     run.run(text).await;
     let _ = reply.await;
 }

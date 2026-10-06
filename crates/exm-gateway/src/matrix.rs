@@ -8,7 +8,7 @@
 //! token 失效（M_UNKNOWN_TOKEN）上报错误后指数退避重试。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -301,15 +301,21 @@ async fn handle_message(
     let hs2 = hs.to_string();
     let token2 = token.to_string();
     let room2 = room.to_string();
-    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| {
-        let client2 = client2.clone();
-        let hs2 = hs2.clone();
-        let token2 = token2.clone();
-        let room2 = room2.clone();
-        async move {
-            send_message(&client2, &hs2, &token2, &room2, &text).await;
-        }
-    });
+    let reply = spawn_reply(
+        &run,
+        rx,
+        MAX_CHARS,
+        move |text| {
+            let client2 = client2.clone();
+            let hs2 = hs2.clone();
+            let token2 = token2.clone();
+            let room2 = room2.clone();
+            async move {
+                send_message(&client2, &hs2, &token2, &room2, &text).await;
+            }
+        },
+        move |_item: MediaItem| async { false },
+    );
     run.run(text).await;
     let _ = reply.await;
 }

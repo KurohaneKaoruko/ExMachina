@@ -398,6 +398,26 @@ impl Store {
         self.db.delete("identities", id)
     }
 
+    // ---------------------------------------------------------------- 会话产物 outbox（媒体投递）
+
+    /// 登记本会话产生的媒体产物（截图自动登记；`.exmachina/outbox/` 写入登记）
+    pub fn outbox_push(&self, session_id: &str, kind: &str, path: &str, caption: &str) -> Result<()> {
+        self.db.append_line(
+            "session_outbox",
+            session_id,
+            &serde_json::json!({ "kind": kind, "path": path, "caption": caption, "at": now_iso() }),
+        )
+    }
+
+    /// 排空产物（读出即清空，防重复投递）
+    pub fn outbox_drain(&self, session_id: &str) -> Result<Vec<serde_json::Value>> {
+        let items: Vec<serde_json::Value> = self.db.read_lines("session_outbox", session_id, 0)?;
+        if !items.is_empty() {
+            self.db.rewrite_lines::<serde_json::Value>("session_outbox", session_id, &[])?;
+        }
+        Ok(items)
+    }
+
     // ---------------------------------------------------------------- 会话来源（通道身份升级语义）
 
     /// 登记会话的外部来源（通道闸门放行时写入；审批单创建时读取打标）

@@ -2,7 +2,7 @@
 //! 每个启用的 telegram 通道 = 一个账号 = 一个独立轮询任务；账号绑定组后消息在该组上下文执行。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/token 变更的账号回收任务。
 
-use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -258,6 +258,50 @@ async fn send_typing(token: &str, chat_id: i64) {
         .await;
 }
 
+/// telegram 媒体直发（组 6.2）：multipart 上传，按 kind 选端点；失败返回 false（降级并注）
+async fn tg_send_media(token: &str, chat_id: i64, item: MediaItem) -> bool {
+    if token.trim().is_empty() {
+        return false;
+    }
+    let Ok(bytes) = tokio::fs::read(&item.path).await else {
+        return false;
+    };
+    let field = match item.kind.as_str() {
+        "voice" => "voice",
+        "file" => "document",
+        _ => "photo",
+    };
+    let api = match item.kind.as_str() {
+        "voice" => "sendVoice",
+        "file" => "sendDocument",
+        _ => "sendPhoto",
+    };
+    let name = item
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "media".into());
+    let mut part = reqwest::multipart::Part::bytes(bytes).file_name(name);
+    if item.kind == "voice" {
+        part = match part.mime_str("audio/ogg") {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+    }
+    let form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .text("caption", item.caption.clone())
+        .part(field.to_string(), part);
+    reqwest::Client::new()
+        .post(format!("https://api.telegram.org/bot{}/{api}", token.trim()))
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 /// bot 身份缓存（token → (id, username)）：群聊提及归一化用，懒获取一次
 async fn bot_info(token: &str) -> (String, String) {
     static CACHE: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
@@ -298,10 +342,20 @@ async fn handle_message(core: &Arc<Core>, ch: &Channel, chat_id: i64, external_i
     };
     core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
     let token = ch.token.clone().unwrap_or_default();
-    let reply = spawn_reply(&run, rx, 3800, move |text| {
-        let token = token.clone();
-        async move { send_message(&token, chat_id, &text).await; }
-    });
+    let media_token = token.clone();
+    let reply = spawn_reply(
+        &run,
+        rx,
+        3800,
+        move |text| {
+            let token = token.clone();
+            async move { send_message(&token, chat_id, &text).await; }
+        },
+        move |item| {
+            let token = media_token.clone();
+            async move { tg_send_media(&token, chat_id, item).await }
+        },
+    );
     run.run(text).await;
     let _ = reply.await;
 }

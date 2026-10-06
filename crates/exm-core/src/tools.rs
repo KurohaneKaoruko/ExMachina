@@ -1279,13 +1279,13 @@ impl ToolGateway {
             ToolName::Patch => self.tool_patch(args),
             ToolName::Grep => self.tool_grep(args),
             ToolName::Glob => self.tool_glob(args),
-            ToolName::Filesystem => self.tool_fs(args),
+            ToolName::Filesystem => self.tool_fs(session_id, args),
             ToolName::Terminal => self.tool_terminal(agent_id, session_id, args).await,
             ToolName::WebSearch => self.tool_web_search(args).await,
             ToolName::WebFetch => self.tool_web_fetch(args).await,
             ToolName::AgentManage => self.tool_agent_manage(args),
             ToolName::Schedule => self.tool_schedule(args),
-            ToolName::Browser => self.tool_browser(args).await,
+            ToolName::Browser => self.tool_browser(session_id, args).await,
             ToolName::Computer => self.tool_computer(agent_id, session_id, args).await,
         }
     }
@@ -1953,7 +1953,7 @@ impl ToolGateway {
         ToolResult::ok(format!("{}\n（{n} 个文件）", files.join("\n")))
     }
 
-    fn tool_fs(&self, args: &serde_json::Value) -> ToolResult {
+    fn tool_fs(&self, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("write");
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let target = match self.resolve_safe(path) {
@@ -1970,12 +1970,22 @@ impl ToolGateway {
                     return ToolResult::err(format!("写前检查点失败，已中止写入：{e}"));
                 }
                 match std::fs::write(&target, content).context("写入失败") {
-                    Ok(_) => ToolResult::ok(format!(
-                        "written: {}（{} 行 / {} 字符）",
+                    Ok(_) => {
+                        // 产物登记（D12）：写入投递目录 `.exmachina/outbox/` 的文件 → 会话 outbox
+                        let norm = target
+                            .strip_prefix(&self.workspace_root)
+                            .map(|p| p.display().to_string().replace('\\', "/"))
+                            .unwrap_or_default();
+                        if norm.starts_with(".exmachina/outbox/") {
+                            let _ = self.store.outbox_push(session_id, "file", &norm, "");
+                        }
+                        ToolResult::ok(format!(
+                            "written: {}（{} 行 / {} 字符）",
                         target.display(),
                         content.lines().count(),
                         content.chars().count()
-                    )),
+                    ))
+                    }
                     Err(e) => ToolResult::err(e.to_string()),
                 }
             }
@@ -2218,6 +2228,10 @@ impl ToolGateway {
                         .strip_prefix(&self.workspace_root)
                         .map(|p| p.display().to_string().replace('\\', "/"))
                         .unwrap_or_else(|_| shot.path.clone());
+                    // 产物登记（D12）：截图自动进入会话 outbox，通道投递
+                    let _ = self
+                        .store
+                        .outbox_push(session_id, "image", &rel, "屏幕截图");
                     ToolResult::ok(format!(
                         "【报告】截屏完成：{}，缩放后 {}x{}，文件 {rel}\n（截图已作为图像附带本轮回灌，可直接描述画面内容）",
                         shot.monitor, shot.width, shot.height
@@ -2520,7 +2534,7 @@ impl ToolGateway {
 
     /// 浏览器自动化（headless Chrome + CDP）：懒启动常驻，串行化访问。
     /// 探测不到浏览器时该工具不会出现在下发 schema 里（此处兜底报错）。
-    async fn tool_browser(&self, args: &serde_json::Value) -> ToolResult {
+    async fn tool_browser(&self, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("open");
         if op == "close" {
             let mut guard = self.browser.lock().await;
@@ -2586,7 +2600,11 @@ impl ToolGateway {
             "screenshot" => {
                 let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 match session.screenshot(&self.workspace_root, name).await {
-                    Ok(rel) => ToolResult::ok(format!("截图已保存：{rel}（可用 read 查看路径，或用 browser screenshot 再次覆盖）")),
+                    Ok(rel) => {
+                        // 产物登记（D12）：截图自动进入会话 outbox，通道投递
+                        let _ = self.store.outbox_push(session_id, "image", &rel, "网页截图");
+                        ToolResult::ok(format!("截图已保存：{rel}（可用 read 查看路径，或用 browser screenshot 再次覆盖）"))
+                    }
                     Err(e) => ToolResult::err(format!("截图失败：{e}")),
                 }
             }

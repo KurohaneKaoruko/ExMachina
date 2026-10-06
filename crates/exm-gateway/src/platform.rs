@@ -622,8 +622,8 @@ pub(crate) fn caps(kind: &str) -> ChannelCaps {
         "telegram" => ChannelCaps { image: true, file: true, voice: true, typing: true },
         "discord" => ChannelCaps { image: true, file: true, voice: false, typing: true },
         "slack" => ChannelCaps { image: true, file: true, voice: false, typing: false },
-        "napcat" => ChannelCaps { image: true, file: true, voice: false, typing: false },
-        "matrix" => ChannelCaps { image: true, file: true, voice: false, typing: false },
+        "napcat" => ChannelCaps { image: false, file: false, voice: false, typing: false },
+        "matrix" => ChannelCaps { image: false, file: false, voice: false, typing: false },
         _ => ChannelCaps { image: false, file: false, voice: false, typing: false },
     }
 }
@@ -940,6 +940,8 @@ pub(crate) struct ChannelRun {
     pub session_id: String,
     prev_group: String,
     switched: bool,
+    /// 平台 kind（能力矩阵判定用）
+    pub kind: String,
 }
 
 impl ChannelRun {
@@ -973,7 +975,13 @@ impl ChannelRun {
         };
         let rx = core.subscribe();
         Some((
-            ChannelRun { core: core.clone(), session_id: session.id, prev_group, switched },
+            ChannelRun {
+                core: core.clone(),
+                session_id: session.id,
+                prev_group,
+                switched,
+                kind: ch.kind.clone(),
+            },
             rx,
         ))
     }
@@ -1025,15 +1033,28 @@ impl ChannelRun {
 
 /// 挂本轮回帖任务：订阅运行事件，收束即用 `send` 把文本发回原会话（发完或流断即退出）。
 /// 各适配器只需给出发送闭包（平台 API 差异全部封在这里面）。
-pub(crate) fn spawn_reply<F, Fut>(
+/// 媒体产物条目（run.finished artifacts → 平台投递）
+#[derive(Debug, Clone)]
+pub(crate) struct MediaItem {
+    /// image | file | voice
+    pub kind: String,
+    /// 绝对路径（spawn_reply 已从工作区相对路径解析）
+    pub path: std::path::PathBuf,
+    pub caption: String,
+}
+
+pub(crate) fn spawn_reply<F, Fut, M, MFut>(
     run: &ChannelRun,
     rx: tokio::sync::broadcast::Receiver<CoreEvent>,
     max_chars: usize,
     send: F,
+    send_media: M,
 ) -> tokio::task::JoinHandle<()>
 where
     F: Fn(String) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
+    M: Fn(MediaItem) -> MFut + Send + 'static,
+    MFut: std::future::Future<Output = bool> + Send,
 {
     let run = run.clone();
     tokio::spawn(async move {
@@ -1042,10 +1063,41 @@ where
             if evt.session_id != run.session_id {
                 continue;
             }
+            // 产物投递（组 6.2/6.3）：能力矩阵判定直发或降级并注
+            let mut media_notes: Vec<String> = Vec::new();
+            if let Some(list) = evt.payload.get("artifacts").and_then(|v| v.as_array()) {
+                for a in list {
+                    let kind = a.get("kind").and_then(|x| x.as_str()).unwrap_or("file").to_string();
+                    let rel = a.get("path").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if rel.is_empty() {
+                        continue;
+                    }
+                    let caption = a.get("caption").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let abs = run.core.config().workspace_root.join(&rel);
+                    let item = MediaItem { kind: kind.clone(), path: abs, caption };
+                    match media_fallback(&run.kind, &kind) {
+                        MediaFallback::Native => {
+                            if !send_media(item.clone()).await {
+                                media_notes.push(format!("📎 {}：{rel}（直发失败，可在工作区查看）", item.caption));
+                            }
+                        }
+                        MediaFallback::LinkNote => {
+                            media_notes.push(format!("📎 {}：{rel}（工作区内）", item.caption));
+                        }
+                    }
+                }
+            }
             if let Some(text) = run.take_reply(&evt, max_chars) {
                 // 长回复分段推送（组 6.6）：按平台上限逐段送达，顺序保持
-                for seg in split_reply(&text, max_chars) {
-                    send(seg).await;
+                let segments = split_reply(&text, max_chars);
+                let total = segments.len();
+                for (i, seg) in segments.into_iter().enumerate() {
+                    // 产物注记并入最后一段（文本主体保持整洁）
+                    if i + 1 == total && !media_notes.is_empty() {
+                        send(format!("{seg}\n{}", media_notes.join("\n"))).await;
+                    } else {
+                        send(seg).await;
+                    }
                 }
                 break;
             }

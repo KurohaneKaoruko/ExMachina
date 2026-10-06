@@ -7,7 +7,7 @@
 //! 回复文本限 4000 字符 → 截 3800。`disconnect` 帧按服务端要求重连。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -293,16 +293,100 @@ async fn handle_message(
     let client2 = client.clone();
     let token2 = bot_token.to_string();
     let chan = channel.to_string();
-    let reply = spawn_reply(&run, rx, MAX_CHARS, move |text| {
-        let client2 = client2.clone();
-        let token2 = token2.clone();
-        let chan = chan.clone();
-        async move {
-        send_message(&client2, &token2, &chan, &text).await;
-        }
-    });
+    let media_client = client.clone();
+    let media_token = bot_token.to_string();
+    let media_chan = chan.clone();
+    let reply = spawn_reply(
+        &run,
+        rx,
+        MAX_CHARS,
+        move |text| {
+            let client2 = client2.clone();
+            let token2 = token2.clone();
+            let chan = chan.clone();
+            async move {
+                send_message(&client2, &token2, &chan, &text).await;
+            }
+        },
+        move |item| {
+            let client2 = media_client.clone();
+            let token2 = media_token.clone();
+            let chan = media_chan.clone();
+            async move { slack_send_media(&client2, &token2, &chan, item).await }
+        },
+    );
     run.run(text).await;
     let _ = reply.await;
+}
+
+/// slack 媒体直发（组 6.2）：getUploadURLExternal → POST 上传 → completeV2 三步
+async fn slack_send_media(
+    client: &reqwest::Client,
+    bot_token: &str,
+    channel: &str,
+    item: MediaItem,
+) -> bool {
+    let Ok(bytes) = tokio::fs::read(&item.path).await else {
+        return false;
+    };
+    let name = item
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "media".into());
+    // ① 预签名上传地址
+    let up: Value = match client
+        .post(format!("{API}/files.getUploadURLExternal"))
+        .bearer_auth(bot_token)
+        .query(&[("filename", name.as_str()), ("length", &bytes.len().to_string())])
+        .send()
+        .await
+    {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(v) => v,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    let Some(upload_url) = up.get("upload_url").and_then(|x| x.as_str()).map(|s| s.to_string()) else {
+        return false;
+    };
+    let Some(file_id) = up.get("file_id").and_then(|x| x.as_str()).map(|s| s.to_string()) else {
+        return false;
+    };
+    // ② 直传字节
+    let resp = match client
+        .post(&upload_url)
+        .header("Content-Type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    // ③ 完成登记（带频道与文案）
+    let done: Value = match client
+        .post(format!("{API}/files.completeV2"))
+        .bearer_auth(bot_token)
+        .form(&[
+            ("files", file_id.as_str()),
+            ("channel_id", channel),
+            ("initial_comment", item.caption.as_str()),
+        ])
+        .send()
+        .await
+    {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(v) => v,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    done.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)
 }
 
 async fn send_message(client: &reqwest::Client, bot_token: &str, channel: &str, text: &str) {
