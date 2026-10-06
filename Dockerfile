@@ -15,7 +15,8 @@ RUN npm run build
 # ---------- 2) Rust 核心 ----------
 FROM rust:1.92-bookworm AS rust-builder
 WORKDIR /build
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
+# libxdo-dev：enigo 键鼠控制链接 libxdo（dbus 已 vendored，无需系统包）
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libxdo-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 # 依赖缓存层（无 lockfile 变更时命中）
@@ -24,7 +25,11 @@ RUN cargo build --release -p exm-cli -p exm-gateway
 # ---------- 3) 编成数据（生成器需要 node；此处直接 COPY 源仓数据） ----------
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+# 运行时动态库：enigo/xcap 的 X11 栈（libxdo / X11 / xkbcommon；容器内无显示面，Computer Use 默认关闭，
+# 但二进制加载即需这些 .so）+ CA 证书与 curl（健康检查）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl libxdo3 libx11-6 libxcb1 libxext6 libxinerama1 libxtst6 libxkbcommon0 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=rust-builder /build/target/release/exm /usr/local/bin/exm
 COPY --from=rust-builder /build/target/release/exmachina /usr/local/bin/exmachina
 COPY --from=rust-builder /build/target/release/exm-gateway /usr/local/bin/exm-gateway

@@ -88,4 +88,4 @@
 - [x] 12.1 文档更新：docs/（使用指南新增能力章节、协议与契约补充新 REST/WS 事件）、README 功能清单——验证：文档审阅与示例命令可执行
 - [x] 12.2 `doctor` 子命令纳入新配置项诊断——验证：`exm doctor` 输出新项且异常配置可检出
 - [x] 12.3 原创性验收：全仓（crates/ webui/src/ desktop/ agents/ scripts/ docs/ README*.md）对禁用词清单（`openclaw`、`opencode`，大小写不敏感）检索零命中——验证：`grep -riE "openclaw|opencode" crates webui/src desktop agents scripts docs README.md README_EN.md | wc -l` 输出 0
-- [ ] 12.4 `cargo test --workspace` + `npm run build:webui` + `openspec validate` 全绿；`docker compose up --build` 冒烟通过
+- [x] 12.4 `cargo test --workspace` + `npm run build:webui` + `openspec validate` 全绿；`docker compose up --build` 冒烟通过

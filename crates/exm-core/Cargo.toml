@@ -22,8 +22,9 @@ tokio-tungstenite.workspace = true
 ignore = "0.4"
 regex = "1"
 # Computer Use（computer 工具）：enigo 键鼠控制 + xcap 截屏；image 仅 PNG 编解码与缩放
+# xcap vendored：dbus 静态编译（容器 / 精简环境免装 libdbus 开发包，构建自包含）
 enigo = "0.3"
-xcap = "0.4"
+xcap = { version = "0.4", features = ["vendored"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
