@@ -1909,12 +1909,16 @@ pub async fn serve(core: Arc<Core>, port: u16, host: Option<&str>) -> anyhow::Re
         let st = AppState { core: core.clone() };
         core.set_remote(worker_hub::hub(&st))?;
     }
-    // 断点续跑：上次进程中断的会话（图非终态）自动重新调度收束
+    // 断点续跑：上次进程中断的会话（图非终态）自动重新调度收束。
+    // 后台执行——续跑可能包含完整的多节点调度与 LLM 往返，绝不能阻塞端口绑定（否则健康检查超时、整站 502）
     {
-        let n = core.resume_interrupted().await;
-        if n > 0 {
-            println!("[gateway] 断点续跑：已恢复 {n} 个中断会话");
-        }
+        let core = core.clone();
+        tokio::spawn(async move {
+            let n = core.resume_interrupted().await;
+            if n > 0 {
+                println!("[gateway] 断点续跑：已恢复 {n} 个中断会话（后台）");
+            }
+        });
     }
     // MCP 工具清单后台刷新（懒连接，失败仅记录；首次调用会重试）
     {
