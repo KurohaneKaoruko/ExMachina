@@ -8,12 +8,12 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch,
+  AutoComplete, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch,
   Tag, Tooltip, message,
 } from "antd";
 import {
-  ApiOutlined, CheckCircleOutlined, DeleteOutlined, EditOutlined, EyeOutlined, MinusCircleOutlined,
-  PlusOutlined, ReloadOutlined, SoundOutlined,
+  ApiOutlined, CheckCircleOutlined, CloudDownloadOutlined, DeleteOutlined, EditOutlined,
+  EyeOutlined, MinusCircleOutlined, PlusOutlined, ReloadOutlined, SoundOutlined,
 } from "@ant-design/icons";
 import { api, KEY_MASK, type LlmCapabilities, type LlmProfile, type LlmProfilesInfo, type ProfileModel } from "../api";
 import { buildCapabilityOptions } from "../models";
@@ -38,6 +38,7 @@ const PRESETS: Preset[] = [
   { key: "moonshot", name: "Moonshot / Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "moonshot-v1-32k", apiFormat: "openai" },
   { key: "qwen", name: "Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", apiFormat: "openai" },
   { key: "zhipu", name: "Zhipu GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus", apiFormat: "openai" },
+  { key: "minimax", name: "MiniMax", baseUrl: "https://api.minimaxi.com/v1", model: "MiniMax-M1", apiFormat: "openai" },
   { key: "ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "llama3.1", apiFormat: "openai" },
 ];
 
@@ -46,6 +47,7 @@ const PRESET_LABEL: Partial<Record<string, TKey>> = {
   qwen: "models.preset.qwen",
   zhipu: "models.preset.zhipu",
   ollama: "models.preset.ollama",
+  minimax: "models.preset.minimax",
 };
 
 const CUSTOM = "__custom__";
@@ -89,7 +91,60 @@ export function ModelsView(): React.ReactElement {
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<LlmProfile | null>(null);
   const [testing, setTesting] = useState("");
+  const [fetchingModels, setFetchingModels] = useState(false);
   const [form] = Form.useForm();
+  /** 模型清单行（Form.useWatch 实时跟随表单）：默认模型与「获取清单」按钮的数据源 */
+  const modelWatch: ProfileModel[] = Form.useWatch("models", form) ?? [];
+
+  /** 拉取端点可用模型：编辑态按档案 id（沿用已存密钥）；新建态用表单当前端点 + 首行明文密钥。
+   *  返回清单与既有行合并（保留已勾选的视觉/语音能力，仅补充缺失的模型名）。 */
+  const fetchModels = async () => {
+    setFetchingModels(true);
+    try {
+      const all = form.getFieldsValue(true) as KeyForm & { baseUrl?: string; apiFormat?: string };
+      const rows = liveRows(all.keys);
+      let body: { id?: string; baseUrl?: string; apiFormat?: string; apiKey?: string } = editing
+        ? { id: editing.id }
+        : {
+            baseUrl: (all.baseUrl ?? "").trim(),
+            apiFormat: all.apiFormat ?? "openai",
+            apiKey: rows[0]?.value ?? "",
+          };
+      if (!editing && (!body.baseUrl || !rows[0]?.value)) {
+        message.warning(t("models.fetchNeedsKey"));
+        return;
+      }
+      if (editing && rows[0]?.value && rows[0].value !== KEY_MASK) {
+        // 编辑态且首行填了新明文密钥：用明文探测（与保存语义一致）
+        body = { baseUrl: all.baseUrl, apiFormat: all.apiFormat ?? "openai", apiKey: rows[0].value };
+      }
+      const r = await api.listProviderModels(body);
+      if (!r.ok) {
+        message.error(t("models.fetchFailed", { err: (r.error ?? `HTTP ${r.status ?? ""}`).slice(0, 140) }));
+        return;
+      }
+      if (r.configured === false) {
+        message.warning(r.message ?? t("models.testNoKey"));
+        return;
+      }
+      const current: ProfileModel[] = (form.getFieldValue("models") ?? []).filter((m: ProfileModel) => m?.model?.trim());
+      const known = new Set(current.map((m) => m.model));
+      const merged: ProfileModel[] = [
+        ...current,
+        ...r.models.filter((m) => !known.has(m)).map((m) => ({ model: m, vision: false, audio: false })),
+      ];
+      form.setFieldsValue({ models: merged });
+      if (r.models.length === 0) {
+        message.warning(r.message ?? t("models.fetchEmpty"));
+      } else {
+        message.success(t("models.fetchOk", { n: r.models.length, add: merged.length - current.length }));
+      }
+    } catch (e) {
+      message.error(t("models.fetchFailed", { err: String(e).slice(0, 140) }));
+    } finally {
+      setFetchingModels(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -486,10 +541,29 @@ export function ModelsView(): React.ReactElement {
             label={t("models.defaultModel")}
             extra={t("models.defaultModelExtra")}
           >
-            <Input placeholder="deepseek-chat" />
+            <AutoComplete
+              allowClear
+              showSearch
+              options={modelWatch.map((m) => ({ value: m.model, label: m.model }))}
+              filterOption={(input, opt) => String(opt?.value ?? "").toLowerCase().includes(input.toLowerCase())}
+              placeholder={t("models.defaultModelPh")}
+            />
           </Form.Item>
 
-          <Form.Item label={t("models.modelList")} style={{ marginBottom: 0 }}>
+          <Form.Item
+            label={t("models.modelList")}
+            tooltip={t("models.fetchModelsTip")}
+            style={{ marginBottom: 0 }}
+          >
+            <Button
+              size="small"
+              icon={<CloudDownloadOutlined />}
+              loading={fetchingModels}
+              onClick={() => void fetchModels()}
+              style={{ marginBottom: 8 }}
+            >
+              {t("models.fetchModels")}
+            </Button>
             <Form.List name="models">
               {(fields, { add, remove }) => (
                 <>

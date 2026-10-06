@@ -32,8 +32,7 @@ use crate::bus::{InProcessBus, MessageBus};
 use crate::config::ExmConfig;
 use crate::cron::CronStore;
 use crate::memory::{MemoryDraft, MemoryEntry, MemoryKind, MemoryStore, RecallHit};
-use crate::orchestrator::{Orchestrator, ORCHESTRATOR_ID};
-use crate::provider::{
+use crate::orchestrator::{Orchestrator, ORCHESTRATOR_ID};use crate::provider::{
     FailoverState, LlmProvider, MockLlmProvider, ModelPool, OpenAiCompatibleProvider,
     UnconfiguredProvider,
 };

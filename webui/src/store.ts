@@ -61,7 +61,7 @@ interface ExmState {
   refreshAgents: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   newSession: () => Promise<void>;
-  send: (text: string, images?: string[]) => Promise<void>;
+  send: (text: string, images?: string[], mode?: string | null) => Promise<void>;
   saveConfig: (body: Record<string, unknown>) => Promise<void>;
   decideApproval: (id: string, approve: boolean) => Promise<void>;
   handleEvent: (evt: WsEvent) => void;
@@ -72,6 +72,12 @@ interface ExmState {
 let ws: WebSocket | null = null;
 /** 连接代际号：每次 connectWs 递增。旧代际残留的 onclose/定时器一律失效，根治 A→B→A 快速切换的闭包竞态 */
 let wsGen = 0;
+/** 连续失败退避（2s → 5s → 10s → 30s 封顶）：成功 open 即归零 */
+let wsBackoff = 0;
+/** 心跳看门狗：超过该时长未收到任何帧（含协议 Pong）即判死重连 */
+const WS_STALE_MS = 45000;
+let wsLastFrame = 0;
+let wsWatch: ReturnType<typeof setInterval> | null = null;
 
 function connectWs(get: () => ExmState): void {
   const sessionId = get().sessionId;
@@ -84,8 +90,10 @@ function connectWs(get: () => ExmState): void {
   const host = base ? base.replace(/^https?:\/\//, "") : location.host;
   ws = new WebSocket(`${proto}://${host}/ws?sessionId=${sessionId}&key=${encodeURIComponent(localStorage.getItem("exm.key") ?? "")}`);
   let reconnected = false; // 本代际是否经历过断连重连（成功后补偿拉取丢失的事件）
+  wsLastFrame = Date.now();
   ws.onopen = () => {
     if (gen !== wsGen) return;
+    wsBackoff = 0; // 连上即归零退避
     get().setWs(true);
     if (!reconnected) return;
     // 断连补偿：重拉消息与任务图恢复丢失事件；图无在途节点则解除 running 卡死
@@ -106,18 +114,51 @@ function connectWs(get: () => ExmState): void {
     if (gen !== wsGen) return; // 旧代际：静默退出，不碰当前连接、不重连
     get().setWs(false);
     reconnected = true;
+    const delay = [2000, 5000, 10000, 30000][Math.min(wsBackoff, 3)];
+    wsBackoff += 1;
     setTimeout(() => {
       if (gen !== wsGen || get().sessionId !== sessionId) return;
       connectWs(get);
-    }, 2000);
+    }, delay);
   };
   ws.onmessage = (m) => {
+    wsLastFrame = Date.now();
     try {
       get().handleEvent(JSON.parse(String(m.data)) as WsEvent);
     } catch {
       /* 忽略坏帧 */
     }
   };
+  // 心跳看门狗（单例）：空闲超时强制重连（浏览器对协议 Pong 不暴露事件，以「收帧时刻」为准——
+  // 服务端 25s 一跳且事件流通常活跃，45s 静默基本等于链路已死）
+  if (wsWatch === null) {
+    wsWatch = setInterval(() => {
+      const cur = ws;
+      if (!cur || cur.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - wsLastFrame > WS_STALE_MS) {
+        cur.close(); // 触发 onclose → 指数退避重连
+      }
+    }, 10000);
+  }
+}
+
+// 网络恢复 / 页面回前台：立即重连（不等退避计时器）
+function reconnectNow(): void {
+  const cur = ws;
+  if (cur && cur.readyState === WebSocket.OPEN) return;
+  wsBackoff = 0;
+  cur?.close(); // 触发 onclose → 立即档退避
+  // onclose 携带旧代际时不会自愈（例如从未连上过），此处直接补一跳
+  setTimeout(() => {
+    if (!ws || ws.readyState === WebSocket.CLOSED) wsBackoff = 0;
+  }, 0);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", reconnectNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") reconnectNow();
+  });
 }
 
 export const useExm = create<ExmState>((set, get) => ({
@@ -250,7 +291,7 @@ export const useExm = create<ExmState>((set, get) => ({
     await get().selectSession(s.id);
   },
 
-  send: async (text, images) => {
+  send: async (text, images, sendMode) => {
     const id = get().sessionId;
     if (!id || !text.trim()) return;
     const label = images?.length ? tr("store.withImages", { text, n: images.length }) : text;
@@ -275,7 +316,7 @@ export const useExm = create<ExmState>((set, get) => ({
         },
       ],
     });
-    await api.chat(id, text, images);
+    await api.chat(id, text, images, sendMode ?? undefined);
   },
 
   saveConfig: async (body) => {

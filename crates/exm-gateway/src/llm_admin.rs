@@ -424,8 +424,117 @@ pub fn routes() -> Router<AppState> {
         .route("/api/llm/profiles/:id", axum::routing::delete(delete_profile))
         .route("/api/llm/active", axum::routing::put(activate_profile))
         .route("/api/llm/test", post(test_profile))
+        .route("/api/llm/models", post(list_provider_models))
         .route(
             "/api/llm/capabilities",
             axum::routing::get(get_capabilities).put(put_capabilities),
         )
+}
+
+// ---------------------------------------------------------------- 远端模型清单拉取（模型页「获取可用模型」）
+
+/// 拉取端点的可用模型清单：按档案 id 解析（沿用已存密钥，掩码语义安全）或显式端点+明文密钥。
+/// openai → GET /models；anthropic → GET /v1/models；gemini → GET /v1beta/models；
+/// azure（deployment 自管，无清单 API）与未知协议返回空清单 + 说明。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListModelsBody {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_format: Option<String>,
+}
+
+pub async fn list_provider_models(
+    State(st): State<AppState>,
+    Json(b): Json<ListModelsBody>,
+) -> impl IntoResponse {
+    let cfg = st.core.config();
+    let (base, probe_key, fmt): (String, String, String) = if let Some(id) = &b.id {
+        let Some(p) = cfg.llm_profiles.iter().find(|p| p.id == *id) else {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "档案不存在" }))).into_response();
+        };
+        let key = if p.api_key.trim().is_empty() {
+            p.api_keys.first().cloned().unwrap_or_default()
+        } else {
+            p.api_key.clone()
+        };
+        (
+            p.base_url.trim_end_matches('/').to_string(),
+            key,
+            if p.api_format.is_empty() { "openai".into() } else { p.api_format.clone() },
+        )
+    } else {
+        let base = b.base_url.clone().unwrap_or_default().trim_end_matches('/').to_string();
+        if base.is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "baseUrl 不能为空" }))).into_response();
+        }
+        (
+            base,
+            b.api_key.clone().unwrap_or_default(),
+            b.api_format.clone().unwrap_or_else(|| "openai".into()),
+        )
+    };
+    if probe_key.trim().is_empty() {
+        return Json(json!({ "ok": false, "configured": false, "models": [], "message": "尚未配置 API Key" }))
+            .into_response();
+    }
+    let client = reqwest::Client::new();
+    let rb = match fmt.as_str() {
+        "anthropic" => client
+            .get(format!("{base}/v1/models"))
+            .header("x-api-key", &probe_key)
+            .header("anthropic-version", "2023-06-01"),
+        "gemini" => client.get(format!("{base}/v1beta/models")).query(&[("key", &probe_key)]),
+        "azure" => {
+            return Json(json!({
+                "ok": true, "models": [],
+                "message": "Azure 的模型 = 部署名（deployment），请手动填写部署清单"
+            }))
+            .into_response()
+        }
+        _ => client.get(format!("{base}/models")).bearer_auth(&probe_key),
+    };
+    let resp = rb.timeout(std::time::Duration::from_secs(12)).send().await;
+    match resp {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let Ok(body) = r.text().await else {
+                return Json(json!({ "ok": false, "models": [], "error": "响应读取失败" })).into_response();
+            };
+            if !(200..300).contains(&status) {
+                return Json(json!({
+                    "ok": false, "status": status, "models": [],
+                    "error": body.chars().take(300).collect::<String>(),
+                }))
+                .into_response();
+            }
+            // 三种响应形态归一为模型名字符串数组
+            let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut models: Vec<String> = Vec::new();
+            if let Some(list) = v.get("data").and_then(|d| d.as_array()) {
+                for m in list {
+                    if let Some(id) = m.get("id").and_then(|x| x.as_str()) {
+                        models.push(id.to_string());
+                    }
+                }
+            }
+            if let Some(list) = v.get("models").and_then(|d| d.as_array()) {
+                for m in list {
+                    // gemini: "models/gemini-2.5-flash" → "gemini-2.5-flash"
+                    if let Some(name) = m.get("name").and_then(|x| x.as_str()) {
+                        models.push(name.trim_start_matches("models/").to_string());
+                    }
+                }
+            }
+            models.sort();
+            models.dedup();
+            Json(json!({ "ok": true, "models": models })).into_response()
+        }
+        Err(e) => Json(json!({ "ok": false, "models": [], "error": e.to_string() })).into_response(),
+    }
 }

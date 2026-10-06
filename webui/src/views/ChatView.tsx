@@ -1,6 +1,6 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, Tooltip, message } from "antd";
 import { AudioOutlined, CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { agentIdEn } from "../models";
@@ -15,10 +15,10 @@ import { ToolCallList } from "../components/ToolCall";
 import { TurnOps } from "../components/HistoryOps";
 import type { ChatMessage } from "../types";
 
-function MessageBubble({ m, turn, ops }: { m: ChatMessage; turn?: number; ops?: React.ReactNode }): React.ReactElement {
+function MessageBubble({ m, turn, ops, orchLabel, showTools }: { m: ChatMessage; turn?: number; ops?: React.ReactNode; orchLabel?: string; showTools?: boolean }): React.ReactElement {
   const tb = useT();
   const isUser = m.role === "user";
-  const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? tb("chat.role.orchestrator") : (m.agentId ?? tb("chat.role.system"));
+  const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? (orchLabel ?? tb("chat.role.orchestrator")) : (m.agentId ?? tb("chat.role.system"));
   return (
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
@@ -26,7 +26,7 @@ function MessageBubble({ m, turn, ops }: { m: ChatMessage; turn?: number; ops?: 
         {turn != null && <span className="msg-turn mono">#{turn}</span>}
         {ops && <span className="msg-ops">{ops}</span>}
       </div>
-      {m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
+      {showTools && m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
   );
@@ -82,6 +82,12 @@ export function ChatView(): React.ReactElement {
     await loadTarget();
   };
   const [text, setText] = useState("");
+  /** 编码模式：展开思维链与文件/命令操作轨迹；关闭 = 普通聊天（只看结论输出） */
+  const [codeMode, setCodeMode] = useState(() => localStorage.getItem("exm.codeMode") === "1");
+  const toggleCodeMode = (v: boolean) => {
+    setCodeMode(v);
+    localStorage.setItem("exm.codeMode", v ? "1" : "0");
+  };
   const [images, setImages] = useState<string[]>([]);
   const [sessionFilter, setSessionFilter] = useState("");
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
@@ -177,6 +183,10 @@ export function ChatView(): React.ReactElement {
 
   const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
   const activeMeta = groups.find((g) => g.id === activeGroup);
+  // 指挥体显示名（10）：单体模式显示该智能体名；组模式显示「指挥体 [组名]」
+  const orchLabel = target.mode === "single"
+    ? (singles.find((x) => x.identifier === target.id)?.name ?? target.id)
+    : t("chat.orchGroup", { group: activeMeta?.name ?? target.id });
 
   const removeSession = async (id: string) => {
     try {
@@ -380,6 +390,15 @@ export function ChatView(): React.ReactElement {
           <span className="console-sep" />
           <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
           <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
+          <Tooltip title={t("chat.mode.codeTip")}>
+            <button
+              className={`mode-toggle ${codeMode ? "on" : ""}`}
+              onClick={() => toggleCodeMode(!codeMode)}
+              title={t("chat.mode.codeTip")}
+            >
+              {t("chat.mode.code")}
+            </button>
+          </Tooltip>
           {usage && (
             <span className="readout console-usage">
               <span className="k">TOKENS</span>
@@ -421,6 +440,8 @@ export function ChatView(): React.ReactElement {
               key={m.id}
               m={m}
               turn={turn}
+              orchLabel={orchLabel}
+              showTools={codeMode}
               ops={
                 turn != null && !running ? (
                   <TurnOps turn={turn} onEdit={openEdit} onUndo={doUndo} onFork={doFork} />
@@ -433,9 +454,9 @@ export function ChatView(): React.ReactElement {
             <Card size="small" className="msg-bubble msg-agent">
               <Space direction="vertical" className="full-width">
                 <div>
-                  <Spin size="small" /> <b>{t("chat.orchRunning")}</b>
+                  <Spin size="small" /> <b>{codeMode ? t("chat.orchRunning") : `${orchLabel} …`}</b>
                 </div>
-                {timeline.map((tl, i) => (
+                {codeMode && timeline.map((tl, i) => (
                   <div key={i} className={`timeline-item tl-${tl.kind}`}>
                     <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
                       {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
@@ -443,8 +464,8 @@ export function ChatView(): React.ReactElement {
                     <span className="tl-text">{tl.text}</span>
                   </div>
                 ))}
-                {/* 工具执行轨迹：文件操作 / 终端命令 / 截屏全程可见 */}
-                <ToolCallList calls={runToolCalls} />
+                {/* 工具执行轨迹：编码模式可见（文件操作 / 终端命令 / 截屏） */}
+                {codeMode && <ToolCallList calls={runToolCalls} />}
               </Space>
             </Card>
           )}
@@ -454,7 +475,7 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
               </div>
-              <ThinkingBlock text={liveUnitThinking[agent] ?? ""} label={t("chat.thinking")} />
+              {codeMode && <ThinkingBlock text={liveUnitThinking[agent] ?? ""} label={t("chat.thinking")} />}
               <pre className="live-pre">{content}</pre>
             </Card>
           ))}
@@ -462,9 +483,9 @@ export function ChatView(): React.ReactElement {
           {liveOrch && (
             <Card size="small" className="msg-bubble msg-agent live-card">
               <div className="msg-head">
-                <RobotOutlined /> <b>{t("chat.role.orchestrator")}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
+                <RobotOutlined /> <b>{orchLabel}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
               </div>
-              <ThinkingBlock text={liveThinking} label={t("chat.thinking")} />
+              {codeMode && <ThinkingBlock text={liveThinking} label={t("chat.thinking")} />}
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
           )}

@@ -44,13 +44,14 @@ async fn auth_middleware(
 ) -> axum::response::Response {
     let required = !st.core.config().security.auth_key.is_empty();
     let path = req.uri().path();
-    // 守 /api/* 与 /ws（WS 在升级提取前完成鉴权）；静态资源（壳/登录页）与 verify 豁免。
-    // MCP HTTP 挂载（10.3）复用同一鉴权中间件：挂载路径启用时一并纳入守卫
+    // 守 /api/* 与 MCP 挂载；静态资源（壳/登录页）与 verify 豁免。
+    // /ws 不在此守卫：浏览器 WebSocket 无法携带自定义头，由 ws_handler 自身校验查询参数密钥
+    // （缺失/错误同样 401，安全口径不降级）。MCP HTTP 挂载（10.3）启用时纳入守卫。
     let mcp_path = {
         let c = st.core.config();
         if c.mcp_serve.enabled { format!("/{}", c.mcp_serve.http_path.trim_matches('/')) } else { String::new() }
     };
-    let guarded = path.starts_with("/api/") || path == "/ws" || (!mcp_path.is_empty() && path == mcp_path);
+    let guarded = path.starts_with("/api/") || (!mcp_path.is_empty() && path == mcp_path);
     if !required || path == "/api/auth/verify" || !guarded {
         return next.run(req).await;
     }
@@ -989,6 +990,9 @@ struct ChatBody {
     /// 图片附件（data URL，多模态输入；随本轮进入规划）
     #[serde(default)]
     images: Vec<String>,
+    /// 本轮模式（思考模式）：direct = 强制 L0 直答；full = 强制拆解派发。缺省 = 跟随指挥体规划
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Json<ChatBody>) -> impl IntoResponse {
@@ -1004,6 +1008,9 @@ async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Js
     let images = body.images.clone();
     if !images.is_empty() {
         core.stage_images(&id, images);
+    }
+    if let Some(mode) = &body.mode {
+        exm_core::orchestrator::set_session_mode(&id, mode);
     }
     tokio::spawn(async move {
         if let Err(e) = core.chat(&id, &text).await {
@@ -1741,8 +1748,18 @@ async fn ws_handler(
 
 async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<String>) {
     let mut rx = core.subscribe();
+    // 心跳保活：周期性协议层 Ping（浏览器自动 Pong）。空闲连接经 NAT/代理常被静默丢弃，
+    // 且无事件流时客户端无从判活——Ping 既保活又让断连可感知。
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(25));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    ping.tick().await; // 首跳立即返回，跳过
     loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if socket.send(Message::Ping(Vec::new())).await.is_err() {
+                    break;
+                }
+            }
             evt = rx.recv() => {
                 match evt {
                     Ok(e) => {

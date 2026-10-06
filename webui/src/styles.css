@@ -1272,7 +1272,10 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 150px;
+  /* 稳定 8 列（8 × "XX " = 24ch）：宽度由字宽推导，任何字号下列都不被截断 */
+  font-family: var(--mono);
+  font-size: 12px;
+  width: 24ch;
   overflow: hidden;
   opacity: 0.15;
   z-index: 1;
@@ -1854,3 +1857,60 @@ body {
 .code-msg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .code-msg .turn-op { padding: 0 4px; }
 .edit-warn { margin-bottom: 12px; }
+
+/* ============ 紧凑化（hermes 口径）：整体缩进/间距收一档 ============ */
+.app-content { padding: 12px 16px 18px; }
+.page-head { padding: 0 0 10px; margin-bottom: 10px; }
+.page-head-row { gap: 16px; }
+.page-desc { line-height: 1.55; margin: 4px 0 0; }
+.pane-toolbar { margin-bottom: 10px; }
+.pane-empty { margin: 16px 0; }
+.pane-loading { padding: 24px; }
+.skill-grid { gap: 10px; }
+.overview-chips { gap: 8px; margin: 8px 0 10px; }
+.chip { padding: 6px 12px; min-width: 72px; }
+.chip-num { font-size: 18px; }
+.groups-layout { gap: 12px; }
+.groups-layout .list-rail { width: 220px; }
+.chat-shell { gap: 12px; }
+.cap-grid { gap: 6px 12px; }
+.cap-card { margin-top: 10px; }
+.ant-card .ant-card-body { padding: 12px; }
+.ant-card .ant-card-head { min-height: 38px; }
+.ant-modal .ant-form-item { margin-bottom: 14px; }
+
+/* ============ 弹窗防溢出（全局）：内容超出视口即内部滚动 ============ */
+.ant-modal { max-width: calc(100vw - 24px); padding-bottom: 16px; }
+.ant-modal .ant-modal-content { max-height: calc(100vh - 88px); display: flex; flex-direction: column; }
+.ant-modal .ant-modal-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ant-modal .ant-modal-header { flex: none; }
+.ant-modal .ant-modal-footer { flex: none; }
+
+/* ============ 组卡片网格（组页卡片化改造） ============ */
+.group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.group-card { cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.group-card:hover { border-color: var(--accent-30); background: var(--accent-04); }
+.group-card .group-card-head { display: flex; align-items: center; gap: 8px; }
+.group-card .group-card-name { font-weight: 600; }
+.group-card .group-card-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.group-card .group-card-desc { margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.group-card .group-card-meta { margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* 编码模式开关（对话页 console-bar 内） */
+.mode-toggle {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mode-toggle:hover { color: var(--text-hi); border-color: var(--accent-30); }
+.mode-toggle.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.15);
+}

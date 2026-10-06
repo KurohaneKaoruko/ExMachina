@@ -16,6 +16,31 @@ use tokio::sync::{broadcast, mpsc::unbounded_channel, Mutex};
 
 pub const ORCHESTRATOR_ID: &str = "exmachina-orchestrator";
 
+// ---------------------------------------------------------------- 会话轮次模式（思考模式：直答 / 集群）
+
+/// 本轮模式暂存（会话 → 模式）：对话请求携带、`plan()` 取走即消费。
+/// direct = 强制 L0 直答（一轮工具循环内闭环）；full = 强制拆解派发（禁止 L0）。
+static SESSION_MODES: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+fn session_modes() -> &'static parking_lot::Mutex<std::collections::HashMap<String, String>> {
+    SESSION_MODES.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 登记某会话下一轮的执行模式（"direct" | "full"；其他值忽略）
+pub fn set_session_mode(session_id: &str, mode: &str) {
+    match mode {
+        "direct" | "full" => {
+            session_modes().lock().insert(session_id.to_string(), mode.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn take_session_mode(session_id: &str) -> Option<String> {
+    session_modes().lock().remove(session_id)
+}
+
 /// 自定义组的规划契约：主智能体提示词 + 该契约 = 指挥体能力
 pub const PLANNING_CONTRACT: &str = "
 
@@ -1095,6 +1120,18 @@ impl Orchestrator {
             user_msg,
         ];
 
+        // 轮次模式（思考模式）：direct = 强制 L0 直答；full = 强制拆解派发。提示注入 + 校验双保险
+        let forced_mode = take_session_mode(session_id);
+        if let Some(mode) = &forced_mode {
+            let line = match mode.as_str() {
+                "direct" => "【本轮模式：直答】routeLevel 必须为 \"L0\"，nodes 必须为空数组，答案完整写入 finalAnswer。",
+                _ => "【本轮模式：集群】除非单体模式，routeLevel 不得为 \"L0\"：必须拆解为可派发的 nodes（至少一个节点）。",
+            };
+            if let Some(last) = messages.last_mut() {
+                last.content.push_str(&format!("\n\n{line}"));
+            }
+        }
+
         let mut last_err = String::new();
         for _attempt in 0..3 {
             let output = self.call_orch_stream(session_id, &messages).await?;
@@ -1106,7 +1143,18 @@ impl Orchestrator {
                         .filter(|n| self.registry.get(&n.agent_identifier).is_none())
                         .map(|n| n.agent_identifier.clone())
                         .collect();
-                    if self.registry.single_mode() && !plan.nodes.is_empty() {
+                    let mode_violation = match forced_mode.as_deref() {
+                        Some("direct") => !(matches!(plan.route_level, RouteLevel::L0) || plan.nodes.is_empty()),
+                        Some("full") => {
+                            matches!(plan.route_level, RouteLevel::L0)
+                                && plan.nodes.is_empty()
+                                && !self.registry.single_mode()
+                        }
+                        _ => false,
+                    };
+                    if mode_violation {
+                        last_err = "计划违反本轮模式约束（direct = 仅 L0 直答 / full = 必须派发），请重新规划".into();
+                    } else if self.registry.single_mode() && !plan.nodes.is_empty() {
                         last_err = "单体模式只支持 L0 直答：nodes 必须为空，回答放进 finalAnswer".into();
                     } else if unknown.is_empty() {
                         return Ok(plan);

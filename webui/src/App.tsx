@@ -28,10 +28,8 @@ import { CharStream } from "./components/CharStream";
 import { AsciiDivider } from "./components/Ascii";
 import { LoginView } from "./views/LoginView";
 import { ChatView } from "./views/ChatView";
-import { CodingView } from "./views/CodingView";
 import { ModelsView } from "./views/ModelsView";
 import { GraphView } from "./views/GraphView";
-import { AgentsView } from "./views/AgentsView";
 import { LedgerView } from "./views/LedgerView";
 import { MemoryView } from "./views/MemoryView";
 import { SettingsView } from "./views/SettingsView";
@@ -45,11 +43,9 @@ import { ActivityView } from "./views/ActivityView";
 
 type ViewKey =
   | "chat"
-  | "code"
   | "graph"
   | "agent"
   | "groups"
-  | "agents"
   | "skills"
   | "models"
   | "automations"
@@ -68,10 +64,8 @@ export const NAV_ITEMS: {
   icon: React.ReactNode;
 }[] = [
   { key: "chat", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
-  { key: "code", en: "CODE", labelKey: "nav.code", icon: <CodeOutlined /> },
   { key: "agent", en: "AGENTS", labelKey: "nav.agent", icon: <UserOutlined /> },
   { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
-  { key: "agents", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
   { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
   { key: "models", en: "MODELS", labelKey: "nav.models", icon: <ApiOutlined /> },
   { key: "graph", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
@@ -242,10 +236,8 @@ export default function App(): React.ReactElement {
         {view === "graph" && <GraphView />}
         {view === "agent" && <SinglesView />}
         {view === "groups" && <GroupsView />}
-        {view === "agents" && <AgentsView />}
         {view === "skills" && <SkillsView />}
         {view === "models" && <ModelsView />}
-        {view === "code" && <CodingView />}
         {view === "automations" && <AutomationsView />}
         {view === "approvals" && <ApprovalsView />}
         {view === "channels" && <ChannelsView />}

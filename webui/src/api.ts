@@ -383,13 +383,16 @@ export const api = {
   sessionSnapshots: (id: string) =>
     req<{ turn: number; messageCount: number; status: string }[]>(`/sessions/${id}/snapshots`),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
-  chat: (id: string, text: string, images?: string[]) =>
+  chat: (id: string, text: string, images?: string[], mode?: string) =>
     req<{ accepted: boolean }>(`/sessions/${id}/chat`, {
       method: "POST",
-      body: JSON.stringify(images?.length ? { text, images } : { text }),
+      body: JSON.stringify({
+        text,
+        ...(images?.length ? { images } : {}),
+        ...(mode ? { mode } : {}),
+      }),
     }),
-  agents: () => req<AgentDefinition[]>("/agents"),
-  groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),
+  agents: () => req<AgentDefinition[]>("/agents"),  groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),
   createGroup: (body: { name: string; id?: string; description?: string }) =>
     req<GroupMeta>("/groups", { method: "POST", body: JSON.stringify(body) }),
   switchGroup: (id: string) =>
@@ -571,6 +574,12 @@ export const api = {
     req<{ ok: boolean; mock?: boolean; configured?: boolean; status?: number; snippet?: string; message?: string; error?: string }>("/llm/test", {
       method: "POST",
       body: JSON.stringify(id ? { id } : {}),
+    }),
+  // 拉取端点可用模型清单：按档案 id（沿用已存密钥）或显式端点+明文密钥
+  listProviderModels: (body: { id?: string; baseUrl?: string; apiKey?: string; apiFormat?: string }) =>
+    req<{ ok: boolean; configured?: boolean; status?: number; models: string[]; message?: string; error?: string }>("/llm/models", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   llmCapabilities: () => req<LlmCapabilities>("/llm/capabilities"),
   saveLlmCapabilities: (body: Partial<LlmCapabilities>) =>
