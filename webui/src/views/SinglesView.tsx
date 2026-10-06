@@ -105,6 +105,37 @@ export function SinglesView(): React.ReactElement {
     }
   };
 
+  const [promptOf, setPromptOf] = useState<SingleInfo | null>(null);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [promptSaving, setPromptSaving] = useState(false);
+
+  const openPrompt = async (s: SingleInfo) => {
+    setPromptOf(s);
+    setPromptDraft("");
+    try {
+      const info = await api.getSinglePrompt(s.identifier);
+      setPromptDraft(info.prompt);
+    } catch {
+      message.info(t("agents.promptMissing"));
+      setPromptOf(null);
+      return;
+    }
+  };
+
+  const savePrompt = async () => {
+    if (!promptOf) return;
+    setPromptSaving(true);
+    try {
+      await api.putSinglePrompt(promptOf.identifier, promptDraft);
+      message.success(t("agents.promptSaved"));
+      setPromptOf(null);
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    } finally {
+      setPromptSaving(false);
+    }
+  };
+
   const openSoul = async (s: SingleInfo) => {
     setSoulOf(s);
     setSoulInfo(null);
@@ -145,6 +176,8 @@ export function SinglesView(): React.ReactElement {
     }
   };
 
+  const [delTarget, setDelTarget] = useState<SingleInfo | null>(null);
+
   const cardMenu = (s: SingleInfo) => [
     {
       key: "model",
@@ -163,9 +196,21 @@ export function SinglesView(): React.ReactElement {
       },
     },
     {
+      key: "prompt",
+      label: t("singles.menuPrompt"),
+      onClick: () => void openPrompt(s),
+    },
+    {
       key: "soul",
       label: t("singles.menuSoul"),
       onClick: () => void openSoul(s),
+    },
+    { type: "divider" as const },
+    {
+      key: "del",
+      label: t("common.delete"),
+      danger: true,
+      onClick: () => setDelTarget(s),
     },
   ];
 
@@ -203,16 +248,9 @@ export function SinglesView(): React.ReactElement {
                 </Space>
               }
               extra={
-                <Space>
-                  <Popconfirm title={t("singles.deleteConfirm")} onConfirm={() => void remove(s.identifier)}>
-                    <Button size="small" danger>
-                      {t("common.delete")}
-                    </Button>
-                  </Popconfirm>
-                  <Dropdown menu={{ items: cardMenu(s) }} trigger={["click"]} placement="bottomRight">
-                    <Button size="small" icon={<MoreOutlined />} aria-label={t("singles.cardMenu")} />
-                  </Dropdown>
-                </Space>
+                <Dropdown menu={{ items: cardMenu(s) }} trigger={["click"]} placement="bottomRight">
+                  <Button size="small" icon={<MoreOutlined />} aria-label={t("singles.cardMenu")} />
+                </Dropdown>
               }
             >
               <div className="dim">{s.description}</div>
@@ -266,6 +304,44 @@ export function SinglesView(): React.ReactElement {
       </Modal>
 
       {/* 编辑 SOUL.MD（人设：自定义状态 + 恢复默认 + 文本编辑） */}
+      <Modal
+        open={delTarget !== null}
+        title={t("singles.deleteConfirm")}
+        onCancel={() => setDelTarget(null)}
+        onOk={() => {
+          if (delTarget) void remove(delTarget.identifier);
+          setDelTarget(null);
+        }}
+        okText={t("common.delete")}
+        okButtonProps={{ danger: true }}
+      >
+        <span className="dim">{t("singles.deleteHint", { name: delTarget?.name ?? "", id: delTarget?.identifier ?? "" })}</span>
+      </Modal>
+
+      <Modal
+        open={promptOf !== null}
+        title={promptOf ? t("singles.promptTitle", { name: promptOf.name }) : ""}
+        onCancel={() => setPromptOf(null)}
+        width={720}
+        footer={
+          <Space>
+            <Button onClick={() => setPromptOf(null)}>{t("common.close")}</Button>
+            <Button type="primary" loading={promptSaving} onClick={() => void savePrompt()}>
+              {t("agents.saveHot")}
+            </Button>
+          </Space>
+        }
+      >
+        <Input.TextArea
+          rows={18}
+          className="prompt-editor"
+          spellCheck={false}
+          value={promptDraft}
+          onChange={(e) => setPromptDraft(e.target.value)}
+          placeholder={t("singles.promptPh")}
+        />
+      </Modal>
+
       <Modal
         open={soulOf !== null}
         title={soulOf ? t("singles.soulTitle", { name: soulOf.name }) : ""}

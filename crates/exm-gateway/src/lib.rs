@@ -188,6 +188,10 @@ pub fn build_router(core: Arc<Core>) -> Router {
             "/api/groups/:gid/agents/:identifier",
             axum::routing::delete(remove_agent_from_group),
         )
+        .route(
+            "/api/groups/:gid/agents/:identifier/prompt",
+            get(get_agent_prompt).put(put_agent_prompt),
+        )
         .route("/api/auth/verify", post(verify_auth))
         // MCP 服务端 HTTP 挂载（10.3）：配置启用时挂载（默认关闭 = 不挂载）；
         // 挂载在鉴权中间件之前，复用同一鉴权口径
@@ -1372,8 +1376,47 @@ async fn get_agent(State(st): State<AppState>, Path(identifier): Path<String>) -
 
 // ---------------------------------------------------------------- 人设（说话风格）
 
-async fn get_persona(State(st): State<AppState>, Path(identifier): Path<String>) -> impl IntoResponse {
-    match st.core.persona(&identifier) {
+// ---------------------------------------------------------------- 组内个体系统提示词（PROMPT 读写）
+
+/// 组内个体系统提示词读取（GET /api/groups/:gid/agents/:identifier/prompt）
+async fn get_agent_prompt(
+    State(st): State<AppState>,
+    Path((gid, identifier)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let Some(def) = st.core.registry().agents_in_group(&gid).into_iter().find(|a| a.identifier == identifier)
+    else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "个体不存在" }))).into_response();
+    };
+    match st.core.registry().load_group_prompt(&gid, &def.prompt_file) {
+        Ok(prompt) => Json(json!({ "identifier": identifier, "promptFile": def.prompt_file, "prompt": prompt })).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "提示词文件不存在", "promptFile": def.prompt_file })),
+        )
+            .into_response(),
+    }
+}
+
+/// 组内个体系统提示词保存（PUT）：热生效，下一轮派发即装载
+async fn put_agent_prompt(
+    State(st): State<AppState>,
+    Path((gid, identifier)): Path<(String, String)>,
+    Json(b): Json<crate::singles::PromptBody>,
+) -> impl IntoResponse {
+    let Some(def) = st.core.registry().agents_in_group(&gid).into_iter().find(|a| a.identifier == identifier)
+    else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "个体不存在" }))).into_response();
+    };
+    if b.prompt.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "提示词不能为空" }))).into_response();
+    }
+    match st.core.registry().write_group_prompt(&gid, &def.prompt_file, &b.prompt) {
+        Ok(_) => Json(json!({ "ok": true, "identifier": identifier })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+async fn get_persona(State(st): State<AppState>, Path(identifier): Path<String>) -> impl IntoResponse {    match st.core.persona(&identifier) {
         Ok(persona) => {
             let custom = st.core.persona_is_custom(&identifier).unwrap_or(false);
             Json(json!({

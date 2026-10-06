@@ -14,6 +14,64 @@ pub struct ToolSpec {
     pub parameters: serde_json::Value,
 }
 
+/// 内联 `<think>` 分流状态机（provider 不经手，正文增量的前置过滤）。
+/// 某些端点（MiniMax-M1 / DeepSeek R1 文本形态）把思考链以 `<think>…</think>`
+/// 内联在正文里——本机把它切到思维链轨道，正文只留答案。
+/// state：0 = 未判定（前缀不足以判定是否思考开头）1 = 思考中 2 = 正文。
+mod inline_think {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+
+    /// 输入一段正文增量，返回 (是否思考, 文本) 段列表（可能同时含两轨）。
+    pub fn route(state: &mut u8, buf: &mut String, delta: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        match *state {
+            2 => {
+                if !delta.is_empty() {
+                    out.push((false, delta.to_string()));
+                }
+            }
+            0 => {
+                buf.push_str(delta);
+                if buf.starts_with(OPEN) {
+                    *state = 1;
+                    let rest = buf[OPEN.len()..].to_string();
+                    buf.clear();
+                    out.extend(route(state, buf, &rest));
+                } else if buf.len() >= OPEN.len() {
+                    // 前缀不是 "<think>"：整段正文直通（后续增量不再判）
+                    *state = 2;
+                    let all = std::mem::take(buf);
+                    out.push((false, all));
+                }
+                // else：不足判定长度，继续攒（流结束时的收尾统一冲刷）
+            }
+            _ => {
+                // 1 = 思考中：找闭合标签；找不到则放出安全前缀（保留可能的半截 "</…"）
+                buf.push_str(delta);
+                if let Some(pos) = buf.find(CLOSE) {
+                    let th = buf[..pos].to_string();
+                    let rest = buf[pos + CLOSE.len()..].to_string();
+                    buf.clear();
+                    *state = 2;
+                    if !th.is_empty() {
+                        out.push((true, th));
+                    }
+                    out.extend(route(state, buf, &rest));
+                } else {
+                    let keep = CLOSE.len().saturating_sub(1).min(buf.len());
+                    let emit = buf.len() - keep;
+                    if emit > 0 {
+                        let th: String = buf.drain(..emit).collect();
+                        out.push((true, th));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// 模型发起的一次工具调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -976,6 +1034,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let mut acc = String::new();
         let mut reasoning_acc = String::new();
         let mut buf = String::new();
+        // 内联思维链分流（MiniMax-M1 等把思考放 <think>…</think> 正文内）：0=未判定 1=思考中 2=正文
+        let mut think_state: u8 = 0;
+        let mut think_buf = String::new();
         // 用量统计（三协议：openai 末块 usage / anthropic message_start+message_delta / gemini usageMetadata）
         let mut usage_prompt: u64 = 0;
         let mut usage_completion: u64 = 0;
@@ -1062,8 +1123,16 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         let _ = tx.send(StreamDelta::Thinking(t));
                     }
                     if let Some(d) = text_delta {
-                        acc.push_str(&d);
-                        let _ = tx.send(StreamDelta::Text(d));
+                        // 正文增量先过内联 <think> 分流，再分别入轨
+                        for (is_think, part) in inline_think::route(&mut think_state, &mut think_buf, &d) {
+                            if is_think {
+                                reasoning_acc.push_str(&part);
+                                let _ = tx.send(StreamDelta::Thinking(part));
+                            } else {
+                                acc.push_str(&part);
+                                let _ = tx.send(StreamDelta::Text(part));
+                            }
+                        }
                     }
                     // 用量：openai（末块 usage）/ anthropic（message_start 输入）/ gemini
                     if let Some(u) = v.get("usage") {
@@ -1096,6 +1165,17 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         }
                     }
                 }
+            }
+        }
+        // 收尾：未判定的前缀缓冲（不足 "<think>" 长度即结束）或未闭合的思考尾段冲刷
+        if !think_buf.is_empty() {
+            let text = std::mem::take(&mut think_buf);
+            if think_state == 1 {
+                reasoning_acc.push_str(&text);
+                let _ = tx.send(StreamDelta::Thinking(text));
+            } else {
+                acc.push_str(&text);
+                let _ = tx.send(StreamDelta::Text(text));
             }
         }
         let mut tool_calls: Vec<ToolCall> = call_frags

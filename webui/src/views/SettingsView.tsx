@@ -9,7 +9,6 @@ import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
 import { PageHeader } from "../components/PageHeader";
-import { LimitsPanel } from "../components/LimitsPanel";
 import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
 
 /** 分组元数据。ui 是本地偏好分区，不属于后端 config schema */
@@ -335,7 +334,6 @@ export function SettingsView(): React.ReactElement {
           <div className="pane-loading"><i /></div>
         )}
         </section>
-        <LimitsPanel />
       </div>
     </div>
   );

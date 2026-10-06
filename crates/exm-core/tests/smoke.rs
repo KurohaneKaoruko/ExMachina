@@ -447,7 +447,7 @@ async fn single_agent_target_switch_and_l0_direct() {
     assert!(core.registry().units().is_empty(), "单体模式无派发个体");
     let active_list = core.registry().list_active();
     assert!(active_list.iter().any(|a| a.identifier == "lone-writer"), "当前范围应含目标单体");
-    assert!(active_list.iter().all(|a| a.identifier != "exmachina-orchestrator"), "单体模式不应混入组编成");
+    assert!(active_list.iter().all(|a| a.identifier != "orchestrator"), "单体模式不应混入组编成");
     let scope = core.registry().active_scope();
     assert_eq!(scope, "single:lone-writer");
 
@@ -477,7 +477,7 @@ async fn single_agent_target_switch_and_l0_direct() {
     let prompt = core.registry().load_single_prompt(&machina.prompt_file).unwrap();
     assert!(prompt.contains("本机"), "Machina 提示词应含「本机」自称");
     // 指挥体不叫 Machina（组指挥体 ≠ 默认智能体）
-    let orch = core.agent("exmachina-orchestrator").expect("指挥体应存在");
+    let orch = core.agent("orchestrator").expect("指挥体应存在");
     assert_ne!(orch.name, "Machina");
 }
 

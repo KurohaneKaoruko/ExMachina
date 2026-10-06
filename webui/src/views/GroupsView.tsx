@@ -8,7 +8,7 @@ import {
   ArrowLeftOutlined, DeleteOutlined, EditOutlined, FormOutlined, PlusOutlined,
   SettingOutlined, UndoOutlined, UsergroupDeleteOutlined,
 } from "@ant-design/icons";
-import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile, type PersonaInfo } from "../api";
+import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
 import { buildCapabilityOptions, buildModelOptions, groupIdEn } from "../models";
@@ -36,11 +36,8 @@ export function GroupsView(): React.ReactElement {
   // 成员编辑 / 人设（原「子个体」页能力并入组详情）
   const [editing, setEditing] = useState<AgentDefinition | null>(null);
   const [editForm] = Form.useForm();
-  const [personaOf, setPersonaOf] = useState<AgentDefinition | null>(null);
-  const [personaInfo, setPersonaInfo] = useState<PersonaInfo | null>(null);
-  const [personaDraft, setPersonaDraft] = useState("");
-  const [saving, setSaving] = useState(false);
   const [editFormProfiles, setEditFormProfiles] = useState<LlmProfile[]>([]);
+  const [promptLoading, setPromptLoading] = useState(false);
 
   const meta: GroupMeta | undefined = groups.find((g) => g.id === entered) ?? undefined;
 
@@ -177,15 +174,24 @@ export function GroupsView(): React.ReactElement {
   );
 
   // ---- 成员编辑 / 人设（并入原「子个体」页能力） ----
-  const openEdit = (a: AgentDefinition) => {
+  const openEdit = async (a: AgentDefinition) => {
     setEditing(a);
     editForm.setFieldsValue({
       name: a.name,
       description: a.description,
-      domain: a.domain,
-      capabilities: a.capabilities ?? [],
       modelHint: a.modelHint ?? undefined,
+      prompt: "",
     });
+    setPromptLoading(true);
+    try {
+      const info = await api.getAgentPrompt(meta!.id, a.identifier);
+      editForm.setFieldsValue({ prompt: info.prompt });
+    } catch {
+      editForm.setFieldsValue({ prompt: "" });
+      message.info(t("agents.promptMissing"));
+    } finally {
+      setPromptLoading(false);
+    }
   };
 
   const submitEdit = async () => {
@@ -195,56 +201,17 @@ export function GroupsView(): React.ReactElement {
       await api.updateAgent(editing.identifier, {
         name: v.name,
         description: v.description,
-        domain: (v.domain ?? "").trim(),
-        capabilities: (v.capabilities ?? []).map((s: string) => s.trim()).filter(Boolean),
         modelHint: v.modelHint ?? "",
       });
+      if ((v.prompt ?? "").trim()) {
+        await api.putAgentPrompt(meta.id, editing.identifier, v.prompt);
+      }
       message.success(t("agents.editSaved", { name: v.name }));
       setEditing(null);
       await loadMembers(meta.id);
       await refreshAgents();
     } catch (e) {
       message.error(t("common.saveFailed", { err: String(e) }));
-    }
-  };
-
-  const openPersona = async (a: AgentDefinition) => {
-    setPersonaOf(a);
-    setPersonaInfo(null);
-    setPersonaDraft("");
-    try {
-      const info = await api.getPersona(a.identifier);
-      setPersonaInfo(info);
-      setPersonaDraft(info.persona);
-    } catch (e) {
-      message.error(t("agents.personaReadFailed", { err: String(e) }));
-      setPersonaOf(null);
-    }
-  };
-
-  const savePersona = async () => {
-    if (!personaOf) return;
-    setSaving(true);
-    try {
-      await api.putPersona(personaOf.identifier, personaDraft);
-      message.success(t("agents.personaSaved"));
-      setPersonaInfo(await api.getPersona(personaOf.identifier));
-    } catch (e) {
-      message.error(t("common.saveFailed", { err: String(e) }));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const resetPersona = async () => {
-    if (!personaOf) return;
-    try {
-      await api.resetPersona(personaOf.identifier);
-      setPersonaInfo(await api.getPersona(personaOf.identifier));
-      setPersonaDraft("");
-      message.success(t("agents.personaReset"));
-    } catch (e) {
-      message.error(t("agents.resetFailed", { err: String(e) }));
     }
   };
 
@@ -336,8 +303,9 @@ export function GroupsView(): React.ReactElement {
                     key: "name",
                     render: (_, a: AgentDefinition) => (
                       <span>
-                        {meta.primary === a.identifier ? <Tag color="blue">{t("agents.primaryTag")}</Tag> : null}
-                        <b>{a.name}</b> <code>{a.identifier}</code>
+                        <b>{a.name}</b>
+                        {meta.primary === a.identifier && <Tag color="blue">{t("agents.primaryTag")}</Tag>}
+                        <code>{a.identifier}</code>
                       </span>
                     ),
                   },
@@ -362,11 +330,8 @@ export function GroupsView(): React.ReactElement {
                     width: 220,
                     render: (_, a: AgentDefinition) => (
                       <Space size={4}>
-                        <Button size="small" icon={<FormOutlined />} onClick={() => openEdit(a)}>
+                        <Button size="small" icon={<FormOutlined />} onClick={() => void openEdit(a)}>
                           {t("agents.edit")}
-                        </Button>
-                        <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
-                          {t("agents.personaBtn")}
                         </Button>
                         {!isBuiltin && meta.primary !== a.identifier && (
                           <>
@@ -438,12 +403,16 @@ export function GroupsView(): React.ReactElement {
             <Form.Item name="description" label={t("agents.f.duty")} rules={[{ required: true }]}>
               <Input.TextArea rows={2} />
             </Form.Item>
-            <Form.Item name="domain" label={t("agents.f.domain")}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="capabilities" label={t("agents.f.caps")}>
-              <Select mode="tags" open={false} placeholder={t("agents.f.capsPh")} />
-            </Form.Item>
+            <Spin spinning={promptLoading}>
+              <Form.Item
+                name="prompt"
+                label={t("agents.f.promptTitle")}
+                extra={t("agents.f.promptEditExtra")}
+                rules={[{ required: true, whitespace: true, message: t("models.modelNameRequired") }]}
+              >
+                <Input.TextArea rows={12} className="prompt-editor" spellCheck={false} />
+              </Form.Item>
+            </Spin>
             <Form.Item name="modelHint" label={t("agents.f.model")} extra={t("agents.f.modelExtra")}>
               <Select
                 allowClear
@@ -456,45 +425,6 @@ export function GroupsView(): React.ReactElement {
           </Form>
         </Modal>
 
-        {/* 人设弹窗 */}
-        <Modal
-          open={personaOf !== null}
-          title={personaOf ? t("agents.personaTitle", { name: personaOf.name, id: personaOf.identifier }) : ""}
-          onCancel={() => setPersonaOf(null)}
-          width={640}
-          footer={
-            <Space>
-              <Popconfirm
-                title={t("agents.resetConfirm")}
-                onConfirm={() => void resetPersona()}
-                disabled={personaInfo ? !personaInfo.custom : false}
-              >
-                <Button icon={<UndoOutlined />} disabled={personaInfo ? !personaInfo.custom : false}>
-                  {t("agents.resetBtn")}
-                </Button>
-              </Popconfirm>
-              <Button onClick={() => setPersonaOf(null)}>{t("common.close")}</Button>
-              <Button type="primary" loading={saving} onClick={() => void savePersona()}>
-                {t("agents.saveHot")}
-              </Button>
-            </Space>
-          }
-        >
-          <Space direction="vertical" style={{ width: "100%" }} size="small">
-            {personaInfo && (
-              <div className="persona-status">
-                {personaInfo.custom ? <Tag color="gold">{t("agents.customPersona")}</Tag> : <Tag>{t("agents.defaultPersona")}</Tag>}
-                <span className="persona-hint">{t("agents.personaHint", { id: personaOf?.identifier ?? "" })}</span>
-              </div>
-            )}
-            <Input.TextArea
-              rows={10}
-              value={personaDraft}
-              onChange={(e) => setPersonaDraft(e.target.value)}
-              placeholder={t("agents.personaPh")}
-            />
-          </Space>
-        </Modal>
 
         {/* 组设置弹窗 */}
         <Modal

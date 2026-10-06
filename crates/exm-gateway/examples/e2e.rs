@@ -1067,7 +1067,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- 智能体编辑（docs/09）：受限字段更新（name/domain/description/capabilities/tools/model_hint）；identifier/tier/prompt_file 不可改 ----
     let orch_upd: serde_json::Value = client
-        .put(format!("{base}/agents/exmachina-orchestrator"))
+        .put(format!("{base}/agents/orchestrator"))
         .json(&serde_json::json!({
             "name": "e2e-改名验证",
             "capabilities": ["routing", "e2e-cap"]
@@ -1079,12 +1079,12 @@ async fn main() -> anyhow::Result<()> {
     c.check(
         "内置组主智能体受限编辑放行（identifier/tier 不变）",
         orch_upd["name"] == "e2e-改名验证"
-            && orch_upd["identifier"] == "exmachina-orchestrator"
+            && orch_upd["identifier"] == "orchestrator"
             && orch_upd["tier"] == "orchestrator"
             && orch_upd["capabilities"].as_array().map(|a| a.contains(&json!("e2e-cap"))).unwrap_or(false),
     );
     let orch_restore: serde_json::Value = client
-        .put(format!("{base}/agents/exmachina-orchestrator"))
+        .put(format!("{base}/agents/orchestrator"))
         .json(&serde_json::json!({
             "name": "指挥体",
             "capabilities": ["routing", "decomposition", "dispatch", "arbitration", "convergence"]

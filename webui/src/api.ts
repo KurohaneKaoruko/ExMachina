@@ -575,6 +575,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(id ? { id } : {}),
     }),
+  // 系统提示词（PROMPT）读写：组内个体按组作用域；单体走 singles 端点
+  getAgentPrompt: (gid: string, identifier: string) =>
+    req<{ identifier: string; promptFile: string; prompt: string }>(`/groups/${gid}/agents/${identifier}/prompt`),
+  putAgentPrompt: (gid: string, identifier: string, prompt: string) =>
+    req<{ ok: boolean }>(`/groups/${gid}/agents/${identifier}/prompt`, { method: "PUT", body: JSON.stringify({ prompt }) }),
+  getSinglePrompt: (id: string) =>
+    req<{ identifier: string; promptFile: string; prompt: string }>(`/singles/${id}/prompt`),
+  putSinglePrompt: (id: string, prompt: string) =>
+    req<{ ok: boolean }>(`/singles/${id}/prompt`, { method: "PUT", body: JSON.stringify({ prompt }) }),
   // 拉取端点可用模型清单：按档案 id（沿用已存密钥）或显式端点+明文密钥
   listProviderModels: (body: { id?: string; baseUrl?: string; apiKey?: string; apiFormat?: string }) =>
     req<{ ok: boolean; configured?: boolean; status?: number; models: string[]; message?: string; error?: string }>("/llm/models", {

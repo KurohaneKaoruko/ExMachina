@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc::unbounded_channel, Mutex};
 
-pub const ORCHESTRATOR_ID: &str = "exmachina-orchestrator";
+pub const ORCHESTRATOR_ID: &str = "orchestrator";
 
 // ---------------------------------------------------------------- 会话轮次模式（思考模式：直答 / 集群）
 
@@ -151,7 +151,7 @@ impl Orchestrator {
         target.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
-    /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 exmachina-orchestrator）。
+    /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 orchestrator）。
     /// 语音转写：组覆盖 → 全局槽位指定的档案/模型；未配置回落全局生效档案的 whisper-1
     pub async fn transcribe_audio(&self, audio: &[u8], filename: &str) -> anyhow::Result<String> {
         match self.capability_target("transcribe").and_then(|t| self.resolve_capability(&t)) {

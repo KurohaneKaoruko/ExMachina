@@ -115,7 +115,7 @@ impl LocalRegistry {
                 id: "default".into(),
                 name: "智械集群".into(),
                 description: "内置默认组：全连结指挥体 + 子个体集群（定义受保护）".into(),
-                primary: Some("exmachina-orchestrator".into()),
+                primary: Some("orchestrator".into()),
                 workspace: None,
                 model: None,
                 capabilities: None,
@@ -440,6 +440,16 @@ impl LocalRegistry {
             .with_context(|| format!("读取单体提示词失败: {prompt_file}"))
     }
 
+    /// 写入单体提示词文件（PROMPT.md；与激活组状态无关）
+    pub fn write_single_prompt(&self, prompt_file: &str, content: &str) -> anyhow::Result<()> {
+        let p = self.singles_prompt_path(prompt_file);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&p, content)?;
+        Ok(())
+    }
+
     /// 新增/更新单体智能体（identifier 冲突即替换）
     pub fn upsert_single(&self, mut def: AgentDefinition, prompt: Option<String>) -> anyhow::Result<AgentDefinition> {
         Self::validate_identifier(&def.identifier)?;
@@ -462,14 +472,14 @@ impl LocalRegistry {
                 format!(
                     "# {}
 
-你是 EXMACHINA 的单体智能体 {}（identifier: {}），独立直接服务于用户，不经指挥体调度。
-简介：{}
+你是 {}，用户的单体智能体：听清意图、亲手做完、回报结果——分析与实施一体完成。
 
 ## 语言纪律
 - 称用户为\"用户\"，以\"本机\"自称。
-- 独立完成用户交予的全部工作；信息不足时显式说明假设。
+- 被问起你是谁：一句话说明名字与职责，随即回到用户的事上。
+- 信息不足时显式说明假设，再给出最小验证路径。
 ",
-                    def.name, def.name, def.identifier, def.description
+                    def.name, def.name
                 ),
             )?;
         }
@@ -633,6 +643,32 @@ impl LocalRegistry {
             self.singles_prompt_path(prompt_file)
         } else {
             self.prompt_fs_path(prompt_file)
+        };
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&p, content)?;
+        Ok(())
+    }
+
+    /// 组作用域提示词读取（成员编辑用：不随激活组漂移）
+    pub fn load_group_prompt(&self, gid: &str, prompt_file: &str) -> anyhow::Result<String> {
+        let dir = self.group_dir(gid).context("组不存在")?;
+        let p = if prompt_file.contains('/') || prompt_file.contains('\\') {
+            dir.join(prompt_file)
+        } else {
+            dir.join("prompts").join(prompt_file)
+        };
+        std::fs::read_to_string(&p).with_context(|| format!("读取提示词失败: {}", p.display()))
+    }
+
+    /// 组作用域提示词写入
+    pub fn write_group_prompt(&self, gid: &str, prompt_file: &str, content: &str) -> anyhow::Result<()> {
+        let dir = self.group_dir(gid).context("组不存在")?;
+        let p = if prompt_file.contains('/') || prompt_file.contains('\\') {
+            dir.join(prompt_file)
+        } else {
+            dir.join("prompts").join(prompt_file)
         };
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;

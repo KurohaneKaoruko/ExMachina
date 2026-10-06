@@ -450,7 +450,8 @@ export function ChatView(): React.ReactElement {
             />
           ))}
 
-          {running && (
+          {/* 等待首个输出：加载卡（一旦有流式输出/子个体产出即让位，避免与输出卡并存） */}
+          {running && !liveOrch && liveUnitEntries.length === 0 && (
             <Card size="small" className="msg-bubble msg-agent">
               <Space direction="vertical" className="full-width">
                 <div>
@@ -485,6 +486,19 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{orchLabel}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
               </div>
+              {codeMode && (
+                <>
+                  {timeline.map((tl, i) => (
+                    <div key={i} className={`timeline-item tl-${tl.kind}`}>
+                      <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                        {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                      </Tag>
+                      <span className="tl-text">{tl.text}</span>
+                    </div>
+                  ))}
+                  <ToolCallList calls={runToolCalls} />
+                </>
+              )}
               {codeMode && <ThinkingBlock text={liveThinking} label={t("chat.thinking")} />}
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
