@@ -2029,5 +2029,5 @@ input, textarea { caret-color: var(--accent); }
 
 /* 侧栏项：有角标时保持单行左对齐（角标浮右） */
 .nav-menu .ant-menu-item { text-align: left; }
-.nav-menu .nav-exp-tag { float: right; margin: 4px 8px 0 0; }
-.nav-menu .ant-menu-item span:not(.nav-exp-tag) { white-space: nowrap; }
+.nav-menu .nav-exp-tag { display: inline-block; margin: 0 0 0 4px; vertical-align: 1px; }
+.nav-menu .ant-menu-item { white-space: nowrap; }
