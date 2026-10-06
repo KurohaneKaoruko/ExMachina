@@ -6,7 +6,7 @@
 //! 收发解耦：入站读取不阻塞（消息处理全部 spawn），动作经 mpsc 通道交给专职写任务，
 //! 避免长运行期间无法应答 WS 层 Ping 被服务端断开。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -178,7 +178,76 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
     let core = core.clone();
     let ch = ch.clone();
     let tx = tx.clone();
-    tokio::spawn(async move { handle_message(&core, &ch, &tx, group_id, user_id, &text).await });
+    let raw = v.clone();
+    tokio::spawn(async move {
+        let Some(external_id) = napcat_gate(&core, &ch, &tx, group_id, user_id, &raw, &text).await else {
+            return; // 闸门拦截（忽略 / 已回复）
+        };
+        // 入站媒体（组 6.4）：image/file 段 → 下载或本地 file:// 复制 → 注入
+        let mut media: Vec<(String, String)> = Vec::new();
+        if let Some(segs) = raw.get("message").and_then(|m| m.as_array()) {
+            for seg in segs {
+                let t = seg.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if t != "image" && t != "file" {
+                    continue;
+                }
+                let url = seg.pointer("/data/url").and_then(|x| x.as_str()).unwrap_or("");
+                let file = seg.pointer("/data/file").and_then(|x| x.as_str()).unwrap_or("");
+                media.push((t.to_string(), if !url.is_empty() { url.to_string() } else { file.to_string() }));
+            }
+        }
+        let mut saved: Vec<(String, String, String)> = Vec::new();
+        for (kind, src) in media {
+            let name = format!("napcat-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else { "bin" });
+            let bytes = if let Some(local) = src.strip_prefix("file://") {
+                std::fs::read(local).ok()
+            } else {
+                crate::platform::download_bytes(&src).await
+            };
+            if let Some(b) = bytes {
+                if let Some(p) = crate::platform::save_inbound_media(&core, &ch, &name, b).await {
+                    saved.push((kind, p, name));
+                }
+            }
+        }
+        handle_message(&core, &ch, &tx, group_id, user_id, &external_id, saved, &text).await;
+    });
+}
+
+/// OneBot 消息的入站闸门（群聊唤醒 + 身份管控）：在 spawn 的任务内执行
+async fn napcat_gate(
+    core: &Core,
+    ch: &Channel,
+    tx: &tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    group_id: Option<i64>,
+    user_id: Option<i64>,
+    raw: &serde_json::Value,
+    text: &str,
+) -> Option<String> {
+    let is_group = group_id.is_some();
+    // 提及归一化：原始消息含 @ 段（CQ:at）即视为提及（QQ 群内 @ 机器人是主语义）
+    let raw_text = raw.get("message").map(|m| m.to_string()).unwrap_or_default();
+    let mentioned = raw_text.contains("CQ:at");
+    let external_id = user_id.map(|u| u.to_string()).unwrap_or_default();
+    let ctx = InboundCtx { text, external_id: &external_id, display_name: &external_id, is_group, mentioned };
+    match admit(core, ch, &ctx).await {
+        GateDecision::Allow => Some(external_id),
+        GateDecision::Ignore => None,
+        GateDecision::Deny(reply) => {
+            let action = match group_id {
+                Some(g) => serde_json::json!({
+                    "action": "send_group_msg",
+                    "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": reply } }] },
+                }),
+                None => serde_json::json!({
+                    "action": "send_private_msg",
+                    "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": reply } }] },
+                }),
+            };
+            let _ = tx.send(action);
+            None
+        }
+    }
 }
 
 /// OneBot 消息体 → 纯文本：数组段取 text；CQ 码字符串剥掉非文本段。
@@ -217,6 +286,8 @@ async fn handle_message(
     tx: &mpsc::UnboundedSender<serde_json::Value>,
     group_id: Option<i64>,
     user_id: Option<i64>,
+    external_id: &str,
+    media: Vec<(String, String, String)>,
     text: &str,
 ) {
     // 会话键：群聊优先，无群号走私聊
@@ -224,20 +295,71 @@ async fn handle_message(
     let Some((run, rx)) = ChannelRun::begin(core, ch, &peer).await else {
         return;
     };
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
+    // 入站媒体注入（组 6.4）：图片进多模态暂存，文件附路径说明
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     let tx = tx.clone();
-    let reply = spawn_reply(&run, rx, 3500, move |text| async move {
-        let action = match group_id {
-            Some(g) => serde_json::json!({
-                "action": "send_group_msg",
-                "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
-            }),
-            None => serde_json::json!({
-                "action": "send_private_msg",
-                "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
-            }),
-        };
-        let _ = tx.send(action);
-    });
-    run.run(text).await;
+    let media_tx = tx.clone();
+    let reply = spawn_reply(
+        &run,
+        rx,
+        3500,
+        move |text| {
+            let tx = tx.clone();
+            async move {
+                let action = match group_id {
+                    Some(g) => serde_json::json!({
+                        "action": "send_group_msg",
+                        "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": text } }] },
+                    }),
+                    None => serde_json::json!({
+                        "action": "send_private_msg",
+                        "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": text } }] },
+                    }),
+                };
+                let _ = tx.send(action);
+            }
+        },
+        move |item: MediaItem| {
+            let tx = media_tx.clone();
+            async move {
+                // OneBot 11：base64:// 数据段（远程 NapCat 同样可用，免文件系统共享）
+                let (seg_type, mime) = match item.kind.as_str() {
+                    "voice" => ("record", "audio/ogg"),
+                    "file" => ("file", "application/octet-stream"),
+                    _ => ("image", "image/png"),
+                };
+                let Ok(bytes) = tokio::fs::read(&item.path).await else {
+                    return false;
+                };
+                use base64::Engine as _;
+                let data = format!("base64://{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+                let name = item
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "media".into());
+                let seg = match seg_type {
+                    "file" => serde_json::json!({ "type": "file", "data": { "file": data, "name": name } }),
+                    _ => serde_json::json!({ "type": seg_type, "data": { "file": data } }),
+                };
+                let _ = mime;
+                let action = match group_id {
+                    Some(g) => serde_json::json!({
+                        "action": "send_group_msg",
+                        "params": { "group_id": g, "message": [seg] },
+                    }),
+                    None => serde_json::json!({
+                        "action": "send_private_msg",
+                        "params": { "user_id": user_id.unwrap_or(0), "message": [seg] },
+                    }),
+                };
+                let _ = tx.send(action);
+                true
+            }
+        },
+    );
+    run.run(&text).await;
     let _ = reply.await;
 }

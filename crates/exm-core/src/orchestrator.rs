@@ -530,7 +530,7 @@ impl Orchestrator {
             self.emit(
                 session_id,
                 "run.finished",
-                serde_json::json!({ "routeLevel": "L0", "agentId": self.orch_id(), "statements": statements }),
+                serde_json::json!({ "routeLevel": "L0", "agentId": self.orch_id(), "statements": statements, "artifacts": self.store.outbox_drain(session_id).unwrap_or_default() }),
             );
             return Ok(());
         }
@@ -622,7 +622,8 @@ impl Orchestrator {
                 "routeLevel": format!("{:?}", plan.route_level),
                 "agentId": self.orch_id(),
                 "graph": graph.to_graph(),
-                "statements": statements
+                "statements": statements,
+                "artifacts": self.store.outbox_drain(session_id).unwrap_or_default()
             }),
         );
         Ok(())

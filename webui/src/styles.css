@@ -1822,3 +1822,23 @@ body {
   .code-shell { flex-direction: column; height: calc(100vh - 66px); }
   .code-rail { width: 100%; max-height: 30vh; }
 }
+
+/* ---- 编码工作台：变更视图 / 编辑器（capability-completion） ---- */
+.diff-hunk { color: #8aa8ff; background: rgba(138, 168, 255, 0.06); }
+.unified-diff { margin: 0; font-family: Consolas, monospace; font-size: 11.5px; line-height: 1.6; padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.change-row.active { background: rgba(255, 255, 255, 0.07); }
+.change-row .change-m { color: #ffd479; }
+.change-row .change-a { color: #7fe8b2; }
+.change-row .change-d { color: #ff8f96; }
+.changes-branch { margin-left: 8px; font-size: 10px; line-height: 14px; cursor: default; }
+.checkpoint-hint { padding: 6px 10px; font-size: 11px; }
+.panel-ops { margin-left: auto; }
+.code-editor { font-family: Consolas, monospace; font-size: 11.5px; }
+.git-panel { display: flex; flex-direction: column; gap: 8px; }
+.git-row { display: flex; gap: 6px; align-items: center; }
+.git-branch-select { flex: 1; background: transparent; color: inherit; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 3px 6px; font-size: 11.5px; }
+.git-log-title { font-size: 10px; letter-spacing: 1px; margin-top: 4px; }
+.git-log { font-size: 11px; max-height: 320px; overflow: auto; }
+.git-log-line { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.change-ops { margin-left: auto; display: none; }
+.change-row:hover .change-ops { display: inline-flex; }

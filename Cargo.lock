@@ -568,6 +568,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "exm-core",
  "futures-util",

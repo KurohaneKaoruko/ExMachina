@@ -8,6 +8,9 @@
 //!   evidence              → `evidence/{sessionId}.jsonl`
 //!   tool_audit            → `tool_audit/{agentId}.jsonl`（超长自动裁剪）
 //!   events                → `events/{sessionId}.jsonl`
+//!   turn_snapshots        → `turn_snapshots/{sessionId}:{turn}.json`（undo/分支基座）
+//!   identities            → `identities/{channel}:{externalId}.json`（通道用户配对）
+//!   event_triggers        → `event_triggers/{id}.json`（文件监听 / webhook 事件源）
 //!
 //! 之所以是文档而非 SQL：构建环境无任何 C 编译器（见 docs/架构与设计.md）。
 //! 存储层位于 repository 接口之后，替换回 SQLite/redb 不影响上层。
@@ -340,5 +343,239 @@ impl Store {
         list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         list.truncate(limit);
         Ok(list)
+    }
+
+    // ---------------------------------------------------------------- 轮次快照（undo / 编辑重发 / 分支基座）
+
+    /// 写入轮次快照（每轮次结束原子落一条；id = `{sessionId}:{turn}`）
+    pub fn put_turn_snapshot(&self, snap: &TurnSnapshot) -> Result<()> {
+        self.db.put("turn_snapshots", &snap.id, snap)
+    }
+
+    pub fn list_turn_snapshots(&self, session_id: &str) -> Result<Vec<TurnSnapshot>> {
+        let mut list: Vec<TurnSnapshot> = self.db.list("turn_snapshots")?;
+        list.retain(|s| s.session_id == session_id);
+        list.sort_by(|a, b| a.turn.cmp(&b.turn).then(a.created_at.cmp(&b.created_at)));
+        Ok(list)
+    }
+
+    pub fn latest_turn_snapshot(&self, session_id: &str) -> Result<Option<TurnSnapshot>> {
+        Ok(self.list_turn_snapshots(session_id)?.pop())
+    }
+
+    /// 撤销后的孤儿快照清理（保留 turn <= upto 的快照）
+    pub fn prune_turn_snapshots_after(&self, session_id: &str, upto_turn: usize) -> Result<()> {
+        for snap in self.list_turn_snapshots(session_id)? {
+            if snap.turn > upto_turn {
+                self.db.delete("turn_snapshots", &snap.id)?;
+            }
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- 通道用户身份（配对绑定）
+
+    /// 身份主键约定：`{channel}:{externalId}`（同通道账号唯一）
+    pub fn put_identity(&self, identity: &UserIdentity) -> Result<()> {
+        self.db.put("identities", &identity.id, identity)
+    }
+
+    pub fn get_identity(&self, channel: &str, external_id: &str) -> Result<Option<UserIdentity>> {
+        self.db.get("identities", &format!("{channel}:{external_id}"))
+    }
+
+    pub fn get_identity_by_id(&self, id: &str) -> Result<Option<UserIdentity>> {
+        self.db.get("identities", id)
+    }
+
+    pub fn list_identities(&self) -> Result<Vec<UserIdentity>> {
+        let mut list: Vec<UserIdentity> = self.db.list("identities")?;
+        list.sort_by(|a, b| b.paired_at.cmp(&a.paired_at));
+        Ok(list)
+    }
+
+    pub fn delete_identity(&self, id: &str) -> Result<()> {
+        self.db.delete("identities", id)
+    }
+
+    // ---------------------------------------------------------------- 会话产物 outbox（媒体投递）
+
+    /// 登记本会话产生的媒体产物（截图自动登记；`.exmachina/outbox/` 写入登记）
+    pub fn outbox_push(&self, session_id: &str, kind: &str, path: &str, caption: &str) -> Result<()> {
+        self.db.append_line(
+            "session_outbox",
+            session_id,
+            &serde_json::json!({ "kind": kind, "path": path, "caption": caption, "at": now_iso() }),
+        )
+    }
+
+    /// 排空产物（读出即清空，防重复投递）
+    pub fn outbox_drain(&self, session_id: &str) -> Result<Vec<serde_json::Value>> {
+        let items: Vec<serde_json::Value> = self.db.read_lines("session_outbox", session_id, 0)?;
+        if !items.is_empty() {
+            self.db.rewrite_lines::<serde_json::Value>("session_outbox", session_id, &[])?;
+        }
+        Ok(items)
+    }
+
+    // ---------------------------------------------------------------- 会话来源（通道身份升级语义）
+
+    /// 登记会话的外部来源（通道闸门放行时写入；审批单创建时读取打标）
+    pub fn put_session_origin(&self, session_id: &str, external_id: &str, role: &str) -> Result<()> {
+        self.db.put(
+            "session_origins",
+            session_id,
+            &serde_json::json!({ "externalId": external_id, "role": role }),
+        )
+    }
+
+    pub fn get_session_origin(&self, session_id: &str) -> Result<Option<(String, String)>> {
+        let v: Option<serde_json::Value> = self.db.get("session_origins", session_id)?;
+        Ok(v.map(|v| {
+            (
+                v.get("externalId").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("role").and_then(|x| x.as_str()).unwrap_or("member").to_string(),
+            )
+        }))
+    }
+
+    // ---------------------------------------------------------------- 配对码（一次性、限时）
+
+    pub fn put_pairing_code(&self, code: &PairingCode) -> Result<()> {
+        self.db.put("pairing_codes", &code.code, code)
+    }
+
+    pub fn get_pairing_code(&self, code: &str) -> Result<Option<PairingCode>> {
+        self.db.get("pairing_codes", code)
+    }
+
+    pub fn list_pairing_codes(&self) -> Result<Vec<PairingCode>> {
+        let mut list: Vec<PairingCode> = self.db.list("pairing_codes")?;
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(list)
+    }
+
+    /// 兑销（单次有效）：删除并返回原码
+    pub fn consume_pairing_code(&self, code: &str) -> Result<Option<PairingCode>> {
+        match self.db.get::<PairingCode>("pairing_codes", code)? {
+            Some(c) => {
+                self.db.delete("pairing_codes", code)?;
+                Ok(Some(c))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // ---------------------------------------------------------------- 事件触发器（文件监听 / webhook 事件源）
+
+    pub fn put_event_trigger(&self, trigger: &EventTrigger) -> Result<()> {
+        self.db.put("event_triggers", &trigger.id, trigger)
+    }
+
+    pub fn get_event_trigger(&self, id: &str) -> Result<Option<EventTrigger>> {
+        self.db.get("event_triggers", id)
+    }
+
+    pub fn list_event_triggers(&self, kind: Option<&str>) -> Result<Vec<EventTrigger>> {
+        let mut list: Vec<EventTrigger> = self.db.list("event_triggers")?;
+        if let Some(k) = kind {
+            list.retain(|t| t.kind == k);
+        }
+        list.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(list)
+    }
+
+    pub fn delete_event_trigger(&self, id: &str) -> Result<()> {
+        self.db.delete("event_triggers", id)
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    fn test_store() -> Store {
+        let dir = std::env::temp_dir().join(format!("exm-store-{}", uuid::Uuid::new_v4()));
+        Store::open(&dir).expect("打开测试存储失败")
+    }
+
+    #[test]
+    fn 轮次快照_增查裁剪() {
+        let store = test_store();
+        for turn in 1..=3 {
+            store
+                .put_turn_snapshot(&TurnSnapshot {
+                    id: format!("s1:{turn}"),
+                    session_id: "s1".into(),
+                    turn,
+                    message_count: turn * 2,
+                    checkpoint_ids: vec![format!("cp-{turn}")],
+                    prompt_tokens: 100,
+                    completion_tokens: 50,
+                    status: "done".into(),
+                    created_at: format!("2026-01-0{turn}T00:00:00Z"),
+                })
+                .unwrap();
+        }
+        let list = store.list_turn_snapshots("s1").unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].turn, 1, "按轮次升序");
+        let latest = store.latest_turn_snapshot("s1").unwrap().unwrap();
+        assert_eq!(latest.turn, 3);
+        assert!(store.latest_turn_snapshot("s2").unwrap().is_none(), "会话隔离");
+
+        store.prune_turn_snapshots_after("s1", 2).unwrap();
+        let list = store.list_turn_snapshots("s1").unwrap();
+        assert_eq!(list.len(), 2, "裁剪后仅保留 turn<=2");
+        assert_eq!(list[1].turn, 2);
+    }
+
+    #[test]
+    fn 用户身份_绑定查询删除() {
+        let store = test_store();
+        let identity = UserIdentity {
+            id: "telegram:10086".into(),
+            channel: "telegram".into(),
+            external_id: "10086".into(),
+            display_name: "测试用户".into(),
+            role: "member".into(),
+            paired_at: "2026-01-01T00:00:00Z".into(),
+            note: "冒烟配对".into(),
+        };
+        store.put_identity(&identity).unwrap();
+        let got = store.get_identity("telegram", "10086").unwrap().unwrap();
+        assert_eq!(got.display_name, "测试用户");
+        assert_eq!(got.role, "member");
+        assert!(store.get_identity("telegram", "other").unwrap().is_none());
+        assert_eq!(store.list_identities().unwrap().len(), 1);
+        store.delete_identity("telegram:10086").unwrap();
+        assert!(store.get_identity("telegram", "10086").unwrap().is_none());
+    }
+
+    #[test]
+    fn 事件触发器_按类型过滤() {
+        let store = test_store();
+        for (id, kind) in [("t1", "file_watch"), ("t2", "event_webhook")] {
+            store
+                .put_event_trigger(&EventTrigger {
+                    id: id.into(),
+                    kind: kind.into(),
+                    name: id.into(),
+                    pattern: "*.rs".into(),
+                    group: None,
+                    prompt: "事件：{event}".into(),
+                    enabled: true,
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    last_fired_at: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(store.list_event_triggers(None).unwrap().len(), 2);
+        let fw = store.list_event_triggers(Some("file_watch")).unwrap();
+        assert_eq!(fw.len(), 1);
+        assert_eq!(fw[0].id, "t1");
+        assert!(store.get_event_trigger("t2").unwrap().is_some());
+        store.delete_event_trigger("t2").unwrap();
+        assert!(store.get_event_trigger("t2").unwrap().is_none());
     }
 }

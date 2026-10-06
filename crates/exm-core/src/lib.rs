@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod memory;
 pub mod orchestrator;
 pub mod parse;
+pub mod patch;
 pub mod provider;
 pub mod registry;
 pub mod remote;
@@ -321,6 +322,133 @@ impl Core {
         }
         out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         out
+    }
+
+    /// 工作区文件保存（WebUI 编辑器写入口径）：路径防 `..` 兜底、写前检查点、工具审计。
+    /// 与写类工具同规则（当日首次改动前的版本落 `.exmachina/checkpoints/`，供回滚）。
+    /// 返回结果摘要；越界/非法路径报错。网关侧已做工作区规范化校验，此处兜底拒绝。
+    pub fn save_workspace_file(&self, rel: &str, content: &str) -> anyhow::Result<String> {
+        let norm = rel.replace('\\', "/").trim_matches('/').to_string();
+        if norm.is_empty()
+            || std::path::Path::new(rel.trim()).is_absolute()
+            || norm.split('/').any(|seg| seg == "..")
+        {
+            anyhow::bail!("路径越界（仅允许工作区内的相对路径）: {rel}");
+        }
+        let root = self.config().workspace_root.clone();
+        let target = root.join(&norm);
+        if target.is_file() {
+            let day: String = crate::types::now_iso().chars().take(10).collect();
+            let dst = root.join(".exmachina").join("checkpoints").join(&day).join(&norm);
+            if !dst.exists() {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&target, &dst)?;
+            }
+        } else if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, content)?;
+        // 审计：agent_id = webui，与智能体审计同账本、来源可区分
+        let _ = self.store.audit_tool(
+            "webui",
+            "filesystem",
+            &serde_json::json!({ "op": "write", "path": norm, "via": "editor" }),
+            "编辑器保存",
+            0,
+        );
+        Ok(format!("已保存 {norm}（{} 字节，写前检查点已记录）", content.len()))
+    }
+
+    // ---------------- 通道身份与配对码（gateway 身份闸门共用） ----------------
+
+    pub fn identity_of(&self, channel: &str, external_id: &str) -> Option<UserIdentity> {
+        self.store.get_identity(channel, external_id).ok().flatten()
+    }
+
+    pub fn identity_of_id(&self, id: &str) -> Option<UserIdentity> {
+        self.store.get_identity_by_id(id).ok().flatten()
+    }
+
+    pub fn identities(&self) -> Vec<UserIdentity> {
+        self.store.list_identities().unwrap_or_default()
+    }
+
+    pub fn save_identity(&self, identity: &UserIdentity) -> anyhow::Result<()> {
+        self.store.put_identity(identity)
+    }
+
+    pub fn drop_identity(&self, id: &str) -> anyhow::Result<()> {
+        self.store.delete_identity(id)
+    }
+
+    /// 签发一次性配对码（8 位短码，TTL 由调用方给）
+    pub fn issue_pairing_code(&self, note: &str, platform: Option<&str>, ttl_secs: u64) -> anyhow::Result<PairingCode> {
+        let code = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+        let c = PairingCode {
+            code: code.clone(),
+            note: note.to_string(),
+            channel_platform: platform.map(|s| s.to_string()),
+            created_by: "console".into(),
+            created_at: now_iso(),
+            expires_at_ms: now_ms() + ttl_secs * 1000,
+        };
+        self.store.put_pairing_code(&c)?;
+        Ok(c)
+    }
+
+    pub fn pairing_codes(&self) -> Vec<PairingCode> {
+        self.store.list_pairing_codes().unwrap_or_default()
+    }
+
+    /// 直接落一张配对码（迁移 / 测试 / 控制台定向写入）
+    pub fn save_pairing_code(&self, code: &PairingCode) -> anyhow::Result<()> {
+        self.store.put_pairing_code(code)
+    }
+
+    /// 兑换配对码 → 绑定身份（单次有效 + 过期校验；channel 为通道账号 id）
+    pub fn redeem_pairing(
+        &self,
+        code: &str,
+        channel: &str,
+        external_id: &str,
+        display_name: &str,
+        default_role: &str,
+    ) -> anyhow::Result<UserIdentity> {
+        let c = self
+            .store
+            .consume_pairing_code(code.trim())
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .ok_or_else(|| anyhow::anyhow!("配对码无效或已被使用"))?;
+        if now_ms() > c.expires_at_ms {
+            anyhow::bail!("配对码已过期，请重新签发");
+        }
+        if let Some(p) = &c.channel_platform {
+            if !channel.starts_with(p.as_str()) {
+                anyhow::bail!("配对码限定平台 {p}，当前通道不可用");
+            }
+        }
+        let identity = UserIdentity {
+            id: format!("{channel}:{external_id}"),
+            channel: channel.to_string(),
+            external_id: external_id.to_string(),
+            display_name: display_name.to_string(),
+            role: default_role.to_string(),
+            paired_at: now_iso(),
+            note: c.note.clone(),
+        };
+        self.store.put_identity(&identity)?;
+        Ok(identity)
+    }
+
+    /// 供网关在执行前拒绝时发运行错误事件（配额 / 治理类短路，走既有回帖通路）
+    pub fn emit_run_error(&self, session_id: &str, message: &str) {
+        let _ = self.events.send(crate::types::CoreEvent {
+            kind: "run.error".into(),
+            session_id: session_id.to_string(),
+            payload: serde_json::json!({ "message": message }),
+        });
     }
 
     /// 回滚检查点：`date` 为空取最近一份；返回被覆盖的文件相对路径
@@ -694,8 +822,41 @@ impl Core {
         Ok(req)
     }
 
-    fn emit_approval_resolved(&self, req: &ApprovalRequest) {
+    /// 登记会话的外部来源（闸门放行时由适配器调用；审批单创建时据此打升级标）
+    pub fn stamp_session_origin(&self, session_id: &str, external_id: &str, role: &str) {
+        let _ = self.store.put_session_origin(session_id, external_id, role);
+    }
+
+    pub fn session_origin(&self, session_id: &str) -> Option<(String, String)> {
+        self.store.get_session_origin(session_id).ok().flatten()
+    }
+
+    /// 创建 WebUI 发起的 git 破坏性操作审批单：command 为精确 git 命令，
+    /// 批准后由 approval_decide 代执行（与工具审批同一执行与审计路径）
+    pub async fn request_git_approval(&self, command: &str) -> anyhow::Result<ApprovalRequest> {
+        let req = ApprovalRequest {
+            id: crate::types::new_id(),
+            session_id: String::new(),
+            node_id: None,
+            agent_id: "webui".into(),
+            command: command.to_string(),
+            status: "pending".into(),
+            result: None,
+            created_at: now_iso(),
+            decided_at: None,
+            origin_user: None,
+            origin_role: None,
+        };
+        self.store.add_approval(&req)?;
         let _ = self.events.send(CoreEvent {
+            kind: "approval.required".into(),
+            session_id: String::new(),
+            payload: serde_json::json!({ "approvalId": req.id, "agentId": "webui", "command": command }),
+        });
+        Ok(req)
+    }
+
+    fn emit_approval_resolved(&self, req: &ApprovalRequest) {        let _ = self.events.send(CoreEvent {
             kind: "approval.resolved".into(),
             session_id: req.session_id.clone(),
             payload: serde_json::json!({ "approvalId": req.id, "status": req.status, "command": req.command }),

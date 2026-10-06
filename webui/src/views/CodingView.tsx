@@ -2,43 +2,17 @@
  *  左栏会话 ｜ 中栏对话流（思维链 / 工具卡 / diff / 审批） ｜ 右栏工作区（文件树 + 变更清单 + 代码预览）
  *  与聊天页共用同一会话与 WS 引擎，但以「写代码」为中心呈现：工具轨迹优先、文件视角常驻。 */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, Empty, Input, Spin, Tag, Tree } from "antd";
+import { Button, Card, Empty, Input, Spin, Tag, Tree, message } from "antd";
 import {
-  CheckOutlined, CodeOutlined, FileOutlined, FolderOutlined, PlusOutlined,
-  ReloadOutlined, SendOutlined, StopOutlined,
+  CheckOutlined, CodeOutlined, EditOutlined, FileOutlined, FolderOutlined, PlusOutlined,
+  ReloadOutlined, SaveOutlined, SendOutlined, StopOutlined,
 } from "@ant-design/icons";
-import { fsFile, fsList, type FsEntry } from "../api";
+import { fsFile, fsList, fsSave, gitOp, gitOverview, workspaceChanges, type FsEntry, type GitOverview, type WorkspaceChanges } from "../api";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 import { ToolCallList } from "../components/ToolCall";
 import { Markdown } from "../components/Markdown";
-import type { ChatMessage, ToolCallItem } from "../types";
-
-/** 从工具轨迹中提取「本轮动过的文件」：edit / filesystem write + mkdir / terminal 里的路径尽力提取 */
-function touchedFiles(calls: ToolCallItem[]): { path: string; op: string }[] {
-  const out = new Map<string, string>();
-  for (const c of calls) {
-    const a = c.args as Record<string, string | undefined>;
-    if ((c.tool === "edit" || c.tool === "read") && a.path) {
-      if (c.tool === "edit") out.set(a.path, "edit");
-    } else if (c.tool === "filesystem" && a.path) {
-      if (a.op === "write" || a.op === "mkdir") out.set(a.path, a.op);
-    } else if (c.tool === "terminal" && a.command) {
-      // 尽力从命令里挑出 .xxx 文件路径（回灌展示够用，不求完备）
-      for (const m of String(a.command).matchAll(/[\w./\\-]+\.\w{1,6}\b/g)) {
-        const p = m[0].replace(/\\/g, "/");
-        if (!out.has(p) && !p.startsWith("http")) out.set(p, "cmd");
-      }
-    }
-  }
-  return [...out].map(([path, op]) => ({ path, op }));
-}
-
-/** 会话的全部工具轨迹：当前运行中的 + 已收束消息附带的 */
-function sessionToolCalls(messages: ChatMessage[], runToolCalls: ToolCallItem[]): ToolCallItem[] {
-  const finished = messages.flatMap((m) => m.toolCalls ?? []);
-  return [...finished, ...runToolCalls];
-}
+import type { ChatMessage } from "../types";
 
 /** 文件树节点（antd Tree） */
 interface TreeNode {
@@ -134,35 +108,102 @@ function FileTree({ onOpenFile }: { onOpenFile: (path: string) => void }): React
   );
 }
 
-/** 代码预览（只读，带行号） */
-function CodePreview({ path }: { path: string }): React.ReactElement {
+/** 统一 diff 渲染（着色按行） */
+function UnifiedDiff({ text, truncated }: { text: string; truncated?: boolean }): React.ReactElement {
+  const t = useT();
+  return (
+    <pre className="code-body unified-diff">
+      {text.split("\n").map((l, i) => {
+        const cls = l.startsWith("+") && !l.startsWith("+++")
+          ? "diff-add"
+          : l.startsWith("-") && !l.startsWith("---")
+            ? "diff-del"
+            : l.startsWith("@@")
+              ? "diff-hunk"
+              : "";
+        return (
+          <div key={i} className={`diff-line ${cls}`}>{l}</div>
+        );
+      })}
+      {truncated && <div className="dim code-trunc">{t("code.truncated")}</div>}
+    </pre>
+  );
+}
+
+/** 代码面板：只读预览 + 可切换编辑保存（保存走服务端检查点/审计同口径） */
+function CodePane({ path, onChanged }: { path: string; onChanged?: () => void }): React.ReactElement {
   const t = useT();
   const [state, setState] = useState<{ loading: boolean; content: string; truncated: boolean }>({
     loading: true,
     content: "",
     truncated: false,
   });
-  useEffect(() => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback((p: string) => {
     let alive = true;
     setState((s) => ({ ...s, loading: true }));
-    void fsFile(path)
+    void fsFile(p)
       .then((r) => {
         if (!alive) return;
         setState({ loading: false, content: r.content, truncated: r.truncated });
+        setDraft(r.content);
       })
       .catch(() => alive && setState({ loading: false, content: "", truncated: false }));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, []);
+
+  useEffect(() => {
+    setEditing(false);
+    return load(path);
+  }, [path, load]);
+
+  const doSave = async () => {
+    setSaving(true);
+    try {
+      await fsSave(path, draft);
+      message.success(t("code.saveOk"));
+      setEditing(false);
+      load(path);
+      onChanged?.();
+    } catch (e) {
+      message.error(`${t("code.saveFail")}: ${String(e).slice(0, 160)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="code-preview">
       <div className="panel-head">
         <span className="panel-title mono">{path}</span>
+        <span className="panel-ops">
+          {editing ? (
+            <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void doSave()}>
+              {t("code.save")}
+            </Button>
+          ) : (
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => { setDraft(state.content); setEditing(true); }}>
+              {t("code.edit")}
+            </Button>
+          )}
+        </span>
       </div>
       <div className="panel-body">
         {state.loading ? (
           <Spin size="small" />
+        ) : editing ? (
+          <Input.TextArea
+            className="code-editor mono"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            autoSize={{ minRows: 16, maxRows: 40 }}
+            spellCheck={false}
+          />
         ) : (
           <pre className="code-body">
             {state.content.split("\n").map((l, i) => (
@@ -179,6 +220,99 @@ function CodePreview({ path }: { path: string }): React.ReactElement {
   );
 }
 
+/** Git 面板：分支切换 / 提交 / 破坏性操作（走审批单） / 最近提交 */
+function GitPanel({ onChanged }: { onChanged: () => void }): React.ReactElement {
+  const t = useT();
+  const [ov, setOv] = useState<GitOverview | null>(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setOv(await gitOverview());
+    } catch {
+      setOv(null);
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const run = useCallback(
+    async (op: string, extra?: { path?: string; message?: string; branch?: string }) => {
+      setBusy(true);
+      try {
+        const r = await gitOp(op, extra);
+        if (r.pending) message.info(t("git.approvalQueued"));
+        else if (r.error) message.error(r.error);
+        else message.success(r.output?.slice(0, 120) || t("code.saveOk"));
+        await load();
+        onChanged();
+      } catch (e) {
+        message.error(String(e).slice(0, 160));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load, onChanged, t],
+  );
+
+  if (ov && !ov.repo) {
+    return (
+      <div className="fs-tree">
+        <div className="panel-body">
+          <Empty description={t("git.noRepo")} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="fs-tree">
+      <div className="panel-body git-panel">
+        <div className="git-row">
+          <select
+            className="git-branch-select mono"
+            value={ov?.branch ?? ""}
+            disabled={busy || !ov?.branches?.length}
+            onChange={(e) => void run("switch", { branch: e.target.value })}
+          >
+            {(ov?.branches ?? []).map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+        </div>
+        <div className="git-row git-commit">
+          <Input
+            size="small"
+            value={msg}
+            placeholder={t("git.commitMsg")}
+            onChange={(e) => setMsg(e.target.value)}
+            onPressEnter={(e) => {
+              if (msg.trim()) {
+                e.preventDefault();
+                void run("commit", { message: msg }).then(() => setMsg(""));
+              }
+            }}
+          />
+          <Button size="small" type="primary" disabled={busy || !msg.trim()} onClick={() => void run("commit", { message: msg }).then(() => setMsg(""))}>
+            {t("git.commit")}
+          </Button>
+        </div>
+        <div className="git-row git-danger">
+          <Button size="small" danger disabled={busy} onClick={() => void run("push")}>{t("git.push")}</Button>
+          <Button size="small" danger disabled={busy} onClick={() => void run("reset_hard")}>{t("git.resetHard")}</Button>
+        </div>
+        <div className="git-log-title dim">{t("git.log")}</div>
+        <div className="git-log mono">
+          {(ov?.log ?? []).map((l, i) => (
+            <div key={i} className="git-log-line">{l}</div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CodingView(): React.ReactElement {
   const t = useT();
   const {
@@ -187,11 +321,35 @@ export function CodingView(): React.ReactElement {
   } = useExm();
   const [text, setText] = useState("");
   const [previewPath, setPreviewPath] = useState<string | null>(null);
-  const [panel, setPanel] = useState<"files" | "changes">("files");
+  const [diffPath, setDiffPath] = useState<string | null>(null);
+  const [panel, setPanel] = useState<"files" | "changes" | "git">("files");
+  const [wsChanges, setWsChanges] = useState<WorkspaceChanges | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const changes = useMemo(() => touchedFiles(sessionToolCalls(messages, runToolCalls)), [messages, runToolCalls]);
+  /** 变更清单：工作区实况口径（git HEAD 对比 / 检查点回退），非命令轨迹推断 */
+  const refreshChanges = useCallback(async () => {
+    try {
+      setWsChanges(await workspaceChanges());
+    } catch {
+      /* 离线/鉴权失效时静默：面板保持上次数据 */
+    }
+  }, []);
+  useEffect(() => {
+    void refreshChanges();
+  }, [refreshChanges]);
+  // 运行收束沿（true→false）自动刷新：智能体改完文件后清单即时跟上
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (wasRunning.current && !running) void refreshChanges();
+    wasRunning.current = running;
+  }, [running, refreshChanges]);
+
   const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
+  const diffData = useMemo(
+    () => wsChanges?.files.find((f) => f.path === diffPath)?.diff ?? null,
+    [wsChanges, diffPath],
+  );
+  const changeCount = wsChanges?.files.length ?? 0;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -239,7 +397,7 @@ export function CodingView(): React.ReactElement {
           <span className="page-en">CODE</span>
           <span className="console-sep" />
           <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
-          <span className="readout"><span className="k">CHANGES</span> <span className="v">{changes.length}</span></span>
+          <span className="readout"><span className="k">CHANGES</span> <span className="v">{changeCount}</span></span>
         </div>
 
         {/* 内联审批 */}
@@ -313,36 +471,78 @@ export function CodingView(): React.ReactElement {
         </div>
       </section>
 
-      {/* 右栏：工作区（文件树 / 变更清单 + 代码预览） */}
+      {/* 右栏：工作区（文件树 / 变更清单 + 代码面板） */}
       <aside className="code-side">
         <div className="code-side-tabs">
           <button className={`side-tab ${panel === "files" ? "active" : ""}`} onClick={() => setPanel("files")}>
             {t("code.files")}
           </button>
           <button className={`side-tab ${panel === "changes" ? "active" : ""}`} onClick={() => setPanel("changes")}>
-            {t("code.changes")} {changes.length > 0 && <Tag className="changes-count">{changes.length}</Tag>}
+            {t("code.changes")} {changeCount > 0 && <Tag className="changes-count">{changeCount}</Tag>}
+          </button>
+          <button className={`side-tab ${panel === "git" ? "active" : ""}`} onClick={() => setPanel("git")}>
+            Git
           </button>
         </div>
+        {panel === "git" && <GitPanel onChanged={() => void refreshChanges()} />}
         {panel === "files" ? (
-          <FileTree onOpenFile={(p) => setPreviewPath(p)} />
+          <FileTree onOpenFile={(p) => { setDiffPath(null); setPreviewPath(p); }} />
         ) : (
           <div className="fs-tree">
-            <div className="panel-head"><span className="panel-title">{t("code.changesTitle")}</span></div>
+            <div className="panel-head">
+              <span className="panel-title">
+                {t("code.changesTitle")}
+                {wsChanges?.source === "git" && wsChanges.branch && (
+                  <Tag className="changes-branch mono">{wsChanges.branch}</Tag>
+                )}
+                {wsChanges?.source === "checkpoint" && changeCount > 0 && (
+                  <Tag className="changes-branch" title={t("code.checkpointHint")}>checkpoint</Tag>
+                )}
+              </span>
+              <Button size="small" type="text" icon={<ReloadOutlined />} onClick={() => void refreshChanges()} title={t("code.refresh")} />
+            </div>
             <div className="panel-body">
-              {changes.length === 0 ? (
+              {changeCount === 0 ? (
                 <Empty description={t("code.noChanges")} image={Empty.PRESENTED_IMAGE_SIMPLE} />
               ) : (
-                changes.map((c) => (
-                  <div key={c.path} className="change-row" onClick={() => setPreviewPath(c.path)}>
-                    <span className={`change-op change-${c.op}`}>{c.op}</span>
-                    <span className="mono change-path">{c.path}</span>
+                wsChanges!.files.map((f) => (
+                  <div
+                    key={f.path}
+                    className={`change-row ${diffPath === f.path ? "active" : ""}`}
+                    onClick={() => setDiffPath(diffPath === f.path ? null : f.path)}
+                  >
+                    <span className={`change-op change-${f.status.toLowerCase()}`}>{f.status}</span>
+                    <span className="mono change-path">{f.path}</span>
+                    <span className="change-ops" onClick={(e) => e.stopPropagation()}>
+                      {f.staged ? (
+                        <Button size="small" type="text" onClick={() => void gitOp("unstage", { path: f.path }).then(refreshChanges)}>
+                          {t("git.unstage")}
+                        </Button>
+                      ) : (
+                        <Button size="small" type="text" onClick={() => void gitOp("stage", { path: f.path }).then(refreshChanges)}>
+                          {t("git.stage")}
+                        </Button>
+                      )}
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        onClick={() => void gitOp("discard", { path: f.path }).then(refreshChanges)}
+                      >
+                        {t("git.discard")}
+                      </Button>
+                    </span>
                   </div>
                 ))
               )}
+              {wsChanges?.source === "checkpoint" && changeCount > 0 && (
+                <div className="dim checkpoint-hint">{t("code.checkpointHint")}</div>
+              )}
             </div>
+            {diffData && <UnifiedDiff text={diffData.text} truncated={diffData.truncated} />}
           </div>
         )}
-        {previewPath && <CodePreview path={previewPath} />}
+        {previewPath && <CodePane path={previewPath} onChanged={() => void refreshChanges()} />}
       </aside>
     </div>
   );

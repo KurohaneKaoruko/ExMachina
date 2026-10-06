@@ -304,6 +304,8 @@ async fn 执行审批_等待批准_结果回灌与拒绝短路() {
     let _serial = serial_guard();
     let mut cfg = test_config();
     // 等待窗口开启：拦截后原地等人工决定，批准即代执行并回灌，拒绝即短路
+    // （exec_approval 须显式 risky：ambient 配置/默认值为 off，闸门不会触发——依赖环境是脆弱口径）
+    cfg.security.exec_approval = "risky".into();
     cfg.security.approval_wait_secs = 8;
     let core = Arc::new(Core::with_config(cfg).expect("创建 Core 失败"));
     let events = core.events.clone();

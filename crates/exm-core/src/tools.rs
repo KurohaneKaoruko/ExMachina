@@ -943,6 +943,13 @@ impl ToolGateway {
             },
             "required": ["path", "old_string", "new_string"]
         }));
+        push(ToolName::Patch, "应用统一 diff 补丁到工作区文件：支持多文件段与新建/删除；任一文件的上下文校验失败则整体拒绝（不写入任何文件），全部通过才原子应用并写检查点", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "patch": { "type": "string", "description": "统一 diff 格式补丁全文（含 ---/+++ 路径行与 @@ hunk 头；路径相对工作区）" }
+            },
+            "required": ["patch"]
+        }));
         push(ToolName::Grep, "在工作区内按正则搜索文件内容（尊重 .gitignore），返回 文件:行号:内容", serde_json::json!({
             "type": "object",
             "properties": {
@@ -1269,15 +1276,16 @@ impl ToolGateway {
         match tool {
             ToolName::Read => self.tool_read(args),
             ToolName::Edit => self.tool_edit(args),
+            ToolName::Patch => self.tool_patch(args),
             ToolName::Grep => self.tool_grep(args),
             ToolName::Glob => self.tool_glob(args),
-            ToolName::Filesystem => self.tool_fs(args),
+            ToolName::Filesystem => self.tool_fs(session_id, args),
             ToolName::Terminal => self.tool_terminal(agent_id, session_id, args).await,
             ToolName::WebSearch => self.tool_web_search(args).await,
             ToolName::WebFetch => self.tool_web_fetch(args).await,
             ToolName::AgentManage => self.tool_agent_manage(args),
             ToolName::Schedule => self.tool_schedule(args),
-            ToolName::Browser => self.tool_browser(args).await,
+            ToolName::Browser => self.tool_browser(session_id, args).await,
             ToolName::Computer => self.tool_computer(agent_id, session_id, args).await,
         }
     }
@@ -1726,6 +1734,124 @@ impl ToolGateway {
         ToolResult::ok(msg)
     }
 
+    /// 统一 diff 补丁：逐文件在内存中校验并计算新内容，任一文件失败则整体拒绝；
+    /// 全部通过后统一落检查点再写入（多文件原子语义）
+    fn tool_patch(&self, args: &serde_json::Value) -> ToolResult {
+        let patch_text = args.get("patch").and_then(|v| v.as_str()).unwrap_or("");
+        if patch_text.trim().is_empty() {
+            return ToolResult::err("patch 不能为空：请提供统一 diff 格式的补丁全文");
+        }
+        let file_patches = match crate::patch::parse_unified_diff(patch_text) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err(format!("补丁解析失败: {e}")),
+        };
+
+        struct Plan {
+            path: PathBuf,
+            rel: String,
+            content: String,
+            delete: bool,
+            added: usize,
+            removed: usize,
+        }
+        let mut plans: Vec<Plan> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        for fp in &file_patches {
+            let p = match self.resolve_safe(&fp.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    failures.push(format!("{}: {e}", fp.path));
+                    continue;
+                }
+            };
+            let old = if fp.new_file {
+                if p.is_file() {
+                    failures.push(format!("{}: 标记为新文件但已存在", fp.path));
+                    continue;
+                }
+                String::new()
+            } else {
+                match std::fs::read_to_string(&p) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        failures.push(format!("{}: 读取失败（二进制文件不支持补丁）: {e}", fp.path));
+                        continue;
+                    }
+                }
+            };
+            match crate::patch::apply_file(&old, fp) {
+                Ok(new) => {
+                    let added = fp
+                        .hunks
+                        .iter()
+                        .flat_map(|h| h.lines.iter())
+                        .filter(|l| l.kind == crate::patch::LineKind::Add)
+                        .count();
+                    let removed = fp
+                        .hunks
+                        .iter()
+                        .flat_map(|h| h.lines.iter())
+                        .filter(|l| l.kind == crate::patch::LineKind::Del)
+                        .count();
+                    plans.push(Plan {
+                        path: p,
+                        rel: fp.path.clone(),
+                        content: new,
+                        delete: fp.delete_file,
+                        added,
+                        removed,
+                    });
+                }
+                Err(e) => failures.push(e),
+            }
+        }
+
+        // 整体拒绝：报告全部冲突，不落任何写入
+        if !failures.is_empty() {
+            let mut msg = format!(
+                "补丁整体拒绝：{} 个文件中 {} 个校验失败，未写入任何文件。\n失败详情：",
+                file_patches.len(),
+                failures.len()
+            );
+            for f in &failures {
+                msg.push_str(&format!("\n- {f}"));
+            }
+            msg.push_str("\n请用 read 读取目标文件后修正补丁上下文再重试。");
+            return ToolResult::err(msg);
+        }
+
+        // 全部通过：检查点 → 写入（/删除）
+        for plan in &plans {
+            if let Err(e) = self.checkpoint(&plan.path) {
+                return ToolResult::err(format!("写前检查点失败，已中止补丁应用：{e}"));
+            }
+            if plan.delete {
+                if let Err(e) = std::fs::remove_file(&plan.path) {
+                    return ToolResult::err(format!("删除文件失败（{}）: {e}", plan.rel));
+                }
+            } else if let Some(parent) = plan.path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return ToolResult::err(format!("创建目录失败（{}）: {e}", plan.rel));
+                }
+                if let Err(e) = std::fs::write(&plan.path, &plan.content) {
+                    return ToolResult::err(format!("写入失败（{}）: {e}", plan.rel));
+                }
+            }
+        }
+        let detail: Vec<String> = plans
+            .iter()
+            .map(|p| {
+                if p.delete {
+                    format!("{}（删除）", p.rel)
+                } else {
+                    format!("{}（+{}/-{}）", p.rel, p.added, p.removed)
+                }
+            })
+            .collect();
+        ToolResult::ok(format!("补丁已应用 {} 个文件：\n- {}", plans.len(), detail.join("\n- ")))
+    }
+
     /// 仓库检索：正则搜索文件内容（尊重 .gitignore），返回 文件:行号:内容
     fn tool_grep(&self, args: &serde_json::Value) -> ToolResult {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
@@ -1827,7 +1953,7 @@ impl ToolGateway {
         ToolResult::ok(format!("{}\n（{n} 个文件）", files.join("\n")))
     }
 
-    fn tool_fs(&self, args: &serde_json::Value) -> ToolResult {
+    fn tool_fs(&self, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("write");
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let target = match self.resolve_safe(path) {
@@ -1844,12 +1970,22 @@ impl ToolGateway {
                     return ToolResult::err(format!("写前检查点失败，已中止写入：{e}"));
                 }
                 match std::fs::write(&target, content).context("写入失败") {
-                    Ok(_) => ToolResult::ok(format!(
-                        "written: {}（{} 行 / {} 字符）",
+                    Ok(_) => {
+                        // 产物登记（D12）：写入投递目录 `.exmachina/outbox/` 的文件 → 会话 outbox
+                        let norm = target
+                            .strip_prefix(&self.workspace_root)
+                            .map(|p| p.display().to_string().replace('\\', "/"))
+                            .unwrap_or_default();
+                        if norm.starts_with(".exmachina/outbox/") {
+                            let _ = self.store.outbox_push(session_id, "file", &norm, "");
+                        }
+                        ToolResult::ok(format!(
+                            "written: {}（{} 行 / {} 字符）",
                         target.display(),
                         content.lines().count(),
                         content.chars().count()
-                    )),
+                    ))
+                    }
                     Err(e) => ToolResult::err(e.to_string()),
                 }
             }
@@ -2092,6 +2228,10 @@ impl ToolGateway {
                         .strip_prefix(&self.workspace_root)
                         .map(|p| p.display().to_string().replace('\\', "/"))
                         .unwrap_or_else(|_| shot.path.clone());
+                    // 产物登记（D12）：截图自动进入会话 outbox，通道投递
+                    let _ = self
+                        .store
+                        .outbox_push(session_id, "image", &rel, "屏幕截图");
                     ToolResult::ok(format!(
                         "【报告】截屏完成：{}，缩放后 {}x{}，文件 {rel}\n（截图已作为图像附带本轮回灌，可直接描述画面内容）",
                         shot.monitor, shot.width, shot.height
@@ -2172,6 +2312,8 @@ impl ToolGateway {
     /// - 拒绝：把拒绝原因作为工具结果回灌；
     /// - 超时：按「待人工审批」受阻回流（旧行为）。
     async fn gate_command(&self, agent_id: &str, session_id: &str, cmd: &str) -> ToolResult {
+        // 来源升级标：通道闸门登记过来源的会话（member）→ 审批单标记须管理员批准
+        let origin = self.store.get_session_origin(session_id).ok().flatten();
         let req = ApprovalRequest {
             id: crate::types::new_id()[..8].to_string(),
             session_id: session_id.to_string(),
@@ -2182,6 +2324,8 @@ impl ToolGateway {
             result: None,
             created_at: crate::types::now_iso(),
             decided_at: None,
+            origin_user: origin.as_ref().map(|(u, _)| u.clone()),
+            origin_role: origin.as_ref().map(|(_, r)| r.clone()),
         };
         let _ = self.store.add_approval(&req);
         let _ = self.events.send(CoreEvent {
@@ -2390,7 +2534,7 @@ impl ToolGateway {
 
     /// 浏览器自动化（headless Chrome + CDP）：懒启动常驻，串行化访问。
     /// 探测不到浏览器时该工具不会出现在下发 schema 里（此处兜底报错）。
-    async fn tool_browser(&self, args: &serde_json::Value) -> ToolResult {
+    async fn tool_browser(&self, session_id: &str, args: &serde_json::Value) -> ToolResult {
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("open");
         if op == "close" {
             let mut guard = self.browser.lock().await;
@@ -2456,7 +2600,11 @@ impl ToolGateway {
             "screenshot" => {
                 let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 match session.screenshot(&self.workspace_root, name).await {
-                    Ok(rel) => ToolResult::ok(format!("截图已保存：{rel}（可用 read 查看路径，或用 browser screenshot 再次覆盖）")),
+                    Ok(rel) => {
+                        // 产物登记（D12）：截图自动进入会话 outbox，通道投递
+                        let _ = self.store.outbox_push(session_id, "image", &rel, "网页截图");
+                        ToolResult::ok(format!("截图已保存：{rel}（可用 read 查看路径，或用 browser screenshot 再次覆盖）"))
+                    }
                     Err(e) => ToolResult::err(format!("截图失败：{e}")),
                 }
             }

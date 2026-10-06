@@ -559,6 +559,9 @@ pub struct Channel {
     /// napcat → url/token。空值键不入库。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, String>,
+    /// 群聊唤醒门控：Some(true)=群内仅提及/回复触发；None=取全局默认（config.identity.groupGateDefault）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_gate: Option<bool>,
     pub created_at: String,
 }
 
@@ -594,6 +597,310 @@ impl Channel {
     pub(crate) fn cfg(&self, key: &str) -> Option<String> {
         self.config.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
     }
+
+    /// 群聊唤醒门控是否开启（通道级覆盖 > 全局默认）
+    pub(crate) fn gate_enabled(&self, core: &exm_core::Core) -> bool {
+        self.group_gate.unwrap_or_else(|| core.config().identity.group_gate_default)
+    }
+}
+
+// ---------------------------------------------------------------- 出站能力矩阵与回复整形（组 6）
+
+/// 平台出站能力矩阵（按 kind 静态声明）：媒体直发与 typing 支持
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChannelCaps {
+    pub image: bool,
+    pub file: bool,
+    pub voice: bool,
+    pub typing: bool,
+}
+
+/// 能力矩阵：telegram/discord/slack/napcat/matrix 直发媒体（或部分），qqbot 官方 API 受限全降级。
+/// 与各适配器实际发送实现保持同步——新增实现即开位。
+pub(crate) fn caps(kind: &str) -> ChannelCaps {
+    match kind {
+        "telegram" => ChannelCaps { image: true, file: true, voice: true, typing: true },
+        "discord" => ChannelCaps { image: true, file: true, voice: false, typing: true },
+        "slack" => ChannelCaps { image: true, file: true, voice: false, typing: false },
+        "napcat" => ChannelCaps { image: true, file: true, voice: true, typing: false },
+        "matrix" => ChannelCaps { image: false, file: false, voice: false, typing: false },
+        _ => ChannelCaps { image: false, file: false, voice: false, typing: false },
+    }
+}
+
+/// 媒体降级决策：平台支持则原生直发；否则按类型降级（spec: 图片→链接/文本描述、文件→链接、语音→文本摘要）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaFallback {
+    /// 平台原生直发
+    Native,
+    /// 降级：文本描述 + 可访问链接（由调用方拼装）
+    LinkNote,
+}
+
+pub(crate) fn media_fallback(kind: &str, kind_want: &str) -> MediaFallback {
+    let c = caps(kind);
+    let supported = match kind_want {
+        "image" => c.image,
+        "file" => c.file,
+        "voice" => c.voice,
+        _ => false,
+    };
+    if supported { MediaFallback::Native } else { MediaFallback::LinkNote }
+}
+
+/// 长回复分段（spec 6.6）：段落边界优先；代码块与结构化陈述前缀保持完整；
+/// 单块超限才硬切并标注续接序号。max_chars 为平台上限。
+pub(crate) fn split_reply(text: &str, max_chars: usize) -> Vec<String> {
+    let text = text.trim_end();
+    if text.chars().count() <= max_chars {
+        return vec![text.to_string()];
+    }
+    // 切分单元：段落（\n\n），代码块视为不可分单元（与前后段落独立）
+    let mut units: Vec<(String, bool)> = Vec::new(); // (内容, 是否代码块)
+    let mut para = String::new();
+    let mut in_code = false;
+    for line in text.split('\n') {
+        let is_fence = line.trim_start().starts_with("```");
+        if is_fence {
+            in_code = !in_code;
+            para.push_str(line);
+            para.push('\n');
+            if !in_code {
+                units.push((std::mem::take(&mut para), true));
+            }
+            continue;
+        }
+        if in_code {
+            para.push_str(line);
+            para.push('\n');
+            continue;
+        }
+        if line.is_empty() && !para.is_empty() {
+            units.push((std::mem::take(&mut para), false));
+            continue;
+        }
+        para.push_str(line);
+        para.push('\n');
+    }
+    if !para.trim().is_empty() {
+        units.push((para, false));
+    }
+
+    // 聚合：按字符预算把相邻单元拼进同一消息（超预算即开新消息）
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut hard_parts: Vec<String> = Vec::new();
+    let mut flush_hard = |buf: &mut String, out: &mut Vec<String>| {
+        if !buf.trim().is_empty() {
+            out.push(buf.trim_end().to_string());
+        }
+        buf.clear();
+    };
+    for (unit, _is_code) in &units {
+        let unit = unit.trim_end().to_string();
+        if unit.chars().count() > max_chars {
+            flush_hard(&mut buf, &mut out);
+            // 硬切：按行聚合，超过预算开新片，带续接标注
+            hard_parts.clear();
+            let mut piece = String::new();
+            for line in unit.split_inclusive('\n') {
+                if piece.chars().count() + line.chars().count() > max_chars && !piece.is_empty() {
+                    hard_parts.push(piece.trim_end().to_string());
+                    piece.clear();
+                }
+                // 超长单行：按字符预算行内硬切
+                if line.chars().count() > max_chars {
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut idx = 0usize;
+                    while idx < chars.len() {
+                        let end = (idx + max_chars).min(chars.len());
+                        let seg: String = chars[idx..end].iter().collect();
+                        if end < chars.len() {
+                            hard_parts.push(seg);
+                        } else {
+                            piece.push_str(&seg);
+                        }
+                        idx = end;
+                    }
+                    continue;
+                }
+                piece.push_str(line);
+            }
+            if !piece.trim().is_empty() {
+                hard_parts.push(piece.trim_end().to_string());
+            }
+            let total = hard_parts.len();
+            for (i, p) in hard_parts.iter().enumerate() {
+                if total > 1 {
+                    out.push(format!("{p}\n（续 {}/{}）", i + 1, total));
+                } else {
+                    out.push(p.clone());
+                }
+            }
+            continue;
+        }
+        if buf.chars().count() + unit.chars().count() + 2 > max_chars && !buf.is_empty() {
+            flush_hard(&mut buf, &mut out);
+        }
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        buf.push_str(&unit);
+        buf.push('\n');
+    }
+    flush_hard(&mut buf, &mut out);
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+#[cfg(test)]
+mod reply_split_tests {
+    use super::*;
+
+    #[test]
+    fn 短文本不分段() {
+        assert_eq!(split_reply("hello", 100), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn 段落边界优先切分() {
+        let text = "第一段。\n\n第二段比较长一些的内容。\n\n第三段。";
+        let out = split_reply(text, 20);
+        assert!(out.len() >= 2, "应切成多条: {out:?}");
+        // 每条不超限
+        assert!(out.iter().all(|s| s.chars().count() <= 20), "{out:?}");
+        // 顺序保持
+        let joined = out.join("\n");
+        assert!(joined.contains("第一段") && joined.contains("第三段"));
+    }
+
+    #[test]
+    fn 代码块不被切断() {
+        let code = "```rust\nfn a() {\n    println!(\"x\");\n}\n```";
+        let text = format!("说明：\n\n{code}\n\n结尾。");
+        // max 60：代码块（约 46 字符）可完整容纳，聚合时不得跨消息断裂
+        let out = split_reply(&text, 60);
+        for s in &out {
+            let fences = s.matches("```").count();
+            assert_eq!(fences % 2, 0, "代码块围栏应成对出现: {s:?}");
+        }
+        assert!(out.iter().any(|s| s.contains("println!")), "代码块应完整在某条里: {out:?}");
+    }
+
+    #[test]
+    fn 超长单元硬切带续接序号() {
+        let block = format!("```text\n{}\n```", "x".repeat(200));
+        let out = split_reply(&block, 60);
+        assert!(out.len() >= 3, "硬切应多片: {}", out.len());
+        assert!(out.first().unwrap().contains("（续 1/"));
+        assert!(out.last().unwrap().contains("）") && out.last().unwrap().contains("（续 "));
+        // 每片（含标注）接近但不远超预算
+        for s in &out {
+            assert!(s.chars().count() <= 60 + 20, "{}", s.chars().count());
+        }
+    }
+
+    #[test]
+    fn 降级决策_矩阵覆盖() {
+        // telegram 全支持
+        assert_eq!(media_fallback("telegram", "image"), MediaFallback::Native);
+        assert_eq!(media_fallback("telegram", "voice"), MediaFallback::Native);
+        // discord 不支持语音
+        assert_eq!(media_fallback("discord", "voice"), MediaFallback::LinkNote);
+        assert_eq!(media_fallback("discord", "image"), MediaFallback::Native);
+        // qqbot 全降级
+        assert_eq!(media_fallback("qqbot", "image"), MediaFallback::LinkNote);
+        assert_eq!(media_fallback("qqbot", "file"), MediaFallback::LinkNote);
+        // 未知平台全降级
+        assert_eq!(media_fallback("webhook", "image"), MediaFallback::LinkNote);
+    }
+}
+
+// ---------------------------------------------------------------- 通道入站闸门（身份 + 群聊唤醒）
+
+/// 入站消息上下文：由各适配器从平台消息归一化提取
+pub(crate) struct InboundCtx<'a> {
+    pub text: &'a str,
+    pub external_id: &'a str,
+    pub display_name: &'a str,
+    /// 群聊 / 频道上下文（私聊为 false）
+    pub is_group: bool,
+    /// 平台归一化信号：被提及（@）或回复智能体消息
+    pub mentioned: bool,
+}
+
+pub(crate) enum GateDecision {
+    Allow,
+    /// 群聊未唤醒：静默忽略
+    Ignore,
+    /// 拒绝执行并回复提示（含 /pair 结果与配对指引）
+    Deny(String),
+}
+
+/// 入站统一闸门：① `/pair` 兑换拦截（未绑定也可用）→ ② 群聊唤醒门控 → ③ 身份管控裁决。
+/// 位置前置于一切执行（ChannelRun::begin 之前由各适配器调用）。
+pub(crate) async fn admit(core: &exm_core::Core, ch: &Channel, ctx: &InboundCtx<'_>) -> GateDecision {
+    let identity_cfg = &core.config().identity;
+
+    // ① 配对码兑换（控制台签发短码 → 通道内 /pair <码> 绑定；单次有效、限期）
+    let trimmed = ctx.text.trim();
+    if let Some(code) = trimmed.strip_prefix("/pair ").map(str::trim).filter(|c| !c.is_empty()) {
+        return match core.redeem_pairing(code, &ch.id, ctx.external_id, ctx.display_name, "member") {
+            Ok(idn) => GateDecision::Deny(format!(
+                "【报告】绑定成功：{}（角色 {}）。现在可以正常对话。",
+                idn.display_name, idn.role
+            )),
+            Err(e) => GateDecision::Deny(format!("【报告】绑定失败：{e}")),
+        };
+    }
+
+    // ② 群聊唤醒门控：群内仅提及 / 回复触发；私聊豁免
+    if ch.gate_enabled(core) && ctx.is_group && !ctx.mentioned {
+        return GateDecision::Ignore;
+    }
+
+    // ③ 身份管控：开启后未绑定用户拒绝执行并给配对指引
+    if identity_cfg.identity_required {
+        if core.identity_of(&ch.id, ctx.external_id).is_none() {
+            return GateDecision::Deny(
+                "【报告】未绑定身份：请在控制台「通道身份」页签发配对码，然后在此发送 /pair <配对码> 完成绑定。".into(),
+            );
+        }
+    }
+
+    // ④ 用量治理：通道主体滑动窗口限流 + 周期请求数配额（仅外部入口；组内派发不经此处）
+    let limits = &core.config().limits;
+    if limits.enabled {
+        let subject = match core.identity_of(&ch.id, ctx.external_id) {
+            Some(i) => format!("user:{}", i.id),
+            None => format!("ch:{}:{}", ch.id, ctx.external_id),
+        };
+        let now = exm_core::types::now_ms();
+        if limits.max_requests > 0
+            && !crate::limits::RateLimiter::check(
+                &format!("ch:{subject}"),
+                limits.window_secs * 1000,
+                limits.max_requests,
+                now,
+            )
+        {
+            return GateDecision::Deny(format!(
+                "【报告】请求过于频繁：受用量限制，请在 {} 秒后重试。",
+                limits.window_secs
+            ));
+        }
+        if limits.quota_requests > 0 {
+            let (qkey, qwin) = crate::limits::quota_key(&subject, &limits.quota_period, now);
+            if !crate::limits::RateLimiter::check(&qkey, qwin, limits.quota_requests, now) {
+                return GateDecision::Deny(
+                    "【报告】周期请求数配额已耗尽，请等待周期刷新或联系管理员调整配额。".into(),
+                );
+            }
+        }
+    }
+    GateDecision::Allow
 }
 
 /// 运行收束事件 → 纯文本回帖（telegram / napcat / qqbot 三个适配器共用）。
@@ -633,6 +940,8 @@ pub(crate) struct ChannelRun {
     pub session_id: String,
     prev_group: String,
     switched: bool,
+    /// 平台 kind（能力矩阵判定用）
+    pub kind: String,
 }
 
 impl ChannelRun {
@@ -666,7 +975,13 @@ impl ChannelRun {
         };
         let rx = core.subscribe();
         Some((
-            ChannelRun { core: core.clone(), session_id: session.id, prev_group, switched },
+            ChannelRun {
+                core: core.clone(),
+                session_id: session.id,
+                prev_group,
+                switched,
+                kind: ch.kind.clone(),
+            },
             rx,
         ))
     }
@@ -685,6 +1000,28 @@ impl ChannelRun {
 
     /// 执行本轮；返回后组上下文已还原
     pub(crate) async fn run(self, text: &str) {
+        // 周期 token 配额（外部来源会话）：耗尽即拒绝新轮次并经 run.error 回帖提示；
+        // 组内派发会话无来源登记，天然不受限（设计 D10）
+        let limits = self.core.config().limits.clone();
+        if limits.enabled && limits.quota_tokens > 0 {
+            if let Some((subject, _role)) = self.core.session_origin(&self.session_id) {
+                let used = self.core.session_tokens_estimate(&self.session_id);
+                if used >= limits.quota_tokens {
+                    self.core.emit_run_error(
+                        &self.session_id,
+                        &format!(
+                            "【报告】周期 token 配额已耗尽（已用 {used} / 上限 {}）：本轮拒绝执行，请联系管理员调整配额。",
+                            limits.quota_tokens
+                        ),
+                    );
+                    if self.switched {
+                        let _ = self.core.registry().set_active_group(&self.prev_group);
+                    }
+                    return;
+                }
+            }
+        }
+        let _ = limits;
         if let Err(e) = self.core.chat(&self.session_id, text).await {
             eprintln!("[channel:{}] 执行失败：{e}", self.session_id);
         }
@@ -696,15 +1033,28 @@ impl ChannelRun {
 
 /// 挂本轮回帖任务：订阅运行事件，收束即用 `send` 把文本发回原会话（发完或流断即退出）。
 /// 各适配器只需给出发送闭包（平台 API 差异全部封在这里面）。
-pub(crate) fn spawn_reply<F, Fut>(
+/// 媒体产物条目（run.finished artifacts → 平台投递）
+#[derive(Debug, Clone)]
+pub(crate) struct MediaItem {
+    /// image | file | voice
+    pub kind: String,
+    /// 绝对路径（spawn_reply 已从工作区相对路径解析）
+    pub path: std::path::PathBuf,
+    pub caption: String,
+}
+
+pub(crate) fn spawn_reply<F, Fut, M, MFut>(
     run: &ChannelRun,
     rx: tokio::sync::broadcast::Receiver<CoreEvent>,
     max_chars: usize,
     send: F,
+    send_media: M,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: FnOnce(String) -> Fut + Send + 'static,
+    F: Fn(String) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
+    M: Fn(MediaItem) -> MFut + Send + 'static,
+    MFut: std::future::Future<Output = bool> + Send,
 {
     let run = run.clone();
     tokio::spawn(async move {
@@ -713,12 +1063,136 @@ where
             if evt.session_id != run.session_id {
                 continue;
             }
+            // 产物投递（组 6.2/6.3）：能力矩阵判定直发或降级并注
+            let mut media_notes: Vec<String> = Vec::new();
+            if let Some(list) = evt.payload.get("artifacts").and_then(|v| v.as_array()) {
+                for a in list {
+                    let kind = a.get("kind").and_then(|x| x.as_str()).unwrap_or("file").to_string();
+                    let rel = a.get("path").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if rel.is_empty() {
+                        continue;
+                    }
+                    let caption = a.get("caption").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let abs = run.core.config().workspace_root.join(&rel);
+                    let item = MediaItem { kind: kind.clone(), path: abs, caption };
+                    match media_fallback(&run.kind, &kind) {
+                        MediaFallback::Native => {
+                            if !send_media(item.clone()).await {
+                                media_notes.push(format!("📎 {}：{rel}（直发失败，可在工作区查看）", item.caption));
+                            }
+                        }
+                        MediaFallback::LinkNote => {
+                            media_notes.push(format!("📎 {}：{rel}（工作区内）", item.caption));
+                        }
+                    }
+                }
+            }
             if let Some(text) = run.take_reply(&evt, max_chars) {
-                send(text).await;
+                // 长回复分段推送（组 6.6）：按平台上限逐段送达，顺序保持
+                let segments = split_reply(&text, max_chars);
+                let total = segments.len();
+                for (i, seg) in segments.into_iter().enumerate() {
+                    // 产物注记并入最后一段（文本主体保持整洁）
+                    if i + 1 == total && !media_notes.is_empty() {
+                        send(format!("{seg}\n{}", media_notes.join("\n"))).await;
+                    } else {
+                        send(seg).await;
+                    }
+                }
                 break;
             }
         }
     })
+}
+
+/// 入站媒体：下载保存到 `.exmachina/inbox/{通道id}/`，返回（绝对路径, 文件名）
+pub(crate) async fn save_inbound_media(
+    core: &exm_core::Core,
+    ch: &Channel,
+    name: &str,
+    bytes: Vec<u8>,
+) -> Option<String> {
+    let dir = core
+        .config()
+        .workspace_root
+        .join(".exmachina")
+        .join("inbox")
+        .join(&ch.id);
+    tokio::fs::create_dir_all(&dir).await.ok()?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' })
+        .collect();
+    let file = dir.join(format!(
+        "{}-{safe}",
+        exm_core::types::now_ms()
+    ));
+    tokio::fs::write(&file, &bytes).await.ok()?;
+    Some(file.display().to_string())
+}
+
+/// 通用下载（入站媒体用）：带超时；失败 None
+pub(crate) async fn download_bytes(url: &str) -> Option<Vec<u8>> {
+    reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()
+        .map(|b| b.to_vec())
+}
+
+/// 带鉴权下载（slack url_private 等）：Bearer token
+pub(crate) async fn download_bytes_auth(url: &str, token: &str) -> Option<Vec<u8>> {
+    reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()
+        .map(|b| b.to_vec())
+}
+
+/// 入站媒体注入会话：图片走多模态暂存（data URL），文件/语音注入路径说明。
+/// 追加到消息文本后由模型一并感知。返回注入说明文本。
+pub(crate) fn stage_inbound_media(
+    core: &exm_core::Core,
+    session_id: &str,
+    saved: &[(String, String, String)], // (kind, 绝对路径, 文件名)
+) -> String {
+    let mut notes = String::new();
+    for (kind, path, name) in saved {
+        match kind.as_str() {
+            "image" => {
+                if let Ok(bytes) = std::fs::read(path) {
+                    use base64::Engine as _;
+                    let data = format!(
+                        "data:image/png;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    );
+                    exm_core::image_stash::stage(session_id, vec![data]);
+                    notes.push_str(&format!("\n（图片附件 {name} 已注入，可直接描述画面内容）"));
+                } else {
+                    notes.push_str(&format!("\n（图片附件 {name} 读取失败）"));
+                }
+            }
+            "voice" => {
+                notes.push_str(&format!("\n（语音附件 {name} 已保存：{path}，可按需处理）"));
+            }
+            _ => {
+                notes.push_str(&format!("\n（文件附件 {name} 已保存：{path}）"));
+            }
+        }
+    }
+    let _ = core;
+    notes
 }
 
 // ---------------------------------------------------------------- 通道运行状态
@@ -826,6 +1300,9 @@ pub struct ChannelBody {
     pub config: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// 群聊唤醒门控（None = 取全局默认）
+    #[serde(default)]
+    pub group_gate: Option<bool>,
 }
 
 pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBody>) -> impl IntoResponse {
@@ -896,6 +1373,7 @@ pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBod
         reply_webhook: b.reply_webhook.filter(|s| !s.trim().is_empty()),
         token: b.token.filter(|s| !s.trim().is_empty()),
         config,
+        group_gate: b.group_gate,
         created_at: exm_core::types::now_iso(),
     };
     channels.push(ch.clone());
@@ -921,6 +1399,9 @@ pub async fn update_channel(
     }
     if let Some(v) = &b.enabled {
         ch.enabled = *v;
+    }
+    if let Some(v) = b.group_gate {
+        ch.group_gate = Some(v);
     }
     if let Some(v) = &b.group {
         ch.group = if v.trim().is_empty() { None } else { Some(v.clone()) };
@@ -1139,4 +1620,204 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(update_channel).delete(delete_channel),
         )
         .route("/api/channels/:id/inbound", post(channel_inbound))
+}
+
+#[cfg(test)]
+mod identity_gate_tests {
+    use super::*;
+    use exm_core::types::{PairingCode, UserIdentity};
+
+    fn test_core() -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        exm_core::Core::create(&dir).expect("创建 Core 失败")
+    }
+
+    fn chan(gate: Option<bool>) -> Channel {
+        Channel {
+            id: "tg-main".into(),
+            kind: "telegram".into(),
+            enabled: true,
+            group: None,
+            allowed_chats: vec![],
+            account: None,
+            secret: None,
+            reply_webhook: None,
+            token: None,
+            config: Default::default(),
+            group_gate: gate,
+            created_at: exm_core::types::now_iso(),
+        }
+    }
+
+    fn ctx<'a>(text: &'a str, uid: &'a str, is_group: bool, mentioned: bool) -> InboundCtx<'a> {
+        InboundCtx { text, external_id: uid, display_name: uid, is_group, mentioned }
+    }
+
+    /// 群聊门控：默认开——未提及忽略、提及放行、私聊豁免
+    #[tokio::test]
+    async fn 群聊门控_提及与私聊语义() {
+        let core = test_core();
+        let ch = chan(None);
+        assert!(core.config().identity.group_gate_default, "全局默认应开启");
+        let group_unmentioned = ctx("大家好", "u1", true, false);
+        let group_mentioned = ctx("@bot 帮我看下", "u1", true, true);
+        let private_unmentioned = ctx("在吗", "u1", false, false);
+        match admit(&core, &ch, &group_unmentioned).await {
+            GateDecision::Ignore => {}
+            _ => panic!("群聊未提及应忽略"),
+        }
+        match admit(&core, &ch, &group_mentioned).await {
+            GateDecision::Allow => {}
+            _ => panic!("群聊提及应放行"),
+        }
+        match admit(&core, &ch, &private_unmentioned).await {
+            GateDecision::Allow => {}
+            _ => panic!("私聊应豁免门控"),
+        }
+    }
+
+    /// 通道级覆盖：显式关闭门控后群聊未提及也放行
+    #[tokio::test]
+    async fn 群聊门控_通道级关闭() {
+        let core = test_core();
+        let ch = chan(Some(false));
+        match admit(&core, &ch, &ctx("随便聊聊", "u1", true, false)).await {
+            GateDecision::Allow => {}
+            _ => panic!("通道级关闭后不应拦截"),
+        }
+        let ch_on = chan(Some(true));
+        match admit(&core, &ch_on, &ctx("随便聊聊", "u1", true, false)).await {
+            GateDecision::Ignore => {}
+            _ => panic!("通道级开启后未提及应忽略"),
+        }
+    }
+
+    /// 身份管控：开启后未绑定拒绝并给 /pair 指引；绑定后放行
+    #[tokio::test]
+    async fn 身份管控_未绑定拒绝_绑定放行() {
+        let core = test_core();
+        let mut cfg = (*core.config()).clone();
+        cfg.identity.identity_required = true;
+        core.apply_config(cfg).unwrap();
+        let ch = chan(None);
+        let denied = admit(&core, &ch, &ctx("帮我做事", "u9", false, false)).await;
+        match denied {
+            GateDecision::Deny(msg) => assert!(msg.contains("/pair"), "拒绝应含配对指引: {msg}"),
+            _ => panic!("未绑定应拒绝"),
+        }
+        // 绑定后放行
+        core.save_identity(&UserIdentity {
+            id: "tg-main:u9".into(),
+            channel: "tg-main".into(),
+            external_id: "u9".into(),
+            display_name: "用户9".into(),
+            role: "member".into(),
+            paired_at: exm_core::types::now_iso(),
+            note: String::new(),
+        })
+        .unwrap();
+        match admit(&core, &ch, &ctx("帮我做事", "u9", false, false)).await {
+            GateDecision::Allow => {}
+            _ => panic!("已绑定应放行"),
+        }
+    }
+
+    /// /pair 兑换：有效码绑定成功（单次有效）；过期码拒绝；重复使用拒绝
+    #[tokio::test]
+    async fn 配对码_兑换流转() {
+        let core = test_core();
+        let ch = chan(None);
+        let code = core.issue_pairing_code("测试", None, 600).unwrap();
+
+        let ok = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u7", false, false)).await;
+        match ok {
+            GateDecision::Deny(msg) => assert!(msg.contains("绑定成功"), "{msg}"),
+            _ => panic!("/pair 有效码应回复绑定成功"),
+        }
+        assert!(core.identity_of("tg-main", "u7").is_some(), "兑换后应落库");
+
+        // 已用：再次兑换拒绝
+        let reuse = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u8", false, false)).await;
+        match reuse {
+            GateDecision::Deny(msg) => assert!(msg.contains("无效") || msg.contains("已被使用"), "{msg}"),
+            _ => panic!("/pair 已用码应拒绝"),
+        }
+
+        // 过期：手工插入一张已过期码
+        let expired = PairingCode {
+            code: "expired1".into(),
+            note: String::new(),
+            channel_platform: None,
+            created_by: "console".into(),
+            created_at: exm_core::types::now_iso(),
+            expires_at_ms: exm_core::types::now_ms() - 1000,
+        };
+        core.save_pairing_code(&expired).unwrap();
+        let late = admit(&core, &ch, &ctx("/pair expired1", "u6", false, false)).await;
+        match late {
+            GateDecision::Deny(msg) => assert!(msg.contains("过期"), "{msg}"),
+            _ => panic!("/pair 过期码应拒绝"),
+        }
+    }
+
+    /// 平台限定码：其他平台提交无效
+    #[tokio::test]
+    async fn 配对码_平台限定() {
+        let core = test_core();
+        let code = core.issue_pairing_code("仅 discord", Some("discord-main"), 600).unwrap();
+        let ch = Channel { id: "tg-main".into(), ..chan(None) };
+        let wrong = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u5", false, false)).await;
+        match wrong {
+            GateDecision::Deny(msg) => assert!(msg.contains("discord-main"), "{msg}"),
+            _ => panic!("平台不匹配应拒绝"),
+        }
+        assert!(core.identity_of("tg-main", "u5").is_none());
+    }
+}
+
+#[cfg(test)]
+mod inbound_media_tests {
+    use super::*;
+
+    fn test_core() -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-inb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        exm_core::Core::create(&dir).expect("创建 Core 失败")
+    }
+
+    /// 入站注入：图片进多模态暂存（data URL），文件注入路径说明
+    #[tokio::test]
+    async fn 入站媒体_注入与暂存() {
+        let core = test_core();
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        let dir = std::env::temp_dir().join(format!("exm-inb-f-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("shot.png");
+        std::fs::write(&img, &png).unwrap();
+        let doc = dir.join("report.txt");
+        std::fs::write(&doc, b"hello").unwrap();
+
+        let saved = vec![
+            ("image".into(), img.display().to_string(), "shot.png".into()),
+            ("file".into(), doc.display().to_string(), "report.txt".into()),
+        ];
+        let note = stage_inbound_media(&core, "ses-inb", &saved);
+        assert!(note.contains("图片附件 shot.png 已注入"), "{note}");
+        assert!(note.contains("文件附件 report.txt 已保存"), "{note}");
+        // 图片确实进入多模态暂存（session 维度）
+        let staged = exm_core::image_stash::take("ses-inb");
+        assert_eq!(staged.len(), 1, "应有一条暂存图片");
+        assert!(staged[0].starts_with("data:image/png;base64,"));
+    }
+
+    /// 失败回退：文件缺失 → 注入失败说明而非 panic/丢弃
+    #[tokio::test]
+    async fn 入站媒体_读取失败回退() {
+        let core = test_core();
+        let saved = vec![("image".into(), "/nonexistent/x.png".into(), "x.png".into())];
+        let note = stage_inbound_media(&core, "ses-fail", &saved);
+        assert!(note.contains("读取失败"), "{note}");
+        assert!(exm_core::image_stash::take("ses-fail").is_empty(), "失败不应产生暂存");
+    }
 }

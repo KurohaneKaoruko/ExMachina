@@ -9,7 +9,7 @@
 //! config.sandbox = "true" 时走沙箱 openapi（sandbox.api.sgroup.qq.com）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::platform::{report_status, spawn_reply, Channel, ChannelRun};
+use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -254,7 +254,23 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                     }
                                     "GROUP_AT_MESSAGE_CREATE" | "C2C_MESSAGE_CREATE" | "AT_MESSAGE_CREATE" => {
                                         let Some((peer, msg_id, content)) = parse_message(t, &d) else { continue };
-                                        if content.trim().is_empty() {
+                                        // 入站媒体（组 6.4）：attachments 下载
+                                        let mut inbound: Vec<(String, String, String, Vec<u8>)> = Vec::new();
+                                        if let Some(atts) = d.get("attachments").and_then(|x| x.as_array()) {
+                                            for att in atts {
+                                                let url = att.get("url").and_then(|x| x.as_str()).unwrap_or("");
+                                                let name = att.get("filename").and_then(|x| x.as_str()).unwrap_or("attachment.bin");
+                                                if url.is_empty() {
+                                                    continue;
+                                                }
+                                                let full = if url.starts_with("http") { url.to_string() } else { format!("https://multimedia.qq.com{url}") };
+                                                let kind = if name.contains(".png") || name.contains(".jpg") || name.contains(".jpeg") { "image" } else { "file" };
+                                                if let Some(bytes) = crate::platform::download_bytes(&full).await {
+                                                    inbound.push((kind.into(), name.into(), peer.key().to_string(), bytes));
+                                                }
+                                            }
+                                        }
+                                        if content.trim().is_empty() && inbound.is_empty() {
                                             continue;
                                         }
                                         if !ch.allowed_chats.is_empty()
@@ -263,11 +279,41 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                             eprintln!("[qqbot:{}] {} 不在白名单，已忽略", ch.id, peer.key());
                                             continue;
                                         }
+                                        // 闸门：官方 bot 群聊/频道本就 @ 驱动（mentioned 恒真）；C2C 私聊豁免门控
+                                        let is_group = !matches!(peer, Peer::C2C(_));
+                                        let external_id =
+                                            d.pointer("/author/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                        let gate_ctx = InboundCtx {
+                                            text: &content,
+                                            external_id: &external_id,
+                                            display_name: &external_id,
+                                            is_group,
+                                            mentioned: true,
+                                        };
+                                        match admit(core.as_ref(), &ch, &gate_ctx).await {
+                                            GateDecision::Allow => {}
+                                            GateDecision::Ignore => continue,
+                                            GateDecision::Deny(reply) => {
+                                                let creds2 = creds.clone();
+                                                let peer2 = peer.clone();
+                                                let msg_id2 = msg_id.clone();
+                                                tokio::spawn(async move {
+                                                    send_passive(&creds2, &base, &peer2, &msg_id2, 1, &reply).await;
+                                                });
+                                                continue;
+                                            }
+                                        }
                                         let core = core.clone();
                                         let ch2 = ch.clone();
                                         let creds2 = creds.clone();
                                         tokio::spawn(async move {
-                                            handle_message(&core, &ch2, &creds2, base, peer, msg_id, content.trim()).await;
+                                            let mut saved: Vec<(String, String, String)> = Vec::new();
+                                            for (kind, name, _ck, bytes) in inbound {
+                                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes).await {
+                                                    saved.push((kind, p, name));
+                                                }
+                                            }
+                                            handle_message(&core, &ch2, &creds2, base, peer, &external_id, saved, msg_id, content.trim()).await;
                                         });
                                     }
                                     _ => {}
@@ -378,29 +424,41 @@ async fn handle_message(
     creds: &Arc<BotCreds>,
     base: &str,
     peer: Peer,
+    external_id: &str,
+    media: Vec<(String, String, String)>,
     msg_id: String,
     text: &str,
 ) {
     let Some((run, rx)) = ChannelRun::begin(core, ch, peer.key()).await else {
         return;
     };
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
+    // 入站媒体注入（组 6.4）
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     // 回复任务：被动回复须带原消息 msg_id + 递增 msg_seq
     let seq = Arc::new(AtomicU64::new(0));
     let max_chars = peer.max_chars();
     let creds = creds.clone();
     let base = base.to_string();
-    let reply = spawn_reply(&run, rx, max_chars, move |text| {
-        let creds = creds.clone();
-        let base = base.clone();
-        let peer = peer.clone();
-        let msg_id = msg_id.clone();
-        let seq = seq.clone();
-        async move {
-            let n = seq.fetch_add(1, Ordering::Relaxed) + 1;
-            send_passive(&creds, &base, &peer, &msg_id, n, &text).await;
-        }
-    });
-    run.run(text).await;
+    let reply = spawn_reply(
+        &run,
+        rx,
+        max_chars,
+        move |text| {
+            let creds = creds.clone();
+            let base = base.clone();
+            let peer = peer.clone();
+            let msg_id = msg_id.clone();
+            let seq = seq.clone();
+            async move {
+                let n = seq.fetch_add(1, Ordering::Relaxed) + 1;
+                send_passive(&creds, &base, &peer, &msg_id, n, &text).await;
+            }
+        },
+        move |_item: MediaItem| async { false },
+    );
+    run.run(&text).await;
     let _ = reply.await;
 }
 

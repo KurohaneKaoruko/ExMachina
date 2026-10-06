@@ -12,7 +12,8 @@
   ],
   "tools": [
     "read",
-    "terminal"
+    "terminal",
+    "patch"
   ],
   "whenToCall": "运行观测、告警处理、发布与回滚、应急演练。",
   "dependencies": [],
