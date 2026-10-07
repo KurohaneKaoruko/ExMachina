@@ -22,17 +22,22 @@ pub struct Screenshot {
     pub monitor: String,
 }
 
-/// 机械执行器：持 enigo 句柄与动作节流时间戳
+/// 机械执行器：持动作节流时间戳。
+/// enigo 句柄不持久化——macOS 后端含非线程安全的 CGEventSource 句柄,
+/// 持有它会让整个 ToolGateway 不满足 Send;改为每次操作就地创建(交互操作开销可忽略)。
 pub struct ComputerSession {
-    enigo: enigo::Enigo,
     last_action: Option<Instant>,
 }
 
 impl ComputerSession {
     pub fn new() -> anyhow::Result<Self> {
-        let enigo = enigo::Enigo::new(&enigo::Settings::default())
-            .context("初始化键鼠控制失败（无交互桌面会话？）")?;
-        Ok(ComputerSession { enigo, last_action: None })
+        Ok(ComputerSession { last_action: None })
+    }
+
+    /// 就地创建 enigo 句柄(操作内用完即弃)
+    fn enigo() -> anyhow::Result<enigo::Enigo> {
+        enigo::Enigo::new(&enigo::Settings::default())
+            .context("初始化键鼠控制失败（无交互桌面会话？）")
     }
 
     /// 动作节流：距上次输入动作不足 `interval_ms` 时等待补齐（防失控连点）
@@ -90,7 +95,8 @@ impl ComputerSession {
         use enigo::{Coordinate, Mouse as _};
         let x = x.clamp(-9_000_000, 9_000_000);
         let y = y.clamp(-9_000_000, 9_000_000);
-        self.enigo.move_mouse(x, y, Coordinate::Abs)?;
+        let mut enigo = Self::enigo()?;
+        enigo.move_mouse(x, y, Coordinate::Abs)?;
         Ok(())
     }
 
@@ -102,9 +108,10 @@ impl ComputerSession {
             "middle" => enigo::Button::Middle,
             _ => enigo::Button::Left,
         };
-        self.enigo.button(btn, Direction::Click)?;
+        let mut enigo = Self::enigo()?;
+        enigo.button(btn, Direction::Click)?;
         if double {
-            self.enigo.button(btn, Direction::Click)?;
+            enigo.button(btn, Direction::Click)?;
         }
         Ok(())
     }
@@ -112,11 +119,12 @@ impl ComputerSession {
     /// 滚轮：dy 正 = 向上、负 = 向下；dx 正 = 向右、负 = 向左（格数）
     pub fn scroll(&mut self, dx: i32, dy: i32) -> anyhow::Result<()> {
         use enigo::{Axis, Mouse as _};
+        let mut enigo = Self::enigo()?;
         if dy != 0 {
-            self.enigo.scroll(dy.clamp(-50, 50), Axis::Vertical)?;
+            enigo.scroll(dy.clamp(-50, 50), Axis::Vertical)?;
         }
         if dx != 0 {
-            self.enigo.scroll(dx.clamp(-50, 50), Axis::Horizontal)?;
+            enigo.scroll(dx.clamp(-50, 50), Axis::Horizontal)?;
         }
         Ok(())
     }
@@ -125,7 +133,7 @@ impl ComputerSession {
     pub fn type_text(&mut self, text: &str) -> anyhow::Result<()> {
         use enigo::Keyboard as _;
         anyhow::ensure!(!text.is_empty(), "text 不能为空");
-        self.enigo.text(text)?;
+        Self::enigo()?.text(text)?;
         Ok(())
     }
 
@@ -160,7 +168,16 @@ impl ComputerSession {
                 "end" => enigo::Key::End,
                 "pageup" => enigo::Key::PageUp,
                 "pagedown" => enigo::Key::PageDown,
-                "insert" => enigo::Key::Insert,
+                "insert" => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        anyhow::bail!("macOS 平台不支持 insert 键（enigo 未提供该枚举）");
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        enigo::Key::Insert
+                    }
+                }
                 f if f.len() >= 2 && f.starts_with('f') && f[1..].chars().all(|c| c.is_ascii_digit()) => {
                     let n: u8 = f[1..].parse().context("无效功能键：{f}")?;
                     anyhow::ensure!((1..=12).contains(&n), "仅支持 F1-F12：{f}");
@@ -192,16 +209,17 @@ impl ComputerSession {
         } else {
             (vec![], parts[0].clone())
         };
+        let mut enigo = Self::enigo()?;
         let mut held: Vec<enigo::Key> = Vec::new();
         for m in &modifiers {
             let k = key_of(m)?;
-            self.enigo.key(k.clone(), Direction::Press)?;
+            enigo.key(k.clone(), Direction::Press)?;
             held.push(k);
         }
         let last_key = key_of(&last)?;
-        self.enigo.key(last_key, Direction::Click)?;
+        enigo.key(last_key, Direction::Click)?;
         for k in held.into_iter().rev() {
-            self.enigo.key(k, Direction::Release)?;
+            enigo.key(k, Direction::Release)?;
         }
         Ok(())
     }

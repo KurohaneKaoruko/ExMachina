@@ -1524,16 +1524,23 @@ async fn version_apply() -> impl IntoResponse {
     if update_job_running() {
         return (StatusCode::CONFLICT, Json(json!({ "error": "更新任务已在进行中" }))).into_response();
     }
-    use std::os::unix::process::CommandExt;
-    // 独立进程组:容器重启(SIGTERM)不会中断 build/up 流程
-    let spawned = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("exec setsid sh /host/scripts/apply-update.sh >/tmp/exm-update.log 2>&1")
-        .process_group(0)
-        .spawn();
-    match spawned {
-        Ok(_) => (StatusCode::ACCEPTED, Json(json!({ "started": true }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("任务启动失败:{e}") }))).into_response(),
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // 独立进程组:容器重启(SIGTERM)不会中断 build/up 流程
+        let spawned = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exec setsid sh /host/scripts/apply-update.sh >/tmp/exm-update.log 2>&1")
+            .process_group(0)
+            .spawn();
+        match spawned {
+            Ok(_) => (StatusCode::ACCEPTED, Json(json!({ "started": true }))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("任务启动失败:{e}") }))).into_response(),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        (StatusCode::BAD_REQUEST, Json(json!({ "error": "一键更新仅支持 Linux 部署(依赖 /host 挂载与 sh 脚本)" }))).into_response()
     }
 }
 
