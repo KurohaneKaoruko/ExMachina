@@ -153,6 +153,8 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/agents/:identifier/persona", get(get_persona).put(put_persona).delete(reset_persona))
         .route("/api/groups", get(list_groups).post(create_group))
         .route("/api/templates", get(list_templates))
+        .route("/api/version", get(version_info))
+        .route("/api/version/check", get(version_check))
         .route("/api/groups/active", get(active_group).put(switch_group))
         .route("/api/groups/:id", axum::routing::delete(delete_group))
         .route("/api/groups/:id/activate", post(activate_group))
@@ -1403,6 +1405,64 @@ struct CreateGroupBody {
     /// 组模板 id(entities/templates/group/<id>):提供后附加模板 SOUL(组人格骨架)
     #[serde(default)]
     template: Option<String>,
+}
+
+// ---------------------------------------------------------------- 版本与更新
+
+/// 构建版本:工作区 Cargo 版本 + 编译期注入的 git 短哈希(Dockerfile ARG GIT_HASH → ENV EXM_GIT_HASH)
+fn build_version() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "gitHash": option_env!("EXM_GIT_HASH").unwrap_or("dev"),
+    })
+}
+
+/// 本机版本(GET /api/version)
+async fn version_info() -> impl IntoResponse {
+    Json(build_version())
+}
+
+/// 更新检查(GET /api/version/check):对比上游 dev 分支最新提交。
+/// 本地未嵌入 commit(dev 构建)或网络不可达时返回可判定性提示,不臆断。
+async fn version_check() -> impl IntoResponse {
+    let mut out = build_version();
+    let fetched = async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .user_agent("exmachina-gateway")
+            .build()?;
+        let resp = client
+            .get("https://api.github.com/repos/KurohaneKaoruko/ExMachina/commits")
+            .query(&[("sha", "dev"), ("per_page", "1")])
+            .send()
+            .await?;
+        resp.json::<serde_json::Value>().await
+    }
+    .await;
+    match fetched {
+        Ok(v) if v.is_array() && !v.as_array().unwrap().is_empty() => {
+            let c = &v.as_array().unwrap()[0];
+            let sha = c["sha"].as_str().unwrap_or_default().to_string();
+            let short = sha.chars().take(7).collect::<String>();
+            let url = c["html_url"].as_str().unwrap_or_default().to_string();
+            let date = c["commit"]["committer"]["date"].as_str().unwrap_or_default().to_string();
+            let local_hash = out["gitHash"].as_str().unwrap_or("dev").to_string();
+            let update_available = if local_hash.is_empty() || local_hash == "dev" {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::Bool(!sha.starts_with(&local_hash))
+            };
+            out["upstream"] = serde_json::json!({ "sha": sha, "short": short, "url": url, "date": date });
+            out["updateAvailable"] = update_available;
+        }
+        Ok(_) => {
+            out["note"] = serde_json::json!("上游返回为空,无法判定");
+        }
+        Err(e) => {
+            out["note"] = serde_json::json!(format!("更新检查不可达:{e}"));
+        }
+    }
+    Json(out)
 }
 
 /// 编成模板清单(GET /api/templates):unit = 子个体模板,group = 组模板

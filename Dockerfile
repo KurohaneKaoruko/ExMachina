@@ -17,6 +17,8 @@ FROM rust:1.92-bookworm AS rust-builder
 WORKDIR /build
 # libxdo-dev：enigo 键鼠控制链接 libxdo（dbus 已 vendored，无需系统包）
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libxdo-dev && rm -rf /var/lib/apt/lists/*
+ARG GIT_HASH=dev
+ENV EXM_GIT_HASH=${GIT_HASH}
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 # 依赖缓存层（无 lockfile 变更时命中）

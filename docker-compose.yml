@@ -6,6 +6,8 @@ services:
     build:
       context: .
       args:
+        GIT_HASH: ${GIT_HASH:-dev}
+      args:
         EXM_LANG: ${EXM_LANG:-zh}
     image: exmachina:latest
     container_name: exmachina
