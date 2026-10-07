@@ -1,0 +1,38 @@
+{
+  "name": "比对体",
+  "identifier": "compare-agent",
+  "domain": "研究域",
+  "tier": "unit",
+  "description": "对比候选路径的差异、取舍与适配边界；生成假设并以反证检验。",
+  "capabilities": [
+    "方案比对",
+    "假设生成",
+    "反证检验"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "对比候选路径的差异、取舍与适配边界；生成假设并以反证检验。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "compare-agent.md"
+}

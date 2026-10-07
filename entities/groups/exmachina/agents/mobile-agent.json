@@ -1,0 +1,40 @@
+{
+  "name": "移动体",
+  "identifier": "mobile-agent",
+  "domain": "前端域",
+  "tier": "unit",
+  "description": "移动端与跨端应用实现：iOS/Android 适配、触控交互、发布包构建与机型差异处理。",
+  "capabilities": [
+    "移动端实现",
+    "跨端适配",
+    "发布构建",
+    "机型差异处理"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal"
+  ],
+  "whenToCall": "移动端与跨端应用实现：iOS/Android 适配、触控交互、发布包构建与机型差异处理。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "mobile-agent.md"
+}

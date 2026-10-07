@@ -1,0 +1,39 @@
+{
+  "name": "科研体",
+  "identifier": "science-agent",
+  "domain": "科研域",
+  "tier": "unit",
+  "description": "科学研究支持：文献综述、实验设计、数据处理流程与结果复现。",
+  "capabilities": [
+    "文献综述",
+    "实验设计",
+    "结果复现"
+  ],
+  "tools": [
+    "read",
+    "web_search",
+    "terminal"
+  ],
+  "whenToCall": "科学研究支持：文献综述、实验设计、数据处理流程与结果复现。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "science-agent.md"
+}

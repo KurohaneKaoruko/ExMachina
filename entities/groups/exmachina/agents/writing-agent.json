@@ -1,0 +1,38 @@
+{
+  "name": "写作体",
+  "identifier": "writing-agent",
+  "domain": "内容域",
+  "tier": "unit",
+  "description": "内容创作与文案：长文写作、营销文案、脚本撰写与改写润色。",
+  "capabilities": [
+    "长文写作",
+    "文案创作",
+    "改写润色"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "内容创作与文案：长文写作、营销文案、脚本撰写与改写润色。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "writing-agent.md"
+}

@@ -1,0 +1,54 @@
+{
+  "id": "ml",
+  "name": "算法链",
+  "triggerSignals": [
+    "模型",
+    "训练",
+    "机器学习",
+    "特征",
+    "调参",
+    "数据泄漏"
+  ],
+  "description": "机器学习工程：数据准备 → 训练评估 → 口径核验 → 汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "data-agent",
+      "title": "数据准备",
+      "objectiveTemplate": "完成数据清洗、切分声明与特征工程口径：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "ml-agent",
+      "title": "训练与评估",
+      "objectiveTemplate": "建立基线并完成训练评估与调参对比，记录可复算配置：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "review-agent",
+      "title": "口径核验",
+      "objectiveTemplate": "核验评估口径、切分合理性与泄漏风险：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总实验结论、指标对比与残余限制：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

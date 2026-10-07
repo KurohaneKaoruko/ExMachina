@@ -1,0 +1,40 @@
+{
+  "name": "交互体",
+  "identifier": "interaction-agent",
+  "domain": "交互域",
+  "tier": "unit",
+  "description": "执行网页与应用可视化页面的界面交互：导航点击、表单填写、上传下载与截图核验。",
+  "capabilities": [
+    "界面操作",
+    "表单填写",
+    "流程串联",
+    "截图核验"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal"
+  ],
+  "whenToCall": "执行网页与应用可视化页面的界面交互：导航点击、表单填写、上传下载与截图核验。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "interaction-agent.md"
+}

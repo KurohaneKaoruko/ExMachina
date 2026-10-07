@@ -1,0 +1,38 @@
+{
+  "name": "市研体",
+  "identifier": "market-agent",
+  "domain": "商务域",
+  "tier": "unit",
+  "description": "市场与竞品调研：行业扫描、竞品对比、受众与定价分析。",
+  "capabilities": [
+    "市场调研",
+    "竞品对比",
+    "受众分析"
+  ],
+  "tools": [
+    "web_search",
+    "read"
+  ],
+  "whenToCall": "市场与竞品调研：行业扫描、竞品对比、受众与定价分析。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "market-agent.md"
+}

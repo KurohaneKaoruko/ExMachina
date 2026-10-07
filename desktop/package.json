@@ -1,0 +1,14 @@
+{
+  "name": "exmachina-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EXMACHINA 桌面端（Tauri v2）：自带本地网关 / 远程直连",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

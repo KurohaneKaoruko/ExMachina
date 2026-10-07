@@ -1,0 +1,9 @@
+{
+  "id": "git-safety",
+  "name": "Git 安全作业",
+  "description": "涉及 git 历史与远端的操作约束",
+  "triggers": ["git push", "git reset", "git clean", "git rebase", "git merge", "git cherry-pick"],
+  "instructions": "Git 安全作业约束：1) 禁止 force push 与 history 改写类操作（--force/--hard/clean）直接执行，必须先回流指挥体升级；2) push 前先 git status 确认提交范围，只推本任务相关分支；3) 任何涉及共享分支的操作先说明影响面与回退路径；4) 保留操作前 hash 以便回退。",
+  "agents": ["coding-agent", "ops-agent"],
+  "createdAt": "2026-09-12T00:00:00.000Z"
+}

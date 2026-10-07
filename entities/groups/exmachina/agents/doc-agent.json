@@ -1,0 +1,38 @@
+{
+  "name": "文档体",
+  "identifier": "doc-agent",
+  "domain": "文档域",
+  "tier": "unit",
+  "description": "文档撰写、索引整理、图示绘制与示例编写。",
+  "capabilities": [
+    "文档撰写",
+    "索引整理",
+    "图示绘制",
+    "示例编写"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "文档撰写、索引整理、图示绘制与示例编写。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "doc-agent.md"
+}

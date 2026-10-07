@@ -1,0 +1,53 @@
+{
+  "id": "decision",
+  "name": "决策链",
+  "triggerSignals": [
+    "冲突",
+    "选型",
+    "方案选择",
+    "裁决"
+  ],
+  "description": "冲突裁决、方案选择",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "review-agent",
+      "title": "证据归集",
+      "objectiveTemplate": "归集候选方案的可复核证据：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "compare-agent",
+      "title": "反证搜索",
+      "objectiveTemplate": "寻找可推翻当前主结论的反例与边界情况：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": true
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "decision-agent",
+      "title": "裁决",
+      "objectiveTemplate": "基于证据等级、风险和可回退性在候选结论间裁决：{goal}",
+      "dependsOn": [
+        "S1",
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总裁决结论、理由、残余风险：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

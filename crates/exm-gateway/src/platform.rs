@@ -1,0 +1,2211 @@
+//! 平台能力接入层 —— 定时任务/心跳、执行审批、通道网关、技能包（docs/10）
+//!
+//! 边界：协议翻译与事件转发；调度判定与执行在 exm-core（cron.rs / tools.rs / Core）。
+
+use crate::AppState;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{Json, Router};
+use exm_core::types::CoreEvent;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use parking_lot::Mutex;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
+
+// ---------------------------------------------------------------- 技能包
+
+pub async fn list_skills(State(st): State<AppState>) -> impl IntoResponse {
+    match st.core.skills() {
+        Ok(s) => Json(serde_json::to_value(s).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillBody {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    pub instructions: String,
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+pub async fn create_skill(State(st): State<AppState>, Json(b): Json<SkillBody>) -> impl IntoResponse {
+    let skill = exm_core::types::SkillDef {
+        id: b.id.trim().to_string(),
+        name: b.name.trim().to_string(),
+        description: b.description,
+        triggers: b.triggers.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        instructions: b.instructions.trim().to_string(),
+        agents: b.agents.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        created_at: exm_core::types::now_iso(),
+    };
+    match st.core.add_skill(skill.clone()) {
+        Ok(_) => Json(serde_json::to_value(skill).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn delete_skill(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.remove_skill(&id) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "技能不存在" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 组总览（组是交互对象）：编成 / 链路 / 会话 / 记忆 / 成员可靠性 一块仪表数据
+pub async fn group_overview(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    if st.core.group_meta(&id).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "组不存在" }))).into_response();
+    }
+    let agents = st.core.registry().agents_in_group(&id);
+    let playbooks = st.core.registry().playbooks_in_group(&id).unwrap_or_default();
+    let sessions = st.core.list_sessions_in_group(&id).unwrap_or_default();
+    let stats = st.core.memory_stats().unwrap_or(json!({}));
+    // memory_stats() 返回原始统计：byGroup / shared 在顶层
+    let group_memory = stats
+        .pointer("/byGroup")
+        .and_then(|m| m.get(&id))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let global_memory = stats
+        .get("shared")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let member_ids: std::collections::HashSet<String> =
+        agents.iter().map(|a| a.identifier.clone()).collect();
+    let agent_stats: Vec<Value> = stats["agentStats"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|s| {
+                    s["agentId"]
+                        .as_str()
+                        .map(|a| member_ids.contains(a))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(json!({
+        "group": st.core.group_meta(&id),
+        "agents": agents.len(),
+        "playbooks": playbooks.len(),
+        "sessions": sessions.len(),
+        "memory": { "group": group_memory, "shared": global_memory },
+        "agentStats": agent_stats,
+    }))
+    .into_response()
+}
+
+/// 指定组的个体清单（组管理页用，不依赖激活组）
+pub async fn group_agents(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    Json(serde_json::to_value(st.core.registry().agents_in_group(&id)).unwrap_or(Value::Null))
+        .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupPrimaryBody {
+    pub identifier: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupWorkspaceBody {
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+/// 设置组工作区（空 = 回退全局工作区）
+pub async fn set_group_workspace(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<GroupWorkspaceBody>,
+) -> impl IntoResponse {
+    let ws = b.workspace.unwrap_or_default();
+    match st.core.registry().set_workspace(&id, &ws) {
+        Ok(_) => Json(json!({ "ok": true, "workspace": if ws.trim().is_empty() { Value::Null } else { json!(ws) } }))
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 设置组内主智能体（内置组会被核心拒绝）
+pub async fn set_group_primary(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<GroupPrimaryBody>,
+) -> impl IntoResponse {
+    match st.core.registry().set_primary(&id, &b.identifier) {
+        Ok(_) => Json(json!({ "ok": true, "primary": b.identifier })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupModelBody {
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// 设置组默认模型（空 = 跟随全局生效档案；组内未显式指定模型的个体随组）
+pub async fn set_group_model(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<GroupModelBody>,
+) -> impl IntoResponse {
+    let m = b.model.unwrap_or_default();
+    match st.core.registry().set_group_model(&id, &m) {
+        Ok(_) => Json(json!({ "ok": true, "model": if m.trim().is_empty() { Value::Null } else { json!(m) } }))
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupCapsBody {
+    #[serde(default)]
+    pub speech: Option<String>,
+    #[serde(default)]
+    pub transcribe: Option<String>,
+    #[serde(default)]
+    pub vision_relay: Option<String>,
+    #[serde(default)]
+    pub embedding: Option<String>,
+}
+
+/// 设置组级能力模型覆盖（每组可用不同模型栈；空串 = 清除该项跟随全局）
+pub async fn set_group_capabilities(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<GroupCapsBody>,
+) -> impl IntoResponse {
+    let caps = exm_core::types::GroupCapabilities {
+        speech: b.speech,
+        transcribe: b.transcribe,
+        vision_relay: b.vision_relay,
+        embedding: b.embedding,
+    };
+    match st.core.registry().set_group_capabilities(&id, caps) {
+        Ok(_) => Json(json!({
+            "ok": true,
+            "capabilities": st.core.group_meta(&id).and_then(|m| m.capabilities),
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 会话事件溯源（活动页用，取最近 limit 条）
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventsQuery {
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+pub async fn session_events(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<EventsQuery>,
+) -> impl IntoResponse {
+    match st.core.store.list_events(&id) {
+        Ok(mut events) => {
+            let limit = q.limit.unwrap_or(200).min(1000);
+            if events.len() > limit {
+                events = events.split_off(events.len() - limit);
+            }
+            Json(serde_json::to_value(events).unwrap_or(Value::Null)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- 经验优化（子个体自适应）
+
+/// 手动触发：基于教训与统计合成个体的经验改进要点
+pub async fn optimize_agent(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.orchestrator().optimize_agent(&id).await {
+        Ok(a) => Json(serde_json::to_value(a).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn get_adaptation(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.registry().load_adaptation(&id) {
+        Ok(Some(a)) => Json(serde_json::to_value(a).unwrap_or(Value::Null)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "该个体尚无经验要点" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn reset_adaptation(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.registry().reset_adaptation(&id) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "该个体尚无经验要点" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- 定时任务与调度器
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CronBody {
+    pub name: String,
+    pub prompt: String,
+    /// 五段 cron 表达式；与 at 二选一
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// 一次性触发时间（ISO8601）
+    #[serde(default)]
+    pub at: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub session_title: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// 结果推送订阅的通道 id 清单（空 = 不推送）
+    #[serde(default)]
+    pub notify_channels: Vec<String>,
+}
+
+pub async fn list_cron(State(st): State<AppState>) -> impl IntoResponse {
+    // 内部心跳条目不外露：心跳由 automation 配置驱动（调度器自持 last_run_minute 防重），
+    // 非用户任务；外露会导致用户禁用/删除被下一个调度周期静默推翻
+    let now = chrono::Utc::now();
+    let jobs: Vec<Value> = st
+        .core
+        .cron
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|j| j.id != "__heartbeat__")
+        .map(|j| {
+            // 下次执行时间（integration-ux）：启用且 cron 命中的任务向前扫描最近命中
+            let mut v = serde_json::to_value(&j).unwrap_or(Value::Null);
+            if j.enabled {
+                if let Some(expr) = &j.cron {
+                    if let Some(t) = exm_core::cron::next_run(expr, now, 527_040) {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("nextRunAt".into(), json!(t.to_rfc3339()));
+                        }
+                    }
+                }
+            }
+            v
+        })
+        .collect();
+    Json(serde_json::to_value(jobs).unwrap_or(Value::Null)).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CronRunsQuery {
+    #[serde(default)]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+pub async fn list_cron_runs(State(st): State<AppState>, Query(q): Query<CronRunsQuery>) -> impl IntoResponse {
+    match st.core.cron.runs(q.job.as_deref(), q.limit.unwrap_or(20)) {
+        Ok(runs) => Json(serde_json::to_value(runs).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn create_cron(State(st): State<AppState>, Json(b): Json<CronBody>) -> impl IntoResponse {
+    if b.name.trim().is_empty() || b.prompt.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "name/prompt 不能为空" }))).into_response();
+    }
+    if b.cron.is_none() && b.at.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "需要 cron 五段表达式或 at 一次性时间" })),
+        )
+            .into_response();
+    }
+    if let Some(expr) = &b.cron {
+        if expr.split_whitespace().count() != 5 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "cron 须为五段表达式：分 时 日 月 周" })),
+            )
+                .into_response();
+        }
+    }
+    let job = exm_core::types::CronJob {
+        id: String::new(),
+        name: b.name.trim().to_string(),
+        prompt: b.prompt.clone(),
+        cron: b.cron,
+        at: b.at,
+        group: b.group,
+        session_title: b.session_title,
+        enabled: b.enabled.unwrap_or(true),
+        last_run_at: None,
+        last_status: None,
+        last_run_minute: None,
+        notify_channels: b
+            .notify_channels
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        created_at: String::new(),
+    };
+    match st.core.cron.upsert(job) {
+        Ok(j) => Json(serde_json::to_value(j).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CronUpdate {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+pub async fn update_cron(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<CronUpdate>,
+) -> impl IntoResponse {
+    match st.core.cron.get(&id) {
+        Ok(Some(mut job)) => {
+            if let Some(e) = b.enabled {
+                job.enabled = e;
+            }
+            match st.core.cron.upsert(job) {
+                Ok(j) => Json(serde_json::to_value(j).unwrap_or(Value::Null)).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "任务不存在" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn delete_cron(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.cron.remove(&id) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "任务不存在" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 手动触发一次（测试/补跑）
+pub async fn run_cron_now(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.cron.get(&id) {
+        Ok(Some(job)) => {
+            let run = st.core.run_cron_job(&job).await;
+            notify_cron_result(&st.core, &job, &run).await;
+            Json(serde_json::to_value(run).unwrap_or(Value::Null)).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "任务不存在" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 调度循环：每 20s 扫描到期任务（cron 命中 / 一次性 at 到点）；心跳由配置驱动
+pub fn spawn_cron_scheduler(core: std::sync::Arc<exm_core::Core>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(20));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let _ = tick_jobs(&core).await;
+        }
+    });
+}
+
+async fn tick_jobs(core: &exm_core::Core) -> anyhow::Result<()> {
+    let now = chrono::Utc::now();
+    let jobs = core.cron.list()?;
+    let mut changed = false;
+    for mut job in jobs {
+        if !exm_core::cron::job_due(&job, now) {
+            continue;
+        }
+        let _ = core.events.send(CoreEvent {
+            kind: "cron.fired".into(),
+            session_id: String::new(),
+            payload: json!({ "jobId": job.id, "jobName": job.name, "prompt": job.prompt }),
+        });
+        job.last_run_at = Some(exm_core::types::now_iso());
+        job.last_run_minute = Some(exm_core::cron::minute_key(now));
+        let run = core.run_cron_job(&job).await;
+        job.last_status = Some(run.status.clone());
+        if job.at.is_some() {
+            // 一次性任务：触发后停用
+            job.enabled = false;
+        }
+        core.cron.upsert(job.clone())?;
+        changed = true;
+        // 结果推送（7.3）：订阅了通道的任务完成后出站摘要（未订阅 = 维持现状不推）
+        notify_cron_result(core, &job, &run).await;
+    }
+
+    // 心跳巡检：配置驱动的内置周期任务（会话固定「心跳巡检」；per-agent 粒度见 build_heartbeat_job）
+    let cfg = core.config();
+    if cfg.automation.heartbeat_enabled {
+        let interval = cfg.automation.heartbeat_interval_minutes.max(1) as i64;
+        let minute = now.timestamp() / 60;
+        if minute % interval == 0 {
+            let minute_key = exm_core::cron::minute_key(now);
+            let already = core
+                .cron
+                .get("__heartbeat__")?
+                .map(|j| j.last_run_minute.as_deref() == Some(minute_key.as_str()))
+                .unwrap_or(false);
+            if !already {
+                let hb = build_heartbeat_job(core, &minute_key);
+                let run = core.run_cron_job(&hb).await;
+                core.cron.upsert(exm_core::types::CronJob {
+                    last_run_at: Some(exm_core::types::now_iso()),
+                    last_status: Some(run.status),
+                    ..hb
+                })?;
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        let _ = core.events.send(CoreEvent {
+            kind: "cron.updated".into(),
+            session_id: String::new(),
+            payload: json!({}),
+        });
+    }
+    Ok(())
+}
+
+/// 个体所属组（心跳 per-agent 定位用）：逐组扫描成员清单
+fn group_of_agent(core: &exm_core::Core, identifier: &str) -> Option<String> {
+    core.registry
+        .list_groups()
+        .into_iter()
+        .find(|g| core.registry.agents_in_group(&g.id).iter().any(|a| a.identifier == identifier))
+        .map(|g| g.id)
+}
+
+/// 构造本次心跳任务（7.4 per-agent 粒度）：
+/// 配置了目标个体且其存在于某组 → 以该组为执行上下文（产出经 write_memories 进该组记忆体系，
+/// 会话独立「心跳巡检-<个体>」）；未配置或个体不存在 → 维持全局巡检（激活组 + 会话「心跳巡检」）。
+fn build_heartbeat_job(core: &exm_core::Core, minute_key: &str) -> exm_core::types::CronJob {
+    let cfg = core.config();
+    let target = cfg.automation.heartbeat_agent.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let agent_group = target.and_then(|id| group_of_agent(core, id));
+    let (name, session_title, group) = match (target, agent_group) {
+        (Some(id), Some(g)) => (format!("心跳巡检·{id}"), format!("心跳巡检-{id}"), Some(g)),
+        _ => ("心跳巡检".to_string(), "心跳巡检".to_string(), None),
+    };
+    exm_core::types::CronJob {
+        id: "__heartbeat__".into(),
+        name,
+        prompt: cfg.automation.heartbeat_prompt.clone(),
+        cron: None,
+        at: None,
+        group,
+        session_title: Some(session_title),
+        enabled: true,
+        last_run_at: None,
+        last_status: None,
+        last_run_minute: Some(minute_key.to_string()),
+        notify_channels: Vec::new(),
+        created_at: String::new(),
+    }
+}
+
+// ---------------------------------------------------------------- 定时任务结果推送（7.3）
+
+/// 任务完成后的订阅通道摘要推送：全局开关 + 任务订阅清单双闸门；
+/// 未订阅 = 不产生任何通道消息（维持现状）。受限流约束的出站复用同一文本通路。
+async fn notify_cron_result(core: &exm_core::Core, job: &exm_core::types::CronJob, run: &exm_core::types::CronRun) {
+    let cfg = core.config();
+    if !cfg.notify.enabled || job.notify_channels.is_empty() {
+        return;
+    }
+    let max_chars = cfg.notify.max_chars.max(50);
+    let summary: String = run.summary.chars().take(max_chars).collect();
+    let text = format!("⏰ 定时任务「{}」{}\n{}", job.name, if run.status == "done" { "已完成" } else { "失败" }, summary);
+    for ch in load_channels(core) {
+        if !ch.enabled || !job.notify_channels.iter().any(|id| *id == ch.id) {
+            continue;
+        }
+        let ok = push_channel_text(&ch, &text).await;
+        if !ok {
+            eprintln!("[cron-notify] 通道 {} 推送失败", ch.id);
+        }
+    }
+}
+
+/// 通道文本出站（推送语义，不经历会话）：按平台直发到首个白名单会话或回调地址。
+/// 返回是否成功；无可用目标的平台（未配置会话键/回调）返回 false。
+pub(crate) async fn push_channel_text(ch: &Channel, text: &str) -> bool {
+    let chat = ch.allowed_chats.first().cloned();
+    match ch.kind.as_str() {
+        // webhook 桥接：POST 回调地址（无回调则无从推送）
+        "webhook" | "qq" | "wechat" => {
+            let Some(url) = ch.reply_webhook.clone().filter(|u| !u.trim().is_empty()) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post(&url)
+                .json(&serde_json::json!({ "text": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // telegram：Bot API sendMessage 到首个白名单会话
+        "telegram" => {
+            let (Some(token), Some(chat)) = (ch.token.clone().filter(|t| !t.trim().is_empty()), chat) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
+                .json(&serde_json::json!({ "chat_id": chat, "text": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // discord：Bot REST 发消息（config.channelId 优先于白名单）
+        "discord" => {
+            let Some(token) = ch.token.clone().filter(|t| !t.trim().is_empty()) else {
+                return false;
+            };
+            let Some(target) = ch.cfg("channelId").or(chat) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post(format!("https://discord.com/api/v10/channels/{target}/messages"))
+                .header("Authorization", format!("Bot {token}"))
+                .json(&serde_json::json!({ "content": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // slack：chat.postMessage（token + 频道）
+        "slack" => {
+            let Some(token) = ch.token.clone().filter(|t| !t.trim().is_empty()) else {
+                return false;
+            };
+            let Some(target) = ch.cfg("channelId").or(chat) else {
+                return false;
+            };
+            reqwest::Client::new()
+                .post("https://slack.com/api/chat.postMessage")
+                .bearer_auth(token)
+                .json(&serde_json::json!({ "channel": target, "text": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // matrix：房间消息事件（token + roomId；与适配器同口径 Bearer 鉴权）
+        "matrix" => {
+            let Some(homeserver) = ch.cfg("homeserver").filter(|h| !h.trim().is_empty()) else {
+                return false;
+            };
+            let Some(token) = ch.token.clone().filter(|t| !t.trim().is_empty()) else {
+                return false;
+            };
+            let Some(room) = ch.cfg("channelId").or(chat) else {
+                return false;
+            };
+            let url = format!(
+                "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+                homeserver.trim_end_matches('/'),
+                crate::matrix::url_encode_pub(&room),
+                exm_core::types::new_id()
+            );
+            reqwest::Client::new()
+                .put(url)
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "msgtype": "m.text", "body": text }))
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+        }
+        // napcat/qqbot：长连接适配器自有会话内出站，推送语义暂不支持（诚实返回 false）
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------- 执行审批
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalsQuery {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+pub async fn list_approvals(State(st): State<AppState>, Query(q): Query<ApprovalsQuery>) -> impl IntoResponse {
+    match st.core.approval_list(q.status.as_deref(), q.limit.unwrap_or(50)) {
+        Ok(items) => Json(serde_json::to_value(items).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn approve_request(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.approval_decide(&id, true).await {
+        Ok(r) => Json(serde_json::to_value(r).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn deny_request(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.approval_decide(&id, false).await {
+        Ok(r) => Json(serde_json::to_value(r).unwrap_or(Value::Null)).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- 通道网关（webhook 通道）
+
+/// 支持的平台清单：
+/// - `webhook` / `qq` / `wechat`：webhook 桥接语义（社区桥把消息 POST 到 inbound，回复走回调）；
+/// - `telegram`：内置长轮询适配器（telegram.rs）；
+/// - `qqbot`：QQ 官方机器人（q.qq.com 开放平台，WebSocket 长连接，qqbot.rs）；
+/// - `napcat`：OneBot 11 实现（NapCat / Lagrange 等，正向 WebSocket，napcat.rs）；
+/// - `discord`：Discord 机器人（Gateway WebSocket，discord.rs）；
+/// - `slack`：Slack 应用（Socket Mode，免公网回调，slack.rs）；
+/// - `matrix`：Matrix 房间（Client-Server API 长轮询 /sync，matrix.rs）。
+pub const CHANNEL_PLATFORMS: &[&str] =
+    &["webhook", "telegram", "qqbot", "napcat", "discord", "slack", "matrix", "qq", "wechat"];
+
+/// 通道定义：外部消息源接入点。平台 = `type`（webhook / telegram / qqbot / napcat …）。
+/// 多平台多账号：同类平台可并存多条（每条一个账号），每条可绑定不同智能体组。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    pub id: String,
+    /// 平台：webhook | telegram | qqbot | napcat | qq | wechat
+    #[serde(rename = "type", default = "default_platform")]
+    pub kind: String,
+    #[serde(default = "default_true_channel")]
+    pub enabled: bool,
+    /// 账号绑定组：该账号的入站消息在此组上下文执行；缺省 = 激活组
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 会话白名单：允许交互的会话键（Telegram chat id / QQ openid / OneBot 群号或 QQ 号；空 = 不限）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_chats: Vec<String>,
+    /// 账号备注（同平台多账号时区分用途）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// webhook / qq / wechat 桥接语义：入站密钥校验
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_webhook: Option<String>,
+    /// telegram 平台：BotFather 签发的 bot token
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// 平台扩展配置（新平台零结构体改动）：qqbot → appId/appSecret/sandbox；
+    /// napcat → url/token。空值键不入库。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
+    /// 群聊唤醒门控：Some(true)=群内仅提及/回复触发；None=取全局默认（config.identity.groupGateDefault）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_gate: Option<bool>,
+    pub created_at: String,
+}
+
+fn default_platform() -> String {
+    "webhook".into()
+}
+fn default_true_channel() -> bool {
+    true
+}
+
+fn channels_path(core: &exm_core::Core) -> std::path::PathBuf {
+    core.config().data_dir.join("channels.json")
+}
+
+pub(crate) fn load_channels(core: &exm_core::Core) -> Vec<Channel> {
+    std::fs::read_to_string(channels_path(core))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_channels(core: &exm_core::Core, channels: &[Channel]) -> anyhow::Result<()> {
+    let p = channels_path(core);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&p, serde_json::to_string_pretty(channels)?)?;
+    Ok(())
+}
+
+impl Channel {
+    /// 平台扩展配置读取（config 键，去除首尾空白）
+    pub(crate) fn cfg(&self, key: &str) -> Option<String> {
+        self.config.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    }
+
+    /// 群聊唤醒门控是否开启（通道级覆盖 > 全局默认）
+    pub(crate) fn gate_enabled(&self, core: &exm_core::Core) -> bool {
+        self.group_gate.unwrap_or_else(|| core.config().identity.group_gate_default)
+    }
+}
+
+// ---------------------------------------------------------------- 出站能力矩阵与回复整形（组 6）
+
+/// 平台出站能力矩阵（按 kind 静态声明）：媒体直发与 typing 支持
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChannelCaps {
+    pub image: bool,
+    pub file: bool,
+    pub voice: bool,
+    pub typing: bool,
+}
+
+/// 能力矩阵：telegram/discord/slack/napcat/matrix 直发媒体（或部分），qqbot 官方 API 受限全降级。
+/// 与各适配器实际发送实现保持同步——新增实现即开位。
+pub(crate) fn caps(kind: &str) -> ChannelCaps {
+    match kind {
+        "telegram" => ChannelCaps { image: true, file: true, voice: true, typing: true },
+        "discord" => ChannelCaps { image: true, file: true, voice: false, typing: true },
+        "slack" => ChannelCaps { image: true, file: true, voice: false, typing: false },
+        "napcat" => ChannelCaps { image: true, file: true, voice: true, typing: false },
+        "matrix" => ChannelCaps { image: false, file: false, voice: false, typing: false },
+        _ => ChannelCaps { image: false, file: false, voice: false, typing: false },
+    }
+}
+
+/// 媒体降级决策：平台支持则原生直发；否则按类型降级（spec: 图片→链接/文本描述、文件→链接、语音→文本摘要）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaFallback {
+    /// 平台原生直发
+    Native,
+    /// 降级：文本描述 + 可访问链接（由调用方拼装）
+    LinkNote,
+}
+
+pub(crate) fn media_fallback(kind: &str, kind_want: &str) -> MediaFallback {
+    let c = caps(kind);
+    let supported = match kind_want {
+        "image" => c.image,
+        "file" => c.file,
+        "voice" => c.voice,
+        _ => false,
+    };
+    if supported { MediaFallback::Native } else { MediaFallback::LinkNote }
+}
+
+/// 长回复分段（spec 6.6）：段落边界优先；代码块与结构化陈述前缀保持完整；
+/// 单块超限才硬切并标注续接序号。max_chars 为平台上限。
+pub(crate) fn split_reply(text: &str, max_chars: usize) -> Vec<String> {
+    let text = text.trim_end();
+    if text.chars().count() <= max_chars {
+        return vec![text.to_string()];
+    }
+    // 切分单元：段落（\n\n），代码块视为不可分单元（与前后段落独立）
+    let mut units: Vec<(String, bool)> = Vec::new(); // (内容, 是否代码块)
+    let mut para = String::new();
+    let mut in_code = false;
+    for line in text.split('\n') {
+        let is_fence = line.trim_start().starts_with("```");
+        if is_fence {
+            in_code = !in_code;
+            para.push_str(line);
+            para.push('\n');
+            if !in_code {
+                units.push((std::mem::take(&mut para), true));
+            }
+            continue;
+        }
+        if in_code {
+            para.push_str(line);
+            para.push('\n');
+            continue;
+        }
+        if line.is_empty() && !para.is_empty() {
+            units.push((std::mem::take(&mut para), false));
+            continue;
+        }
+        para.push_str(line);
+        para.push('\n');
+    }
+    if !para.trim().is_empty() {
+        units.push((para, false));
+    }
+
+    // 聚合：按字符预算把相邻单元拼进同一消息（超预算即开新消息）
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut hard_parts: Vec<String> = Vec::new();
+    let mut flush_hard = |buf: &mut String, out: &mut Vec<String>| {
+        if !buf.trim().is_empty() {
+            out.push(buf.trim_end().to_string());
+        }
+        buf.clear();
+    };
+    for (unit, _is_code) in &units {
+        let unit = unit.trim_end().to_string();
+        if unit.chars().count() > max_chars {
+            flush_hard(&mut buf, &mut out);
+            // 硬切：按行聚合，超过预算开新片，带续接标注
+            hard_parts.clear();
+            let mut piece = String::new();
+            for line in unit.split_inclusive('\n') {
+                if piece.chars().count() + line.chars().count() > max_chars && !piece.is_empty() {
+                    hard_parts.push(piece.trim_end().to_string());
+                    piece.clear();
+                }
+                // 超长单行：按字符预算行内硬切
+                if line.chars().count() > max_chars {
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut idx = 0usize;
+                    while idx < chars.len() {
+                        let end = (idx + max_chars).min(chars.len());
+                        let seg: String = chars[idx..end].iter().collect();
+                        if end < chars.len() {
+                            hard_parts.push(seg);
+                        } else {
+                            piece.push_str(&seg);
+                        }
+                        idx = end;
+                    }
+                    continue;
+                }
+                piece.push_str(line);
+            }
+            if !piece.trim().is_empty() {
+                hard_parts.push(piece.trim_end().to_string());
+            }
+            let total = hard_parts.len();
+            for (i, p) in hard_parts.iter().enumerate() {
+                if total > 1 {
+                    out.push(format!("{p}\n（续 {}/{}）", i + 1, total));
+                } else {
+                    out.push(p.clone());
+                }
+            }
+            continue;
+        }
+        if buf.chars().count() + unit.chars().count() + 2 > max_chars && !buf.is_empty() {
+            flush_hard(&mut buf, &mut out);
+        }
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        buf.push_str(&unit);
+        buf.push('\n');
+    }
+    flush_hard(&mut buf, &mut out);
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+#[cfg(test)]
+mod reply_split_tests {
+    use super::*;
+
+    #[test]
+    fn 短文本不分段() {
+        assert_eq!(split_reply("hello", 100), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn 段落边界优先切分() {
+        let text = "第一段。\n\n第二段比较长一些的内容。\n\n第三段。";
+        let out = split_reply(text, 20);
+        assert!(out.len() >= 2, "应切成多条: {out:?}");
+        // 每条不超限
+        assert!(out.iter().all(|s| s.chars().count() <= 20), "{out:?}");
+        // 顺序保持
+        let joined = out.join("\n");
+        assert!(joined.contains("第一段") && joined.contains("第三段"));
+    }
+
+    #[test]
+    fn 代码块不被切断() {
+        let code = "```rust\nfn a() {\n    println!(\"x\");\n}\n```";
+        let text = format!("说明：\n\n{code}\n\n结尾。");
+        // max 60：代码块（约 46 字符）可完整容纳，聚合时不得跨消息断裂
+        let out = split_reply(&text, 60);
+        for s in &out {
+            let fences = s.matches("```").count();
+            assert_eq!(fences % 2, 0, "代码块围栏应成对出现: {s:?}");
+        }
+        assert!(out.iter().any(|s| s.contains("println!")), "代码块应完整在某条里: {out:?}");
+    }
+
+    #[test]
+    fn 超长单元硬切带续接序号() {
+        let block = format!("```text\n{}\n```", "x".repeat(200));
+        let out = split_reply(&block, 60);
+        assert!(out.len() >= 3, "硬切应多片: {}", out.len());
+        assert!(out.first().unwrap().contains("（续 1/"));
+        assert!(out.last().unwrap().contains("）") && out.last().unwrap().contains("（续 "));
+        // 每片（含标注）接近但不远超预算
+        for s in &out {
+            assert!(s.chars().count() <= 60 + 20, "{}", s.chars().count());
+        }
+    }
+
+    #[test]
+    fn 降级决策_矩阵覆盖() {
+        // telegram 全支持
+        assert_eq!(media_fallback("telegram", "image"), MediaFallback::Native);
+        assert_eq!(media_fallback("telegram", "voice"), MediaFallback::Native);
+        // discord 不支持语音
+        assert_eq!(media_fallback("discord", "voice"), MediaFallback::LinkNote);
+        assert_eq!(media_fallback("discord", "image"), MediaFallback::Native);
+        // qqbot 全降级
+        assert_eq!(media_fallback("qqbot", "image"), MediaFallback::LinkNote);
+        assert_eq!(media_fallback("qqbot", "file"), MediaFallback::LinkNote);
+        // 未知平台全降级
+        assert_eq!(media_fallback("webhook", "image"), MediaFallback::LinkNote);
+    }
+}
+
+// ---------------------------------------------------------------- 通道入站闸门（身份 + 群聊唤醒）
+
+/// 入站消息上下文：由各适配器从平台消息归一化提取
+pub(crate) struct InboundCtx<'a> {
+    pub text: &'a str,
+    pub external_id: &'a str,
+    pub display_name: &'a str,
+    /// 群聊 / 频道上下文（私聊为 false）
+    pub is_group: bool,
+    /// 平台归一化信号：被提及（@）或回复智能体消息
+    pub mentioned: bool,
+    /// 通道会话键（与会话标题 `channel:<id>:<key>` 一致；/stop 定位会话用）
+    pub chat_key: &'a str,
+}
+
+pub(crate) enum GateDecision {
+    Allow,
+    /// 群聊未唤醒：静默忽略
+    Ignore,
+    /// 拒绝执行并回复提示（含 /pair 结果与配对指引）
+    Deny(String),
+}
+
+/// 入站统一闸门：① `/pair` 兑换拦截（未绑定也可用）→ ② 群聊唤醒门控 → ③ 身份管控裁决。
+/// 位置前置于一切执行（ChannelRun::begin 之前由各适配器调用）。
+pub(crate) async fn admit(core: &exm_core::Core, ch: &Channel, ctx: &InboundCtx<'_>) -> GateDecision {
+    let identity_cfg = &core.config().identity;
+
+    // ⓪ /stop 停止指令（先于一切校验）：直接终止该通道会话运行中的轮次并回执
+    if ctx.text.trim() == "/stop" {
+        let gid = ch.group.clone().unwrap_or_else(|| core.active_group());
+        let title = format!("channel:{}:{}", ch.id, ctx.chat_key);
+        let receipt = match core
+            .list_sessions_in_group(&gid)
+            .ok()
+            .and_then(|list| list.into_iter().find(|s| s.title == title))
+        {
+            Some(session) => match core.stop_session(&session.id) {
+                Ok(n) => format!("⏹ 已停止本轮（已执行 {n} 次工具调用）。"),
+                Err(_) => "当前没有运行中的任务。".to_string(),
+            },
+            None => "当前没有运行中的任务。".to_string(),
+        };
+        return GateDecision::Deny(receipt);
+    }
+
+    // ① 配对码兑换（控制台签发短码 → 通道内 /pair <码> 绑定；单次有效、限期）
+    let trimmed = ctx.text.trim();
+    if let Some(code) = trimmed.strip_prefix("/pair ").map(str::trim).filter(|c| !c.is_empty()) {
+        return match core.redeem_pairing(code, &ch.id, ctx.external_id, ctx.display_name, "member") {
+            Ok(idn) => GateDecision::Deny(format!(
+                "【报告】绑定成功：{}（角色 {}）。现在可以正常对话。",
+                idn.display_name, idn.role
+            )),
+            Err(e) => GateDecision::Deny(format!("【报告】绑定失败：{e}")),
+        };
+    }
+
+    // ② 群聊唤醒门控：群内仅提及 / 回复触发；私聊豁免
+    if ch.gate_enabled(core) && ctx.is_group && !ctx.mentioned {
+        return GateDecision::Ignore;
+    }
+
+    // ③ 身份管控：开启后未绑定用户拒绝执行并给配对指引
+    if identity_cfg.identity_required {
+        if core.identity_of(&ch.id, ctx.external_id).is_none() {
+            return GateDecision::Deny(
+                "【报告】未绑定身份：请在控制台「通道身份」页签发配对码，然后在此发送 /pair <配对码> 完成绑定。".into(),
+            );
+        }
+    }
+
+    // ④ 用量治理：通道主体滑动窗口限流 + 周期请求数配额（仅外部入口；组内派发不经此处）
+    let limits = &core.config().limits;
+    if limits.enabled {
+        let subject = match core.identity_of(&ch.id, ctx.external_id) {
+            Some(i) => format!("user:{}", i.id),
+            None => format!("ch:{}:{}", ch.id, ctx.external_id),
+        };
+        let now = exm_core::types::now_ms();
+        if limits.max_requests > 0
+            && !crate::limits::RateLimiter::check(
+                &format!("ch:{subject}"),
+                limits.window_secs * 1000,
+                limits.max_requests,
+                now,
+            )
+        {
+            return GateDecision::Deny(format!(
+                "【报告】请求过于频繁：受用量限制，请在 {} 秒后重试。",
+                limits.window_secs
+            ));
+        }
+        if limits.quota_requests > 0 {
+            let (qkey, qwin) = crate::limits::quota_key(&subject, &limits.quota_period, now);
+            if !crate::limits::RateLimiter::check(&qkey, qwin, limits.quota_requests, now) {
+                return GateDecision::Deny(
+                    "【报告】周期请求数配额已耗尽，请等待周期刷新或联系管理员调整配额。".into(),
+                );
+            }
+        }
+    }
+    GateDecision::Allow
+}
+
+/// 运行收束事件 → 纯文本回帖（telegram / napcat / qqbot 三个适配器共用）。
+pub(crate) fn flatten_statements(payload: &serde_json::Value, max_chars: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(list) = payload.get("statements").and_then(|v| v.as_array()) {
+        for s in list {
+            let tag = s.get("tag").and_then(|v| v.as_str()).unwrap_or("报告");
+            let text = s.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if text.trim().is_empty() {
+                continue;
+            }
+            lines.push(format!("【{tag}】{text}"));
+        }
+    }
+    let mut text = lines.join("\n");
+    if text.trim().is_empty() {
+        text = "（本轮无收束输出）".into();
+    }
+    text.chars().take(max_chars).collect()
+}
+
+// ---------------------------------------------------------------- 通道消息统一执行
+
+/// 通道入站消息的执行上下文：**组绑定 → 会话复用 → 事件订阅 → 执行 → 组还原**。
+/// 六个内置适配器（telegram / qqbot / napcat / discord / slack / matrix）共用这一段，
+/// 避免「切组」与「会话键复用」两处语义在各自的适配器里各写一遍而慢慢漂移。
+///
+/// 用法：`begin` 建立上下文并拿到事件订阅（**先订阅再执行**，确保不漏收束事件）
+/// → `spawn_reply` 挂回帖 → `run` 执行本轮 → await 回帖任务。
+///
+/// 注意：上下文本身可 Clone（回帖任务与执行方各持一份），
+/// 但 `broadcast::Receiver` 不可 Clone，故它由 `begin` 单独交出。
+#[derive(Clone)]
+pub(crate) struct ChannelRun {
+    core: std::sync::Arc<exm_core::Core>,
+    pub session_id: String,
+    prev_group: String,
+    switched: bool,
+    /// 平台 kind（能力矩阵判定用）
+    pub kind: String,
+}
+
+impl ChannelRun {
+    /// 账号绑定组切换 + 会话键复用（`channel:<通道id>:<会话键>`）；
+    /// 返回 (上下文, 运行事件订阅)
+    pub(crate) async fn begin(
+        core: &std::sync::Arc<exm_core::Core>,
+        ch: &Channel,
+        chat_key: &str,
+    ) -> Option<(Self, tokio::sync::broadcast::Receiver<CoreEvent>)> {
+        let prev_group = core.active_group();
+        let mut switched = false;
+        if let Some(g) = &ch.group {
+            if *g != prev_group && core.group_meta(g).is_some() {
+                switched = core.registry().set_active_group(g).is_ok();
+            }
+        }
+        let gid = core.active_group();
+        let title = format!("channel:{}:{chat_key}", ch.id);
+        let session = core
+            .list_sessions_in_group(&gid)
+            .ok()
+            .and_then(|list| list.into_iter().find(|s| s.title == title))
+            .or_else(|| core.create_session(&title).ok());
+        let Some(session) = session else {
+            // 会话建立失败也别把组上下文留在别人身上
+            if switched {
+                let _ = core.registry().set_active_group(&prev_group);
+            }
+            return None;
+        };
+        let rx = core.subscribe();
+        Some((
+            ChannelRun {
+                core: core.clone(),
+                session_id: session.id,
+                prev_group,
+                switched,
+                kind: ch.kind.clone(),
+            },
+            rx,
+        ))
+    }
+
+    /// 收束事件 → 回帖文本（非收束事件返回 None；已按平台上限截断）
+    pub(crate) fn take_reply(&self, evt: &CoreEvent, max_chars: usize) -> Option<String> {
+        match evt.kind.as_str() {
+            "run.finished" => Some(flatten_statements(&evt.payload, max_chars)),
+            "run.error" => {
+                let msg = evt.payload.get("message").and_then(|v| v.as_str()).unwrap_or("运行失败");
+                Some(format!("【警告】{msg}").chars().take(max_chars).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// 执行本轮；返回后组上下文已还原
+    pub(crate) async fn run(self, text: &str) {
+        // 周期 token 配额（外部来源会话）：耗尽即拒绝新轮次并经 run.error 回帖提示；
+        // 组内派发会话无来源登记，天然不受限（设计 D10）
+        let limits = self.core.config().limits.clone();
+        if limits.enabled && limits.quota_tokens > 0 {
+            if let Some((subject, _role)) = self.core.session_origin(&self.session_id) {
+                let used = self.core.session_tokens_estimate(&self.session_id);
+                if used >= limits.quota_tokens {
+                    self.core.emit_run_error(
+                        &self.session_id,
+                        &format!(
+                            "【报告】周期 token 配额已耗尽（已用 {used} / 上限 {}）：本轮拒绝执行，请联系管理员调整配额。",
+                            limits.quota_tokens
+                        ),
+                    );
+                    if self.switched {
+                        let _ = self.core.registry().set_active_group(&self.prev_group);
+                    }
+                    return;
+                }
+            }
+        }
+        let _ = limits;
+        if let Err(e) = self.core.chat(&self.session_id, text).await {
+            eprintln!("[channel:{}] 执行失败：{e}", self.session_id);
+        }
+        if self.switched {
+            let _ = self.core.registry().set_active_group(&self.prev_group);
+        }
+    }
+}
+
+/// 挂本轮回帖任务：订阅运行事件，收束即用 `send` 把文本发回原会话（发完或流断即退出）。
+/// 各适配器只需给出发送闭包（平台 API 差异全部封在这里面）。
+/// 媒体产物条目（run.finished artifacts → 平台投递）
+#[derive(Debug, Clone)]
+pub(crate) struct MediaItem {
+    /// image | file | voice
+    pub kind: String,
+    /// 绝对路径（spawn_reply 已从工作区相对路径解析）
+    pub path: std::path::PathBuf,
+    pub caption: String,
+}
+
+pub(crate) fn spawn_reply<F, Fut, M, MFut>(
+    run: &ChannelRun,
+    rx: tokio::sync::broadcast::Receiver<CoreEvent>,
+    max_chars: usize,
+    send: F,
+    send_media: M,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+    M: Fn(MediaItem) -> MFut + Send + 'static,
+    MFut: std::future::Future<Output = bool> + Send,
+{
+    let run = run.clone();
+    tokio::spawn(async move {
+        let mut rx = rx;
+        while let Ok(evt) = rx.recv().await {
+            if evt.session_id != run.session_id {
+                continue;
+            }
+            // 产物投递（组 6.2/6.3）：能力矩阵判定直发或降级并注
+            let mut media_notes: Vec<String> = Vec::new();
+            if let Some(list) = evt.payload.get("artifacts").and_then(|v| v.as_array()) {
+                for a in list {
+                    let kind = a.get("kind").and_then(|x| x.as_str()).unwrap_or("file").to_string();
+                    let rel = a.get("path").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if rel.is_empty() {
+                        continue;
+                    }
+                    let caption = a.get("caption").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let abs = run.core.config().workspace_root.join(&rel);
+                    let item = MediaItem { kind: kind.clone(), path: abs, caption };
+                    match media_fallback(&run.kind, &kind) {
+                        MediaFallback::Native => {
+                            if !send_media(item.clone()).await {
+                                media_notes.push(format!("📎 {}：{rel}（直发失败，可在工作区查看）", item.caption));
+                            }
+                        }
+                        MediaFallback::LinkNote => {
+                            media_notes.push(format!("📎 {}：{rel}（工作区内）", item.caption));
+                        }
+                    }
+                }
+            }
+            if let Some(text) = run.take_reply(&evt, max_chars) {
+                // 长回复分段推送（组 6.6）：按平台上限逐段送达，顺序保持
+                let segments = split_reply(&text, max_chars);
+                let total = segments.len();
+                for (i, seg) in segments.into_iter().enumerate() {
+                    // 产物注记并入最后一段（文本主体保持整洁）
+                    if i + 1 == total && !media_notes.is_empty() {
+                        send(format!("{seg}\n{}", media_notes.join("\n"))).await;
+                    } else {
+                        send(seg).await;
+                    }
+                }
+                break;
+            }
+        }
+    })
+}
+
+/// 入站媒体：下载保存到 `.exmachina/inbox/{通道id}/`，返回（绝对路径, 文件名）
+pub(crate) async fn save_inbound_media(
+    core: &exm_core::Core,
+    ch: &Channel,
+    name: &str,
+    bytes: Vec<u8>,
+) -> Option<String> {
+    let dir = core
+        .config()
+        .workspace_root
+        .join(".exmachina")
+        .join("inbox")
+        .join(&ch.id);
+    tokio::fs::create_dir_all(&dir).await.ok()?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' })
+        .collect();
+    let file = dir.join(format!(
+        "{}-{safe}",
+        exm_core::types::now_ms()
+    ));
+    tokio::fs::write(&file, &bytes).await.ok()?;
+    Some(file.display().to_string())
+}
+
+/// 通用下载（入站媒体用）：带超时；失败 None
+pub(crate) async fn download_bytes(url: &str) -> Option<Vec<u8>> {
+    reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()
+        .map(|b| b.to_vec())
+}
+
+/// 带鉴权下载（slack url_private 等）：Bearer token
+pub(crate) async fn download_bytes_auth(url: &str, token: &str) -> Option<Vec<u8>> {
+    reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()
+        .map(|b| b.to_vec())
+}
+
+/// 入站媒体注入会话：图片走多模态暂存（data URL），文件/语音注入路径说明。
+/// 追加到消息文本后由模型一并感知。返回注入说明文本。
+pub(crate) fn stage_inbound_media(
+    core: &exm_core::Core,
+    session_id: &str,
+    saved: &[(String, String, String)], // (kind, 绝对路径, 文件名)
+) -> String {
+    let mut notes = String::new();
+    for (kind, path, name) in saved {
+        match kind.as_str() {
+            "image" => {
+                if let Ok(bytes) = std::fs::read(path) {
+                    use base64::Engine as _;
+                    let data = format!(
+                        "data:image/png;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    );
+                    exm_core::image_stash::stage(session_id, vec![data]);
+                    notes.push_str(&format!("\n（图片附件 {name} 已注入，可直接描述画面内容）"));
+                } else {
+                    notes.push_str(&format!("\n（图片附件 {name} 读取失败）"));
+                }
+            }
+            "voice" => {
+                notes.push_str(&format!("\n（语音附件 {name} 已保存：{path}，可按需处理）"));
+            }
+            _ => {
+                notes.push_str(&format!("\n（文件附件 {name} 已保存：{path}）"));
+            }
+        }
+    }
+    let _ = core;
+    notes
+}
+
+// ---------------------------------------------------------------- 通道运行状态
+
+/// 通道运行状态（内置适配器上报；webhook/qq/wechat 桥接无运行时，不产生状态）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChanStatus {
+    /// ok | error
+    pub state: String,
+    /// 人类可读明细（机器人身份 / 最近一次错误原因）
+    pub detail: String,
+    /// 最近上报时刻（ISO8601）
+    pub at: String,
+}
+
+fn chan_statuses() -> &'static Mutex<HashMap<String, ChanStatus>> {
+    static S: OnceLock<Mutex<HashMap<String, ChanStatus>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 适配器上报连接状态（连上 / 断开 / 出错均覆盖写，UI 只看最近一次）
+pub(crate) fn report_status(id: &str, state: &str, detail: impl Into<String>) {
+    chan_statuses().lock().insert(
+        id.to_string(),
+        ChanStatus { state: state.to_string(), detail: detail.into(), at: exm_core::types::now_iso() },
+    );
+}
+
+/// 通道删除 / 停用时清除残留状态（下线的账号不该在状态表里阴魂不散）
+pub(crate) fn clear_status(id: &str) {
+    chan_statuses().lock().remove(id);
+}
+
+/// 单通道运行状态读取（连通测试的「长连接平台」口径）
+pub(crate) fn status_of(id: &str) -> Option<ChanStatus> {
+    chan_statuses().lock().get(id).cloned()
+}
+
+/// 通道运行状态总览（通道页状态列轮询）
+pub async fn channel_status() -> impl IntoResponse {
+    let snapshot = chan_statuses().lock().clone();
+    Json(serde_json::to_value(snapshot).unwrap_or(Value::Null)).into_response()
+}
+
+// ---------------------------------------------------------------- 通道 CRUD（脱敏回显）
+
+/// 平台 config 中的敏感键（掩码回显；更新时掩码值 = 沿用旧值）
+fn secret_config_keys(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "qqbot" => &["appSecret"],
+        "napcat" => &["token"],
+        // Slack Socket Mode 应用级令牌（xapp-）；机器人令牌走顶层 token
+        "slack" => &["appToken"],
+        _ => &[],
+    }
+}
+
+/// 通道脱敏序列化：顶层 token/secret 与平台敏感 config 键掩码回显，任何接口都不出明文密钥
+fn channel_json(ch: &Channel) -> Value {
+    let mut v = serde_json::to_value(ch).unwrap_or(Value::Null);
+    let Some(obj) = v.as_object_mut() else { return v };
+    let mask = Value::String(crate::llm_admin::KEY_MASK.into());
+    if ch.secret.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        obj.insert("secret".into(), mask.clone());
+    }
+    if ch.token.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        obj.insert("token".into(), mask.clone());
+    }
+    if let Some(cfg) = obj.get_mut("config").and_then(|c| c.as_object_mut()) {
+        for k in secret_config_keys(&ch.kind) {
+            if ch.cfg(k).is_some() {
+                cfg.insert((*k).to_string(), mask.clone());
+            }
+        }
+    }
+    v
+}
+
+pub async fn list_channels(State(st): State<AppState>) -> impl IntoResponse {
+    let list: Vec<Value> = load_channels(&st.core).iter().map(channel_json).collect();
+    Json(list).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelBody {
+    /// 创建必填；更新走路径参数，body 可不带（缺省即空串）
+    #[serde(default)]
+    pub id: String,
+    /// 平台：webhook（默认）| telegram | qqbot | napcat | qq | wechat
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// 账号绑定组
+    #[serde(default)]
+    pub group: Option<String>,
+    /// 会话白名单（空 = 不限）
+    #[serde(default)]
+    pub allowed_chats: Option<Vec<String>>,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub reply_webhook: Option<String>,
+    /// telegram bot token
+    #[serde(default)]
+    pub token: Option<String>,
+    /// 平台扩展配置（qqbot: appId/appSecret/sandbox；napcat: url/token）
+    #[serde(default)]
+    pub config: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// 群聊唤醒门控（None = 取全局默认）
+    #[serde(default)]
+    pub group_gate: Option<bool>,
+}
+
+pub async fn create_channel(State(st): State<AppState>, Json(b): Json<ChannelBody>) -> impl IntoResponse {
+    let id = b.id.trim().to_string();
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "非法通道 id" }))).into_response();
+    }
+    let platform = b.platform.clone().unwrap_or_else(|| "webhook".into());
+    if !CHANNEL_PLATFORMS.contains(&platform.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("不支持的平台（可选 {}）", CHANNEL_PLATFORMS.join(" / ")) })),
+        )
+            .into_response();
+    }
+    if platform == "telegram" && b.token.as_deref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "telegram 通道需要 bot token" }))).into_response();
+    }
+    let config: BTreeMap<String, String> = b
+        .config
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .collect();
+    // 新平台必填项：qqbot 需要 appId + appSecret；napcat 需要 WS 地址
+    if platform == "qqbot" && (config.get("appId").map_or(true, |v| v.trim().is_empty()) || config.get("appSecret").map_or(true, |v| v.trim().is_empty())) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "qqbot 通道需要 config.appId 与 config.appSecret" }))).into_response();
+    }
+    if platform == "napcat" && config.get("url").map_or(true, |v| v.trim().is_empty()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "napcat 通道需要 config.url（OneBot 11 正向 WebSocket 地址）" }))).into_response();
+    }
+    // discord / slack / matrix 的顶层 token 均为必填（bot token 或 access token）
+    if matches!(platform.as_str(), "discord" | "slack" | "matrix")
+        && b.token.as_deref().map(|t| t.trim().is_empty()).unwrap_or(true)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "该平台需要 token（Discord bot token / Slack bot token / Matrix access token）" })),
+        )
+            .into_response();
+    }
+    if platform == "slack" && config.get("appToken").map_or(true, |v| v.trim().is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "slack 通道需要 config.appToken（Socket Mode 应用级令牌）" })),
+        )
+            .into_response();
+    }
+    if platform == "matrix" && config.get("homeserver").map_or(true, |v| v.trim().is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "matrix 通道需要 config.homeserver（如 https://matrix.org）" })),
+        )
+            .into_response();
+    }
+    let mut channels = load_channels(&st.core);
+    if channels.iter().any(|c| c.id == id) {
+        return (StatusCode::CONFLICT, Json(json!({ "error": "通道已存在" }))).into_response();
+    }
+    let ch = Channel {
+        id,
+        kind: platform,
+        enabled: b.enabled.unwrap_or(true),
+        group: b.group.clone().filter(|s| !s.trim().is_empty()),
+        allowed_chats: b.allowed_chats.clone().unwrap_or_default(),
+        account: b.account.clone().filter(|s| !s.trim().is_empty()),
+        secret: b.secret.filter(|s| !s.trim().is_empty()),
+        reply_webhook: b.reply_webhook.filter(|s| !s.trim().is_empty()),
+        token: b.token.filter(|s| !s.trim().is_empty()),
+        config,
+        group_gate: b.group_gate,
+        created_at: exm_core::types::now_iso(),
+    };
+    channels.push(ch.clone());
+    if let Err(e) = save_channels(&st.core, &channels) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
+    }
+    Json(channel_json(&ch)).into_response()
+}
+
+/// 更新通道（启停 / 换组 / 换 token 等）
+pub async fn update_channel(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<ChannelBody>,
+) -> impl IntoResponse {
+    let mut channels = load_channels(&st.core);
+    let Some(ch) = channels.iter_mut().find(|c| c.id == id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "通道不存在" }))).into_response();
+    };
+    if b.enabled == Some(false) {
+        // 停用即下线：清掉运行状态，避免「已停用」的账号还挂着旧状态
+        clear_status(&id);
+    }
+    if let Some(v) = &b.enabled {
+        ch.enabled = *v;
+    }
+    if let Some(v) = b.group_gate {
+        ch.group_gate = Some(v);
+    }
+    if let Some(v) = &b.group {
+        ch.group = if v.trim().is_empty() { None } else { Some(v.clone()) };
+    }
+    if let Some(v) = &b.allowed_chats {
+        ch.allowed_chats = v.iter().filter(|s| !s.trim().is_empty()).cloned().collect();
+    }
+    if let Some(v) = &b.account {
+        ch.account = if v.trim().is_empty() { None } else { Some(v.clone()) };
+    }
+    // 敏感字段三态：掩码 = 沿用旧值；空 = 清除；其余 = 新值（与提供商页同一语义）
+    if let Some(v) = &b.secret {
+        let t = v.trim();
+        if t == crate::llm_admin::KEY_MASK {
+            // 掩码回传，保留旧值
+        } else if t.is_empty() {
+            ch.secret = None;
+        } else {
+            ch.secret = Some(t.to_string());
+        }
+    }
+    if let Some(v) = &b.reply_webhook {
+        ch.reply_webhook = if v.trim().is_empty() { None } else { Some(v.clone()) };
+    }
+    if let Some(v) = &b.token {
+        let t = v.trim();
+        if t == crate::llm_admin::KEY_MASK {
+            // 掩码回传，保留旧值
+        } else if t.is_empty() {
+            ch.token = None;
+        } else {
+            ch.token = Some(t.to_string());
+        }
+    }
+    if let Some(v) = &b.config {
+        // 整表替换：UI 编辑时按平台提交完整配置；启停等局部更新不带 config 即保持不变。
+        // 敏感键掩码回传 = 从旧表取回原值；空值键不入库（用户清空敏感键即删除）。
+        let mut next: BTreeMap<String, String> = BTreeMap::new();
+        for (k, val) in v {
+            let t = val.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if t == crate::llm_admin::KEY_MASK {
+                if let Some(old) = ch.config.get(k) {
+                    next.insert(k.clone(), old.clone());
+                }
+                continue;
+            }
+            next.insert(k.clone(), t.to_string());
+        }
+        ch.config = next;
+    }
+    let saved = ch.clone();
+    match save_channels(&st.core, &channels) {
+        Ok(_) => Json(channel_json(&saved)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn delete_channel(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let mut channels = load_channels(&st.core);
+    let before = channels.len();
+    channels.retain(|c| c.id != id);
+    if channels.len() == before {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "通道不存在" }))).into_response();
+    }
+    match save_channels(&st.core, &channels) {
+        Ok(_) => {
+            clear_status(&id);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboundBody {
+    #[serde(default)]
+    pub secret: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub sender_id: Option<String>,
+    /// 会话键：相同键复用同一会话；缺省按 senderId；再缺省 default
+    #[serde(default)]
+    pub session_key: Option<String>,
+    #[serde(default)]
+    pub reply_webhook: Option<String>,
+}
+
+pub async fn channel_inbound(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<InboundBody>,
+) -> impl IntoResponse {
+    let Some(channel) = load_channels(&st.core).into_iter().find(|c| c.id == id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "通道不存在" }))).into_response();
+    };
+    if !channel.enabled {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "通道已停用" }))).into_response();
+    }
+    if let Some(secret) = &channel.secret {
+        if b.secret.as_deref() != Some(secret.as_str()) {
+            return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "通道密钥不符" }))).into_response();
+        }
+    }
+    if b.text.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "text 不能为空" }))).into_response();
+    }
+    // 账号绑定组：入站消息在绑定的组上下文执行（会话也归属该组）
+    let prev_group = st.core.active_group();
+    let mut switched = false;
+    if let Some(g) = &channel.group {
+        if *g != prev_group && st.core.group_meta(g).is_some() {
+            switched = st.core.registry().set_active_group(g).is_ok();
+        }
+    }
+    // 会话复用（组内）：channel:{id}:{sessionKey|senderId|default}
+    let key = b
+        .session_key
+        .clone()
+        .or_else(|| b.sender_id.clone())
+        .unwrap_or_else(|| "default".into());
+    let title = format!("channel:{}:{}", channel.id, key);
+    let gid = st.core.active_group();
+    let session = match st
+        .core
+        .list_sessions_in_group(&gid)
+        .ok()
+        .and_then(|list| list.into_iter().find(|s| s.title == title))
+    {
+        Some(s) => s,
+        None => match st.core.create_session(&title) {
+            Ok(s) => s,
+            Err(e) => {
+                if switched {
+                    let _ = st.core.registry().set_active_group(&prev_group);
+                }
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+                    .into_response();
+            }
+        },
+    };
+    // 出站回调：通道级 replyWebhook 或请求级覆盖；运行结束后推送最终事件载荷
+    let reply_url = b.reply_webhook.clone().or_else(|| channel.reply_webhook.clone());
+    if let Some(url) = reply_url {
+        let core = st.core.clone();
+        let sid = session.id.clone();
+        let mut rx = core.subscribe();
+        tokio::spawn(async move {
+            while let Ok(evt) = rx.recv().await {
+                if evt.session_id != sid {
+                    continue;
+                }
+                if evt.kind == "run.finished" || evt.kind == "run.error" {
+                    let _ = reqwest::Client::new().post(&url).json(&evt.payload).send().await;
+                    break;
+                }
+            }
+        });
+    }
+    // 202 受理，运行过程经 WS 推流；运行结束后恢复激活组
+    let core = st.core.clone();
+    let text = b.text.clone();
+    let sid = session.id.clone();
+    tokio::spawn(async move {
+        let r = core.chat(&sid, &text).await;
+        if switched {
+            let _ = core.registry().set_active_group(&prev_group);
+        }
+        if let Err(e) = r {
+            let _ = core.events.send(CoreEvent {
+                kind: "run.error".into(),
+                session_id: sid,
+                payload: json!({ "message": e.to_string() }),
+            });
+        }
+    });
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "accepted": true, "sessionId": session.id, "group": st.core.active_group() })),
+    )
+        .into_response()
+}
+
+/// 平台能力路由（挂到 /api 下）
+pub fn routes() -> Router<AppState> {
+    use axum::routing::{get, post};
+    Router::new()
+        .route("/api/skills", get(list_skills).post(create_skill))
+        .route("/api/skills/:id", axum::routing::delete(delete_skill))
+        .route("/api/groups/:id/agents", get(group_agents))
+        .route("/api/groups/:id/primary", post(set_group_primary))
+        .route("/api/groups/:id/model", axum::routing::put(set_group_model))
+        .route("/api/groups/:id/capabilities", axum::routing::put(set_group_capabilities))
+        .route("/api/groups/:id/workspace", axum::routing::put(set_group_workspace))
+        .route("/api/groups/:id/overview", get(group_overview))
+        .route("/api/sessions/:id/events", get(session_events))
+        .route("/api/agents/:id/optimize", post(optimize_agent))
+        .route(
+            "/api/agents/:id/adaptation",
+            get(get_adaptation).delete(reset_adaptation),
+        )
+        .route("/api/cron", get(list_cron).post(create_cron))
+        .route("/api/cron/runs", get(list_cron_runs))
+        .route("/api/cron/:id", axum::routing::put(update_cron).delete(delete_cron))
+        .route("/api/cron/:id/run", post(run_cron_now))
+        .route("/api/approvals", get(list_approvals))
+        .route("/api/approvals/:id/approve", post(approve_request))
+        .route("/api/approvals/:id/deny", post(deny_request))
+        .route("/api/channels/status", get(channel_status))
+        .route("/api/channels", get(list_channels).post(create_channel))
+        .route(
+            "/api/channels/:id",
+            axum::routing::put(update_channel).delete(delete_channel),
+        )
+        .route("/api/channels/:id/inbound", post(channel_inbound))
+}
+
+#[cfg(test)]
+mod identity_gate_tests {
+    use super::*;
+    use exm_core::types::{PairingCode, UserIdentity};
+
+    fn test_core() -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        exm_core::Core::create(&dir).expect("创建 Core 失败")
+    }
+
+    fn chan(gate: Option<bool>) -> Channel {
+        Channel {
+            id: "tg-main".into(),
+            kind: "telegram".into(),
+            enabled: true,
+            group: None,
+            allowed_chats: vec![],
+            account: None,
+            secret: None,
+            reply_webhook: None,
+            token: None,
+            config: Default::default(),
+            group_gate: gate,
+            created_at: exm_core::types::now_iso(),
+        }
+    }
+
+    fn ctx<'a>(text: &'a str, uid: &'a str, is_group: bool, mentioned: bool) -> InboundCtx<'a> {
+        InboundCtx { text, external_id: uid, display_name: uid, is_group, mentioned, chat_key: "test" }
+    }
+
+    /// 群聊门控：默认开——未提及忽略、提及放行、私聊豁免
+    #[tokio::test]
+    async fn 群聊门控_提及与私聊语义() {
+        let core = test_core();
+        let ch = chan(None);
+        assert!(core.config().identity.group_gate_default, "全局默认应开启");
+        let group_unmentioned = ctx("大家好", "u1", true, false);
+        let group_mentioned = ctx("@bot 帮我看下", "u1", true, true);
+        let private_unmentioned = ctx("在吗", "u1", false, false);
+        match admit(&core, &ch, &group_unmentioned).await {
+            GateDecision::Ignore => {}
+            _ => panic!("群聊未提及应忽略"),
+        }
+        match admit(&core, &ch, &group_mentioned).await {
+            GateDecision::Allow => {}
+            _ => panic!("群聊提及应放行"),
+        }
+        match admit(&core, &ch, &private_unmentioned).await {
+            GateDecision::Allow => {}
+            _ => panic!("私聊应豁免门控"),
+        }
+    }
+
+    /// 通道级覆盖：显式关闭门控后群聊未提及也放行
+    #[tokio::test]
+    async fn 群聊门控_通道级关闭() {
+        let core = test_core();
+        let ch = chan(Some(false));
+        match admit(&core, &ch, &ctx("随便聊聊", "u1", true, false)).await {
+            GateDecision::Allow => {}
+            _ => panic!("通道级关闭后不应拦截"),
+        }
+        let ch_on = chan(Some(true));
+        match admit(&core, &ch_on, &ctx("随便聊聊", "u1", true, false)).await {
+            GateDecision::Ignore => {}
+            _ => panic!("通道级开启后未提及应忽略"),
+        }
+    }
+
+    /// 身份管控：开启后未绑定拒绝并给 /pair 指引；绑定后放行
+    #[tokio::test]
+    async fn 身份管控_未绑定拒绝_绑定放行() {
+        let core = test_core();
+        let mut cfg = (*core.config()).clone();
+        cfg.identity.identity_required = true;
+        core.apply_config(cfg).unwrap();
+        let ch = chan(None);
+        let denied = admit(&core, &ch, &ctx("帮我做事", "u9", false, false)).await;
+        match denied {
+            GateDecision::Deny(msg) => assert!(msg.contains("/pair"), "拒绝应含配对指引: {msg}"),
+            _ => panic!("未绑定应拒绝"),
+        }
+        // 绑定后放行
+        core.save_identity(&UserIdentity {
+            id: "tg-main:u9".into(),
+            channel: "tg-main".into(),
+            external_id: "u9".into(),
+            display_name: "用户9".into(),
+            role: "member".into(),
+            paired_at: exm_core::types::now_iso(),
+            note: String::new(),
+        })
+        .unwrap();
+        match admit(&core, &ch, &ctx("帮我做事", "u9", false, false)).await {
+            GateDecision::Allow => {}
+            _ => panic!("已绑定应放行"),
+        }
+    }
+
+    /// /pair 兑换：有效码绑定成功（单次有效）；过期码拒绝；重复使用拒绝
+    #[tokio::test]
+    async fn 配对码_兑换流转() {
+        let core = test_core();
+        let ch = chan(None);
+        let code = core.issue_pairing_code("测试", None, 600).unwrap();
+
+        let ok = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u7", false, false)).await;
+        match ok {
+            GateDecision::Deny(msg) => assert!(msg.contains("绑定成功"), "{msg}"),
+            _ => panic!("/pair 有效码应回复绑定成功"),
+        }
+        assert!(core.identity_of("tg-main", "u7").is_some(), "兑换后应落库");
+
+        // 已用：再次兑换拒绝
+        let reuse = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u8", false, false)).await;
+        match reuse {
+            GateDecision::Deny(msg) => assert!(msg.contains("无效") || msg.contains("已被使用"), "{msg}"),
+            _ => panic!("/pair 已用码应拒绝"),
+        }
+
+        // 过期：手工插入一张已过期码
+        let expired = PairingCode {
+            code: "expired1".into(),
+            note: String::new(),
+            channel_platform: None,
+            created_by: "console".into(),
+            created_at: exm_core::types::now_iso(),
+            expires_at_ms: exm_core::types::now_ms() - 1000,
+        };
+        core.save_pairing_code(&expired).unwrap();
+        let late = admit(&core, &ch, &ctx("/pair expired1", "u6", false, false)).await;
+        match late {
+            GateDecision::Deny(msg) => assert!(msg.contains("过期"), "{msg}"),
+            _ => panic!("/pair 过期码应拒绝"),
+        }
+    }
+
+    /// 平台限定码：其他平台提交无效
+    #[tokio::test]
+    async fn 配对码_平台限定() {
+        let core = test_core();
+        let code = core.issue_pairing_code("仅 discord", Some("discord-main"), 600).unwrap();
+        let ch = Channel { id: "tg-main".into(), ..chan(None) };
+        let wrong = admit(&core, &ch, &ctx(&format!("/pair {}", code.code), "u5", false, false)).await;
+        match wrong {
+            GateDecision::Deny(msg) => assert!(msg.contains("discord-main"), "{msg}"),
+            _ => panic!("平台不匹配应拒绝"),
+        }
+        assert!(core.identity_of("tg-main", "u5").is_none());
+    }
+}
+
+#[cfg(test)]
+mod inbound_media_tests {
+    use super::*;
+
+    fn test_core() -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-inb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        exm_core::Core::create(&dir).expect("创建 Core 失败")
+    }
+
+    /// 入站注入：图片进多模态暂存（data URL），文件注入路径说明
+    #[tokio::test]
+    async fn 入站媒体_注入与暂存() {
+        let core = test_core();
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        let dir = std::env::temp_dir().join(format!("exm-inb-f-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("shot.png");
+        std::fs::write(&img, &png).unwrap();
+        let doc = dir.join("report.txt");
+        std::fs::write(&doc, b"hello").unwrap();
+
+        let saved = vec![
+            ("image".into(), img.display().to_string(), "shot.png".into()),
+            ("file".into(), doc.display().to_string(), "report.txt".into()),
+        ];
+        let note = stage_inbound_media(&core, "ses-inb", &saved);
+        assert!(note.contains("图片附件 shot.png 已注入"), "{note}");
+        assert!(note.contains("文件附件 report.txt 已保存"), "{note}");
+        // 图片确实进入多模态暂存（session 维度）
+        let staged = exm_core::image_stash::take("ses-inb");
+        assert_eq!(staged.len(), 1, "应有一条暂存图片");
+        assert!(staged[0].starts_with("data:image/png;base64,"));
+    }
+
+    /// 失败回退：文件缺失 → 注入失败说明而非 panic/丢弃
+    #[tokio::test]
+    async fn 入站媒体_读取失败回退() {
+        let core = test_core();
+        let saved = vec![("image".into(), "/nonexistent/x.png".into(), "x.png".into())];
+        let note = stage_inbound_media(&core, "ses-fail", &saved);
+        assert!(note.contains("读取失败"), "{note}");
+        assert!(exm_core::image_stash::take("ses-fail").is_empty(), "失败不应产生暂存");
+    }
+}
+
+// ---------------------------------------------------------------- 心跳 per-agent 粒度（7.4 单测）
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    fn core_with_agent(heartbeat_agent: Option<&str>) -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-hb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = exm_core::config::ExmConfig::load(&dir);
+        cfg.use_mock = true;
+        cfg.automation.heartbeat_agent = heartbeat_agent.map(|s| s.to_string());
+        let core = exm_core::Core::with_config(cfg).expect("创建 Core 失败");
+        // 测试组（内置组定义受保护，不可增删）：主智能体 + 可派发的执行个体
+        core.registry().create_group(Some("t".into()), "心跳组", "").unwrap();
+        let mk = |name: &str, identifier: &str, tier: exm_core::types::Tier| exm_core::types::AgentDefinition {
+            name: name.into(),
+            identifier: identifier.into(),
+            domain: "测试".into(),
+            tier,
+            description: "测试个体".into(),
+            capabilities: vec![],
+            tools: vec![],
+            when_to_call: String::new(),
+            dependencies: vec![],
+            composable_with: vec![],
+            input_schema: Default::default(),
+            output_schema: Default::default(),
+            prompt_file: String::new(),
+            model_hint: None,
+        };
+        core.registry()
+            .upsert_agent("t", mk("值守指挥", "duty-orch", exm_core::types::Tier::Orchestrator), None)
+            .unwrap();
+        core.registry()
+            .upsert_agent("t", mk("值守执行", "duty-worker", exm_core::types::Tier::Unit), None)
+            .unwrap();
+        core.registry().set_primary("t", "duty-orch").unwrap();
+        core
+    }
+
+    #[test]
+    fn 心跳_未配置维持全局() {
+        let core = core_with_agent(None);
+        let job = build_heartbeat_job(&core, "k1");
+        assert_eq!(job.session_title.as_deref(), Some("心跳巡检"), "全局心跳会话名不变");
+        assert!(job.group.is_none(), "未配置 = 激活组执行（group 缺省）");
+    }
+
+    #[test]
+    fn 心跳_目标个体不存在维持全局() {
+        let core = core_with_agent(Some("ghost-agent"));
+        let job = build_heartbeat_job(&core, "k2");
+        assert_eq!(job.session_title.as_deref(), Some("心跳巡检"), "个体不存在回落全局");
+        assert!(job.group.is_none());
+    }
+
+    #[test]
+    fn 心跳_目标个体以其组巡检且产出进其记忆() {
+        let core = core_with_agent(Some("duty-worker"));
+        core.registry().set_active_group("t").unwrap();
+        let job = build_heartbeat_job(&core, "k3");
+        assert_eq!(job.session_title.as_deref(), Some("心跳巡检-duty-worker"), "per-agent 心跳独立会话");
+        assert_eq!(job.group.as_deref(), Some("t"), "以个体所属组为执行上下文");
+
+        // 实际执行一轮（替身通道派发）：产出（会话摘要等）应落在该组的记忆体系
+        let run = tokio::runtime::Runtime::new().unwrap().block_on(core.run_cron_job(&job));
+        assert_eq!(run.status, "done", "替身通道执行应完成：{}", run.summary);
+        let stats = core.memory_stats().unwrap();
+        let group_entries = stats["byGroup"]["t"].as_u64().unwrap_or(0);
+        assert!(group_entries >= 1, "心跳产出应写入目标组记忆（byGroup.t = {group_entries}）");
+        // 独立演进：per-agent 会话存在，全局心跳会话不被创建（两种模式互不污染）
+        let titles: Vec<String> = core
+            .list_sessions_in_group("t")
+            .unwrap()
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+        assert!(titles.iter().any(|t| t == "心跳巡检-duty-worker"), "per-agent 会话存在：{titles:?}");
+        assert!(!titles.iter().any(|t| t == "心跳巡检"), "全局心跳会话不应被 per-agent 心跳创建");
+    }
+}
+
+// ---------------------------------------------------------------- 定时任务结果推送（7.3 单测）
+
+#[cfg(test)]
+mod cron_notify_tests {
+    use super::*;
+
+    fn core_with_channel(reply_url: &str) -> exm_core::Core {
+        let dir = std::env::temp_dir().join(format!("exm-notify-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".exmachina").join("data")).unwrap();
+        let core = exm_core::Core::create(&dir).expect("创建 Core 失败");
+        // 通道落库：webhook 桥接 + 回调地址指向测试收端
+        let channels = serde_json::json!([{
+            "id": "ch-hook", "type": "webhook", "enabled": true,
+            "allowedChats": [], "replyWebhook": reply_url, "createdAt": exm_core::types::now_iso(),
+        }]);
+        std::fs::write(
+            core.config().data_dir.join("channels.json"),
+            serde_json::to_string_pretty(&channels).unwrap(),
+        )
+        .unwrap();
+        core
+    }
+
+    fn job(subscribed: bool) -> exm_core::types::CronJob {
+        exm_core::types::CronJob {
+            id: "job1".into(),
+            name: "每日报表".into(),
+            prompt: "生成报表".into(),
+            cron: Some("0 9 * * *".into()),
+            at: None,
+            group: None,
+            session_title: None,
+            enabled: true,
+            last_run_at: None,
+            last_status: None,
+            last_run_minute: None,
+            notify_channels: if subscribed { vec!["ch-hook".into()] } else { vec![] },
+            created_at: String::new(),
+        }
+    }
+
+    fn run() -> exm_core::types::CronRun {
+        exm_core::types::CronRun {
+            id: "r1".into(),
+            job_id: "job1".into(),
+            job_name: "每日报表".into(),
+            session_id: "s1".into(),
+            started_at: exm_core::types::now_iso(),
+            finished_at: exm_core::types::now_iso(),
+            status: "done".into(),
+            summary: "报表已生成：12 项指标正常".into(),
+        }
+    }
+
+    /// 本地 HTTP 收端：记录收到的 POST 文本
+    async fn spawn_receiver() -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let app = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move |body: String| async move {
+                let _ = tx.send(body);
+                "ok"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
+        (format!("http://{addr}/hook"), rx)
+    }
+
+    #[tokio::test]
+    async fn 推送_订阅通道收到摘要() {
+        let (url, mut rx) = spawn_receiver().await;
+        let core = core_with_channel(&url);
+        notify_cron_result(&core, &job(true), &run()).await;
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("订阅推送应在超时前到达")
+            .expect("通道收端应收到消息");
+        assert!(body.contains("每日报表"), "摘要含任务名：{body}");
+        assert!(body.contains("报表已生成"), "摘要含结论：{body}");
+    }
+
+    #[tokio::test]
+    async fn 推送_无订阅维持现状() {
+        let (url, mut rx) = spawn_receiver().await;
+        let core = core_with_channel(&url);
+        notify_cron_result(&core, &job(false), &run()).await;
+        let got = tokio::time::timeout(std::time::Duration::from_millis(400), rx.recv()).await;
+        assert!(got.is_err(), "未订阅任务不得产生通道消息");
+    }
+
+    #[tokio::test]
+    async fn 推送_总开关关闭不推() {
+        let (url, mut rx) = spawn_receiver().await;
+        let core = core_with_channel(&url);
+        let mut cfg = (*core.config()).clone();
+        cfg.notify.enabled = false;
+        core.apply_config(cfg).unwrap();
+        notify_cron_result(&core, &job(true), &run()).await;
+        let got = tokio::time::timeout(std::time::Duration::from_millis(400), rx.recv()).await;
+        assert!(got.is_err(), "总开关关闭 = 全部不推");
+    }
+}

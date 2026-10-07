@@ -1,0 +1,22 @@
+{
+  "name": "exmachina",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EXMACHINA - Ex-Machina multi-agent cluster collaboration system (Rust core + CLI + Gateway + WebUI)",
+  "workspaces": [
+    "webui"
+  ],
+  "scripts": {
+    "build": "cargo build --release",
+    "build:webui": "npm run build -w @exmachina/webui",
+    "dev:webui": "npm run dev -w @exmachina/webui",
+    "test": "cargo test --workspace",
+    "check": "cargo check --workspace",
+    "serve": "cargo run -p exm-gateway --release",
+    "exm": "cargo run -p exm-cli --release --bin exm --",
+    "e2e": "cargo run -p exm-gateway --example e2e"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

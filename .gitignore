@@ -1,0 +1,36 @@
+# Rust
+target/
+desktop/src-tauri/target/
+desktop/src-tauri/target-msvc/
+**/*.rs.bk
+
+# Node / WebUI
+node_modules/
+webui/dist/
+
+# 运行时状态（配置/记忆/数据库/清单）
+.exmachina/
+
+# 激活组状态（运行时可变）
+agents/active_group
+
+# 点路径：一律忽略（本机/工具状态目录与文件），需要上传的单独放行
+.*
+!.gitignore
+!.npmrc
+!.dockerignore
+!.cargo/
+!.github/
+!.gitkeep
+
+# 杂项
+*.db
+*.db-journal
+*.db-wal
+.DS_Store
+agents/dist/
+
+desktop/src-tauri/gen/
+
+# 部署密钥（不入库）
+.env

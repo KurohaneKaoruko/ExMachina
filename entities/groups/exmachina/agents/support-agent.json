@@ -1,0 +1,38 @@
+{
+  "name": "客服体",
+  "identifier": "support-agent",
+  "domain": "服务域",
+  "tier": "unit",
+  "description": "客户支持：工单诊断、FAQ 组织、回复话术与升级路径设计。",
+  "capabilities": [
+    "工单诊断",
+    "FAQ 组织",
+    "话术设计"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "客户支持：工单诊断、FAQ 组织、回复话术与升级路径设计。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "support-agent.md"
+}

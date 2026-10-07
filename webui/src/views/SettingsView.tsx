@@ -1,0 +1,626 @@
+/**
+ * 设置页：左侧分类导航 + 右侧单分类面板（一屏只看一类，杜绝堆叠杂乱）。
+ * 字段定义来自后端 config_schema()；LLM 接入在「提供商」页维护。
+ */
+import React, { useEffect, useMemo, useState } from "react";
+import { Alert, Button, Input, InputNumber, message, Select, Switch, Card, Tag } from "antd";
+import { BgColorsOutlined, CloudServerOutlined, DatabaseOutlined, DesktopOutlined, FieldTimeOutlined, GlobalOutlined, IdcardOutlined, NotificationOutlined, PieChartOutlined, RadarChartOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined, CloudDownloadOutlined } from "@ant-design/icons";
+import { useExm } from "../store";
+import { useTheme } from "../theme";
+import { useT, type TKey } from "../i18n/core";
+import { PageHeader } from "../components/PageHeader";
+import { api, limitsStats, type ConfigSchema, type ConfigSchemaField, type GatewayConfig, type LimitsStats } from "../api";
+import { loadNotifyPrefs, saveNotifyPrefs, type NotifyPrefs } from "../store";
+
+/** 分组元数据。ui 是本地偏好分区，不属于后端 config schema */
+const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey: TKey }> = {
+  runtime: { icon: <SettingOutlined />, titleKey: "sec.runtime", descKey: "sec.runtime.desc" },
+  memory: { icon: <DatabaseOutlined />, titleKey: "sec.memory", descKey: "sec.memory.desc" },
+  security: { icon: <SafetyCertificateOutlined />, titleKey: "sec.security", descKey: "sec.security.desc" },
+  automation: { icon: <FieldTimeOutlined />, titleKey: "sec.automation", descKey: "sec.automation.desc" },
+  search: { icon: <GlobalOutlined />, titleKey: "sec.search", descKey: "sec.search.desc" },
+  sandbox: { icon: <SafetyOutlined />, titleKey: "sec.sandbox", descKey: "sec.sandbox.desc" },
+  browser: { icon: <RobotOutlined />, titleKey: "sec.browser", descKey: "sec.browser.desc" },
+  hooks: { icon: <ThunderboltOutlined />, titleKey: "sec.hooks", descKey: "sec.hooks.desc" },
+  computer: { icon: <DesktopOutlined />, titleKey: "sec.computer", descKey: "sec.computer.desc" },
+  identity: { icon: <IdcardOutlined />, titleKey: "sec.identity", descKey: "sec.identity.desc" },
+  limits: { icon: <PieChartOutlined />, titleKey: "sec.limits", descKey: "sec.limits.desc" },
+  triggers: { icon: <RadarChartOutlined />, titleKey: "sec.triggers", descKey: "sec.triggers.desc" },
+  mcpServe: { icon: <CloudServerOutlined />, titleKey: "sec.mcpServe", descKey: "sec.mcpServe.desc" },
+  notify: { icon: <NotificationOutlined />, titleKey: "sec.notify", descKey: "sec.notify.desc" },
+  tools: { icon: <ToolOutlined />, titleKey: "sec.tools", descKey: "sec.tools.desc" },
+  ui: { icon: <BgColorsOutlined />, titleKey: "sec.ui", descKey: "sec.ui.desc" },
+  version: { icon: <CloudDownloadOutlined />, titleKey: "sec.version", descKey: "sec.version.desc" },
+};
+
+/**
+ * 后端 config_schema() 下发的 label/help 是中文常量，前端在此按字段 key 覆盖为 i18n 词条；
+ * 未收录的字段回退后端原文（新增配置项零 UI 改动的契约不被破坏）。
+ */
+const FIELD_I18N: Record<string, { label: TKey; help?: TKey }> = {
+  "maxConcurrency": { label: "cfg.maxConcurrency", help: "cfg.maxConcurrency.help" },
+  "maxSessionTokens": { label: "cfg.maxSessionTokens", help: "cfg.maxSessionTokens.help" },
+  "memory.enabled": { label: "cfg.memoryEnabled", help: "cfg.memoryEnabled.help" },
+  "memory.mdMaxChars": { label: "cfg.mdMaxChars", help: "cfg.mdMaxChars.help" },
+  "memory.recallLimit": { label: "cfg.recallLimit", help: "cfg.recallLimit.help" },
+  "memory.halfLifeDays": { label: "cfg.halfLifeDays", help: "cfg.halfLifeDays.help" },
+  "security.execApproval": { label: "cfg.execApproval", help: "cfg.execApproval.help" },
+  "security.execAllowlist": { label: "cfg.execAllowlist", help: "cfg.execAllowlist.help" },
+  "security.authKey": { label: "cfg.authKey", help: "cfg.authKey.help" },
+  "automation.heartbeatEnabled": { label: "cfg.heartbeatEnabled", help: "cfg.heartbeatEnabled.help" },
+  "automation.heartbeatIntervalMinutes": { label: "cfg.heartbeatInterval", help: "cfg.heartbeatInterval.help" },
+  "automation.heartbeatPrompt": { label: "cfg.heartbeatPrompt", help: "cfg.heartbeatPrompt.help" },
+  "automation.autoAdapt": { label: "cfg.autoAdapt", help: "cfg.autoAdapt.help" },
+  "automation.unitMaxSteps": { label: "cfg.unitMaxSteps", help: "cfg.unitMaxSteps.help" },
+  "security.terminalTimeoutSecs": { label: "cfg.terminalTimeout", help: "cfg.terminalTimeout.help" },
+  "security.toolOutputSpillChars": { label: "cfg.spillChars", help: "cfg.spillChars.help" },
+  "search.provider": { label: "cfg.searchProvider", help: "cfg.searchProvider.help" },
+  "search.endpoint": { label: "cfg.searchEndpoint", help: "cfg.searchEndpoint.help" },
+  "search.apiKey": { label: "cfg.searchApiKey", help: "cfg.searchApiKey.help" },
+  "search.maxResults": { label: "cfg.searchMax", help: "cfg.searchMax.help" },
+  "sandbox.mode": { label: "cfg.sandboxMode", help: "cfg.sandboxMode.help" },
+  "sandbox.allowNetwork": { label: "cfg.sandboxNet", help: "cfg.sandboxNet.help" },
+  "sandbox.useBwrap": { label: "cfg.sandboxBwrap", help: "cfg.sandboxBwrap.help" },
+  "sandbox.memoryMb": { label: "cfg.sandboxMem", help: "cfg.sandboxMem.help" },
+  "sandbox.maxProcesses": { label: "cfg.sandboxProcs", help: "cfg.sandboxProcs.help" },
+  "browser.executable": { label: "cfg.browserExe", help: "cfg.browserExe.help" },
+  "browser.headless": { label: "cfg.browserHeadless", help: "cfg.browserHeadless.help" },
+  "browser.timeoutSecs": { label: "cfg.browserTimeout", help: "cfg.browserTimeout.help" },
+  "browser.maxChars": { label: "cfg.browserMaxChars", help: "cfg.browserMaxChars.help" },
+  "hooks.preTool": { label: "cfg.hookPre", help: "cfg.hookPre.help" },
+  "hooks.postTool": { label: "cfg.hookPost", help: "cfg.hookPost.help" },
+  "hooks.onRunEnd": { label: "cfg.hookRun", help: "cfg.hookRun.help" },
+  "tools.custom": { label: "cfg.toolsCustom", help: "cfg.toolsCustom.help" },
+};
+
+/** 特定字段用选择器而非自由文本（显示名走 i18n，值是发给后端的枚举） */
+const ENUM_OVERRIDES: Record<string, { value: string; labelKey: TKey }[]> = {
+  "security.execApproval": [
+    { value: "off", labelKey: "cfg.approval.off" },
+    { value: "risky", labelKey: "cfg.approval.risky" },
+    { value: "always", labelKey: "cfg.approval.always" },
+  ],
+  "sandbox.mode": [
+    { value: "off", labelKey: "cfg.sandbox.off" },
+    { value: "workspace", labelKey: "cfg.sandbox.workspace" },
+    { value: "strict", labelKey: "cfg.sandbox.strict" },
+  ],
+};
+
+/** 钩子/列表类字段在 UI 里以「逗号分隔字符串」编辑，后端亦接受数组 */
+const listToText = (v: unknown): string => (Array.isArray(v) ? v.join(", ") : typeof v === "string" ? v : "");
+
+function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
+  if (!cfg) return undefined;
+  switch (key) {
+    case "maxConcurrency":
+      return cfg.maxConcurrency;
+    case "maxSessionTokens":
+      return cfg.maxSessionTokens;
+    case "memory.enabled":
+      return cfg.memory.enabled;
+    case "memory.recallLimit":
+      return cfg.memory.recallLimit;
+    case "memory.halfLifeDays":
+      return cfg.memory.halfLifeDays;
+    case "memory.mdMaxChars":
+      return cfg.memory.mdMaxChars;
+    case "tools.custom":
+      return JSON.stringify(cfg.tools?.custom ?? [], null, 2);
+    case "security.execApproval":
+      return cfg.security.execApproval;
+    case "security.execAllowlist":
+      return cfg.security.execAllowlist;
+    case "security.authKey":
+      return cfg.security.authKey;
+    case "automation.heartbeatEnabled":
+      return cfg.automation.heartbeatEnabled;
+    case "automation.heartbeatIntervalMinutes":
+      return cfg.automation.heartbeatIntervalMinutes;
+    case "automation.heartbeatPrompt":
+      return cfg.automation.heartbeatPrompt;
+    case "automation.autoAdapt":
+      return cfg.automation.autoAdapt;
+    case "automation.unitMaxSteps":
+      return cfg.automation.unitMaxSteps;
+    case "security.terminalTimeoutSecs":
+      return cfg.security.terminalTimeoutSecs;
+    case "security.toolOutputSpillChars":
+      return cfg.security.toolOutputSpillChars;
+    case "search.provider":
+      return cfg.search?.provider;
+    case "search.endpoint":
+      return cfg.search?.endpoint;
+    case "search.apiKey":
+      return cfg.search?.apiKey;
+    case "search.maxResults":
+      return cfg.search?.maxResults;
+    case "sandbox.mode":
+      return cfg.sandbox?.mode;
+    case "sandbox.allowNetwork":
+      return cfg.sandbox?.allowNetwork;
+    case "sandbox.useBwrap":
+      return cfg.sandbox?.useBwrap;
+    case "sandbox.memoryMb":
+      return cfg.sandbox?.memoryMb;
+    case "sandbox.maxProcesses":
+      return cfg.sandbox?.maxProcesses;
+    case "browser.executable":
+      return cfg.browser?.executable;
+    case "browser.headless":
+      return cfg.browser?.headless;
+    case "browser.timeoutSecs":
+      return cfg.browser?.timeoutSecs;
+    case "browser.maxChars":
+      return cfg.browser?.maxChars;
+    case "hooks.preTool":
+      return listToText(cfg.hooks?.preTool);
+    case "hooks.postTool":
+      return listToText(cfg.hooks?.postTool);
+    case "hooks.onRunEnd":
+      return listToText(cfg.hooks?.onRunEnd);
+    default:
+      return undefined;
+  }
+}
+
+export function SettingsView(): React.ReactElement {
+  const { config, saveConfig } = useExm();
+  const stream = useTheme((s) => s.stream);
+  const setStream = useTheme((s) => s.setStream);
+  const t = useT();
+  const [schema, setSchema] = useState<ConfigSchema | null>(null);
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [selected, setSelected] = useState<string>("runtime");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const s = await api.configSchema();
+      setSchema({ ...s, groups: s.groups.filter((g) => g.key !== "llm") });
+      const init: Record<string, unknown> = {};
+      for (const g of s.groups) {
+        for (const f of g.fields) init[f.key] = readCurrent(config ?? null, f.key);
+      }
+      setValues(init);
+    })();
+  }, [config]);
+
+  const groups = useMemo(() => schema?.groups ?? [], [schema]);
+  const current = groups.find((g) => g.key === selected) ?? null;
+  const meta = current ? SECTIONS[current.key] : undefined;
+
+  const setField = (key: string, v: unknown) => setValues((p) => ({ ...p, [key]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body: Record<string, unknown> = {};
+      const nested = ["memory", "security", "automation", "search", "sandbox", "browser", "hooks", "tools"];
+      for (const [k, v] of Object.entries(values)) {
+        if (v === undefined) continue;
+        const dot = k.indexOf(".");
+        if (dot < 0) {
+          if (v !== "") body[k] = v;
+          continue;
+        }
+        const g = k.slice(0, dot);
+        const f = k.slice(dot + 1);
+        if (!nested.includes(g)) {
+          if (v !== "") body[k] = v;
+          continue;
+        }
+        // 空串表示「清除该项」（hooks 用空串清列表）；搜索凭据留空 = 沿用旧值，由后端判定
+        body[g] = { ...((body[g] as Record<string, unknown>) ?? {}), [f]: v };
+      }
+      await saveConfig(body);
+      message.success(t("settings.savedToast"));
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="pane-wrap">
+      <PageHeader
+        en="CONFIG"
+        title={t("settings.title")}
+        desc={t("settings.desc")}
+      />
+      <div className="settings2">
+        {/* 左侧分类导航：后端 schema 分组 + 本地「界面」偏好 */}
+        <nav className="cfg-nav">
+          {groups.map((g) => (
+            <button
+              key={g.key}
+              className={`cfg-nav-item ${g.key === current?.key ? "on" : ""}`}
+              onClick={() => setSelected(g.key)}
+            >
+              <span className="cfg-nav-icon">{SECTIONS[g.key]?.icon ?? <SettingOutlined />}</span>
+              <span>{SECTIONS[g.key] ? t(SECTIONS[g.key]!.titleKey) : g.label}</span>
+            </button>
+          ))}
+          <button
+            className={`cfg-nav-item ${selected === "ui" ? "on" : ""}`}
+            onClick={() => setSelected("ui")}
+          >
+            <span className="cfg-nav-icon">{SECTIONS.ui.icon}</span>
+            <span>{t("sec.ui")}</span>
+          </button>
+          <button className={`cfg-nav-item ${selected === "version" ? "on" : ""}`} onClick={() => setSelected("version")}>
+            <span className="cfg-nav-icon">{SECTIONS.version.icon}</span>
+            <span>{t("sec.version")}</span>
+          </button>
+        </nav>
+        {/* 右侧面板：仅当前分类 */}
+        <section className="cfg-panel">
+        {selected === "version" ? (
+          /* —— 版本与更新:本地信息 + 上游检查,不参与「保存设置」 —— */
+          <VersionPanel />
+        ) : selected === "ui" ? (
+          /* —— 本地界面偏好：即时生效，不参与「保存设置」 —— */
+          <>
+            <header className="cfg-panel-head">
+              <h3>{t("sec.ui")}</h3>
+              <p>{t("sec.ui.desc")}。</p>
+            </header>
+            <div className="cfg-list">
+              <div className="cfg2-row">
+                <div className="cfg2-label">
+                  <div className="cfg2-name">{t("settings.ui.streamName")}</div>
+                  <div className="cfg2-help">{t("settings.ui.streamHelp")}</div>
+                </div>
+                <div className="cfg2-ctrl">
+                  <Switch checked={stream === "on"} onChange={(v) => setStream(v ? "on" : "off")} />
+                </div>
+              </div>
+            </div>
+            <div className="cfg2-foot">
+              <span className="dim">{t("settings.localTip")}</span>
+            </div>
+            <NotifyPrefsCard />
+          </>
+        ) : current && meta ? (
+          <>
+            <header className="cfg-panel-head">
+              <h3>{t(meta.titleKey)}</h3>
+              <p>{t(meta.descKey)}。{t("settings.hotTip")}</p>
+            </header>
+            {current.key === "limits" && <LimitsStatsCard />}
+            <div className="cfg-list">
+              {current.fields.map((f) => {
+                const value = values[f.key];
+                const fi = FIELD_I18N[f.key];
+                const ctrl = ENUM_OVERRIDES[f.key] ? (
+                  <Select
+                    style={{ width: 220 }}
+                    value={String(value ?? f.default)}
+                    options={ENUM_OVERRIDES[f.key].map((o) => ({ value: o.value, label: t(o.labelKey) }))}
+                    onChange={(v) => setField(f.key, v)}
+                  />
+                ) : f.kind === "boolean" ? (
+                  <Switch
+                    checked={value === undefined ? f.default === "true" : Boolean(value)}
+                    onChange={(v) => setField(f.key, v)}
+                  />
+                ) : f.kind === "number" ? (
+                  <InputNumber
+                    style={{ width: 180 }}
+                    min={f.min}
+                    max={f.max}
+                    value={value === undefined || value === "" ? Number(f.default) : Number(value)}
+                    onChange={(v) => setField(f.key, v)}
+                  />
+                ) : f.kind === "password" ? (
+                  <Input.Password
+                    style={{ width: 320 }}
+                    value={String(value ?? f.default)}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                  />
+                ) : f.key === "automation.heartbeatPrompt" || f.key === "security.execAllowlist" || f.key === "tools.custom" ? (
+                  <Input.TextArea
+                    style={{ width: 320 }}
+                    rows={2}
+                    value={String(value ?? f.default)}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                  />
+                ) : (
+                  <Input style={{ width: 320 }} value={String(value ?? f.default)} onChange={(e) => setField(f.key, e.target.value)} />
+                );
+                return (
+                  <div className="cfg2-row" key={f.key}>
+                    <div className="cfg2-label">
+                      <div className="cfg2-name">{fi ? t(fi.label) : f.label}</div>
+                      <div className="cfg2-help">{fi?.help ? t(fi.help) : f.help}</div>
+                    </div>
+                    <div className="cfg2-ctrl">{ctrl}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="cfg2-foot">
+              <Button type="primary" loading={saving} onClick={save}>
+                {t("settings.save")}
+              </Button>
+              <span className="dim">{t("settings.hotTip")}</span>
+            </div>
+          </>
+        ) : (
+          <div className="pane-loading"><i /></div>
+        )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/** 用量统计卡（ops-visibility）：消费既有 /limits/stats 快照 */
+function LimitsStatsCard(): React.ReactElement {
+  const t = useT();
+  const [stats, setStats] = useState<LimitsStats | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try { setStats(await limitsStats()); } catch { setStats(null); }
+    })();
+  }, []);
+  if (!stats) return <></>;
+  return (
+    <Card size="small" className="hud" style={{ marginBottom: 12 }}>
+      {stats.enabled ? (
+        <>
+          <div className="dim" style={{ marginBottom: 6 }}>
+            {t("cfg.limitsStatsEnabled", { window: stats.windowSecs, max: stats.maxRequests > 0 ? stats.maxRequests : "∞", period: stats.quotaPeriod })}
+          </div>
+          {stats.counters.length === 0 ? (
+            <div className="dim">{t("cfg.limitsNoCounters")}</div>
+          ) : (
+            <table className="plain-table">
+              <thead><tr><th>{t("cfg.limitsSubject")}</th><th>{t("cfg.limitsCount")}</th></tr></thead>
+              <tbody>
+                {stats.counters.map((c) => (
+                  <tr key={c.key}><td className="mono">{c.key}</td><td className="mono">{c.count}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      ) : (
+        <div className="dim">{t("cfg.limitsDisabled")}</div>
+      )}
+    </Card>
+  );
+}
+
+/** 浏览器通知偏好卡（web-notifications）：授权 + 类别开关，本地持久化 */
+function NotifyPrefsCard(): React.ReactElement {
+  const t = useT();
+  const [prefs, setPrefs] = useState<NotifyPrefs>(() => loadNotifyPrefs());
+  const [denied, setDenied] = useState(false);
+
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "denied") setDenied(true);
+  }, []);
+
+  const setEnabled = async (v: boolean) => {
+    if (v && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setDenied(true);
+        return;
+      }
+    }
+    setDenied(typeof Notification !== "undefined" && Notification.permission === "denied");
+    const next = { ...prefs, enabled: v };
+    setPrefs(next);
+    saveNotifyPrefs(next);
+  };
+
+  const setCat = (key: "approval" | "roundDone" | "cronDone", v: boolean) => {
+    const next = { ...prefs, [key]: v };
+    setPrefs(next);
+    saveNotifyPrefs(next);
+  };
+
+  const unsupported = typeof Notification === "undefined";
+
+  return (
+    <Card size="small" className="hud" style={{ marginBottom: 12 }}>
+      <div className="dim" style={{ marginBottom: 8 }}>{t("notify.desc")}</div>
+      {unsupported ? (
+        <div className="dim">{t("notify.unsupported")}</div>
+      ) : (
+        <>
+          {denied && <Alert type="warning" showIcon message={t("notify.blocked")} style={{ marginBottom: 8 }} />}
+          <div className="cfg2-row">
+            <div className="cfg2-label">
+              <div className="cfg2-name">{t("notify.enabled")}</div>
+              <div className="cfg2-help">{t("notify.enabledHelp")}</div>
+            </div>
+            <Switch checked={prefs.enabled} onChange={(v) => void setEnabled(v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catApproval")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.approval} onChange={(v) => setCat("approval", v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catRound")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.roundDone} onChange={(v) => setCat("roundDone", v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catCron")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.cronDone} onChange={(v) => setCat("cronDone", v)} />
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------- 版本与更新
+
+function VersionPanel() {
+  const t = useT();
+  const [info, setInfo] = useState<{ version: string; gitHash: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.versionCheck>> | null>(null);
+  const [updatePhase, setUpdatePhase] = useState("");
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setInfo(await api.versionInfo());
+      } catch { /* noop */ }
+    })();
+  }, []);
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      setResult(await api.versionCheck());
+    } catch {
+      setResult(null);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** 一键更新:触发 → 轮询脚本日志 → 容器重启失联 → 等恢复并核对 gitHash 变化 */
+  const applyUpdate = async () => {
+    const before = info?.gitHash ?? "";
+    try {
+      await api.applyUpdate();
+    } catch (e) {
+      message.error(String(e));
+      return;
+    }
+    setUpdatingFlag(true);
+    let sawRestart = false;
+    for (let i = 0; i < 240; i++) {
+      await sleep(2500);
+      try {
+        const st = await api.updateStatus();
+        if (st.running) {
+          const lines = st.log.trim().split("\n");
+          setUpdatePhase(lines[lines.length - 1] || t("settings.version.phaseBuilding"));
+          continue;
+        }
+        if (!sawRestart) {
+          // 脚本已退出但容器未重启:可能失败,展示日志尾部
+          const fail = /error|失败|fatal|conflict/i.test(st.log);
+          setUpdatingFlag(false);
+          setUpdatePhase("");
+          if (fail && !/更新完成/.test(st.log)) {
+            message.error(`${t("settings.version.failed")}:${st.log.slice(-300)}`);
+          } else {
+            message.success(t("settings.version.doneNoRestart"));
+          }
+          void refreshInfo();
+          return;
+        }
+      } catch {
+        // 失联 = 容器重启中
+        if (!sawRestart) {
+          sawRestart = true;
+          setUpdatePhase(t("settings.version.phaseRestarting"));
+        }
+      }
+      // 容器恢复后核对 gitHash
+      try {
+        const v = await api.versionInfo();
+        if (before && v.gitHash && v.gitHash !== before) {
+          setUpdatingFlag(false);
+          setUpdatePhase("");
+          setInfo(v);
+          message.success(t("settings.version.success", { hash: v.gitHash }));
+          return;
+        }
+      } catch { /* 仍在重启 */ }
+    }
+    setUpdatingFlag(false);
+    setUpdatePhase("");
+    message.warning(t("settings.version.timeout"));
+  };
+
+  const refreshInfo = async () => {
+    try {
+      setInfo(await api.versionInfo());
+    } catch { /* noop */ }
+  };
+  const [updatingFlag, setUpdatingFlag] = useState(false);
+
+  return (
+    <>
+      <header className="cfg-panel-head">
+        <h3>{t("sec.version")}</h3>
+        <p>{t("sec.version.desc")}。</p>
+      </header>
+      <div className="cfg-list">
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.current")}</div>
+            <div className="cfg2-help">{t("settings.version.currentHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl mono">
+            v{info?.version ?? "…"} · {info?.gitHash ?? "…"}
+          </div>
+        </div>
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.check")}</div>
+            <div className="cfg2-help">{t("settings.version.checkHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl">
+            <Button size="small" loading={checking} onClick={() => void check()}>
+              {t("settings.version.checkBtn")}
+            </Button>
+          </div>
+        </div>
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.apply")}</div>
+            <div className="cfg2-help">{t("settings.version.applyHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl">
+            {updatePhase ? (
+              <span className="dim">{updatePhase}</span>
+            ) : (
+              <Button size="small" type="primary" danger loading={updatingFlag} onClick={() => void applyUpdate()}>
+                {t("settings.version.applyBtn")}
+              </Button>
+            )}
+          </div>
+        </div>
+        {result && (
+          <div className="cfg2-row">
+            <div className="cfg2-label">
+              <div className="cfg2-name">
+                {result.updateAvailable === true && <Tag color="warning">{t("settings.version.available")}</Tag>}
+                {result.updateAvailable === false && <Tag color="success">{t("settings.version.uptodate")}</Tag>}
+                {result.updateAvailable == null && <Tag>{t("settings.version.unknown")}</Tag>}
+              </div>
+              <div className="cfg2-help">
+                {result.updateAvailable === true && result.upstream && (
+                  <>
+                    {t("settings.version.latest")}: dev @ {result.upstream.short} · {result.upstream.date} ·{" "}
+                    <a href={result.upstream.url} target="_blank" rel="noreferrer">
+                      {t("settings.version.viewCommit")}
+                    </a>
+                  </>
+                )}
+                {result.updateAvailable === false && t("settings.version.uptodateHelp")}
+                {result.updateAvailable == null && <>{result.note ? `${t("settings.version.unknownHelp")}(${result.note})` : t("settings.version.unknownHelp")}</>}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="cfg2-foot">
+        <span className="dim">{t("settings.version.guide")}</span>
+      </div>
+    </>
+  );
+}

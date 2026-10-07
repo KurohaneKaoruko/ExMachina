@@ -1,0 +1,7 @@
+target/
+node_modules/
+webui/node_modules/
+.git/
+.exmachina/
+*.db
+docs/
