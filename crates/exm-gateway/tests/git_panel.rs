@@ -72,9 +72,10 @@ async fn git操作_暂存提交直发() {
     assert_eq!(resp.status(), 200);
     let out = std::process::Command::new("git").args(["status", "--porcelain"]).current_dir(&dir).output().unwrap();
     let status_text = String::from_utf8_lossy(&out.stdout).to_string();
+    // 注册表播种的编成目录(entities/ + 兼容旧布局的 agents/)是测试环境噪声,不属于提交流程
     let leftover: Vec<&str> = status_text
         .lines()
-        .filter(|l| !l.contains(".exmachina/") && !l.contains("agents/"))
+        .filter(|l| !l.contains(".exmachina/") && !l.contains("agents/") && !l.contains("entities/") && !l.contains("skills/"))
         .collect();
     assert!(leftover.is_empty(), "提交后 f.txt 不应残留未提交变更: {leftover:?}");
 
