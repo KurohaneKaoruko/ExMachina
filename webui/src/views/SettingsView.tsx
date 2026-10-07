@@ -605,7 +605,7 @@ function VersionPanel() {
               <div className="cfg2-help">
                 {result.updateAvailable === true && result.upstream && (
                   <>
-                    {t("settings.version.latest")}: dev @ {result.upstream.short} · {result.upstream.date} ·{" "}
+                    {t("settings.version.latest")}: {result.upstream.ref} @ {result.upstream.short} · {result.upstream.date} ·{" "}
                     <a href={result.upstream.url} target="_blank" rel="noreferrer">
                       {t("settings.version.viewCommit")}
                     </a>
