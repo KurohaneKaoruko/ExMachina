@@ -428,7 +428,7 @@ async fn 执行审批_等待批准_结果回灌与拒绝短路() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_agent_target_switch_and_l0_direct() {
     let cfg = test_config();
-    // 残留清理（只清演练个体与目标状态；不得动 agents/singles 全目录——默认智能体种子在此）
+    // 残留清理（只清演练个体与目标状态；不得动 entities/agents 全目录——默认智能体种子在此）
     let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("entities");
     let _ = std::fs::remove_file(agents_root.join("active_single"));
     let _ = std::fs::remove_file(agents_root.join("agents").join("lone-writer.json")); // 旧布局残留

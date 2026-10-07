@@ -3,7 +3,7 @@
   "identifier": "machina",
   "domain": "默认",
   "tier": "orchestrator",
-  "description": "默认智能体：独立直接为你工作的通用智能体，以「本机」自称。",
+  "description": "默认智能体，以「本机」自称。",
   "capabilities": [
     "通用任务",
     "独立执行",
