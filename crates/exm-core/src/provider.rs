@@ -1394,6 +1394,12 @@ fn respond(req: &ChatRequest) -> String {
         "目标与进展：用户持续在推进当前任务；关键结论与未决事项已由最近对话承载。".to_string()
     } else if system.contains("经验改进要点合成") {
         adaptation_text(&system)
+    } else if user.contains("exm-tool-loop-ok") {
+        // 单体直接循环第二步:工具回灌已收到,收敛为最终文本
+        "▸ 工具回灌已收到：输出包含 exm-tool-loop-ok，任务完成。".to_string()
+    } else if user.contains("触发工具循环") {
+        // 单体直接循环第一步:文本协议工具调用(确定性)
+        r#"{"tool": "terminal", "args": {"command": "echo exm-tool-loop-ok"}}"#.to_string()
     } else if user.starts_with("【收束请求】") {
         converge_text(&user)
     } else if system.contains("OrchestratorPlan") {

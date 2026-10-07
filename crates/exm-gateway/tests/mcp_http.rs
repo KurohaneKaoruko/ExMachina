@@ -38,6 +38,7 @@ async fn app_with(auth_key: &str) -> (axum::Router, std::path::PathBuf, String) 
         capabilities: vec![],
         tools: vec![],
         when_to_call: String::new(),
+        link: None,
         dependencies: vec![],
         composable_with: vec![],
         input_schema: Default::default(),

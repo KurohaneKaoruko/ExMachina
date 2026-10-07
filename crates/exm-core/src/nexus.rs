@@ -193,7 +193,8 @@ mod tests {
     use super::*;
 
     fn cfg_with(links: Vec<LinkTarget>) -> ExmConfig {
-        let mut cfg = ExmConfig::default();
+        let dir = std::env::temp_dir().join(format!("exm-nexus-cfg-{}", crate::types::new_id()));
+        let mut cfg = ExmConfig::load(&dir);
         cfg.nexus.links = links;
         cfg
     }
