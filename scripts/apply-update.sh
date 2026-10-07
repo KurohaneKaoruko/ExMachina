@@ -26,9 +26,13 @@ docker compose -p exmachina build
 echo "▸ 步骤 3/3:重启容器(经一次性辅助容器执行,独立于本容器生命周期)"
 docker pull -q "$HELPER_IMAGE"
 docker rm -f exmachina-updater 2>/dev/null || true
+# 辅助容器在宿主侧运行:-v 的源必须是仓库的宿主真实路径(/host 只是本容器内的挂载点),
+# 从网关容器自身的 mount 信息反解,不硬编码
+HOST_REPO=$(docker inspect exmachina --format '{{range .Mounts}}{{if eq .Destination "/host"}}{{.Source}}{{end}}{{end}}')
+[ -n "$HOST_REPO" ] || { echo "⛔ 未能从容器 mount 反解出仓库宿主路径"; exit 1; }
 docker run --rm --name exmachina-updater \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /host:/host -w /host \
+  -v "$HOST_REPO:/host" -w /host \
   "$HELPER_IMAGE" compose -p exmachina up -d --force-recreate
 
 echo "▸ 更新完成"
