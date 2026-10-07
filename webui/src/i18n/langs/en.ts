@@ -670,6 +670,7 @@ export const en: Partial<Dict> = {
   "agents.f.dutyPh": "What this unit is responsible for (written into its prompt template)",
   "agents.f.promptTitle": "System prompt (PROMPT)",
   "agents.f.promptEditExtra": "Hot on save: next dispatch loads the new prompt",
+  "agents.f.promptRequired": "Prompt content is required",
   "agents.promptMissing": "No prompt file yet — one will be created on save",
   "agents.f.prompt": "Duty prompt (optional; template generated from duty by default)",
   "agents.f.promptPh": "# Name\n\nYou are … (duty, rules, output format)",

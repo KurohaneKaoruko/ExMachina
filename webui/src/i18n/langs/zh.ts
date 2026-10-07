@@ -669,6 +669,7 @@ export const zh = {
   "agents.f.dutyPh": "该子个体负责什么（会写入其提示词模板）",
   "agents.f.promptTitle": "系统提示词（PROMPT）",
   "agents.f.promptEditExtra": "保存即热生效：下一轮派发装载新提示词",
+  "agents.f.promptRequired": "请填写提示词内容",
   "agents.promptMissing": "该个体暂无提示词文件，保存后将创建",
   "agents.f.prompt": "职责提示词（可选；缺省按职责生成模板）",
   "agents.f.promptPh": "# 名称\n\n你是 …（职责、规则、输出格式）",

@@ -458,7 +458,7 @@ export function GroupsView(): React.ReactElement {
                 name="prompt"
                 label={t("agents.f.promptTitle")}
                 extra={t("agents.f.promptEditExtra")}
-                rules={[{ required: true, whitespace: true, message: t("models.modelNameRequired") }]}
+                rules={[{ required: true, whitespace: true, message: t("agents.f.promptRequired") }]}
               >
                 <Input.TextArea rows={12} className="prompt-editor" spellCheck={false} />
               </Form.Item>
