@@ -1440,7 +1440,7 @@ branch=$(git rev-parse --abbrev-ref HEAD) || exit 8
 remote=$(git config "branch.$branch.remote" 2>/dev/null || echo origin)
 git fetch --quiet "$remote" "$branch" 2>/dev/null
 head_sha=$(git rev-parse HEAD)
-up_sha=$(git rev-parse "$remote/$branch" 2>/dev/null)
+up_sha=$(git rev-parse --verify "$remote/$branch" 2>/dev/null)
 up_date=$(git show -s --format=%cI "$remote/$branch" 2>/dev/null)
 url=$(git config "remote.$remote.url" 2>/dev/null)
 printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$branch" "$remote" "$head_sha" "$up_sha" "$up_date" "$url"
