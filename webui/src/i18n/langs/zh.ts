@@ -446,6 +446,8 @@ export const zh = {
   "groups.modalNew": "新建智能体组",
   "groups.create": "创建",
   "groups.f.name": "组名",
+  "groups.f.template": "从模板创建",
+  "groups.f.templateBlank": "空白(不使用模板)",
   "groups.f.namePh": "如：研发组",
   "groups.f.id": "组 ID（可选）",
   "groups.f.desc": "描述",

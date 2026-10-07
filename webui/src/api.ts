@@ -163,6 +163,14 @@ export interface GroupCapabilities {
   embedding?: string;
 }
 
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  /** unit = 子个体模板;group = 组模板 */
+  kind: string;
+}
+
 export interface GroupMeta {
   id: string;
   name: string;
@@ -416,8 +424,10 @@ export const api = {
       }),
     }),
   agents: () => req<AgentDefinition[]>("/agents"),  groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),
-  createGroup: (body: { name: string; id?: string; description?: string }) =>
+  createGroup: (body: { name: string; id?: string; description?: string; template?: string }) =>
     req<GroupMeta>("/groups", { method: "POST", body: JSON.stringify(body) }),
+  /** 编成模板清单(unit=子个体模板,group=组模板) */
+  listTemplates: () => req<{ templates: TemplateInfo[] }>("/templates"),
   switchGroup: (id: string) =>
     req<{ ok: boolean }>("/groups/active", { method: "PUT", body: JSON.stringify({ id }) }),
   /** 设置组主智能体 */
@@ -432,6 +442,7 @@ export const api = {
     tier?: string;
     prompt?: string;
     group?: string;
+    template?: string;
   }) => req<AgentDefinition>("/agents", { method: "POST", body: JSON.stringify(body) }),
   removeAgent: (identifier: string) =>
     req<{ ok: boolean }>(`/agents/${identifier}`, { method: "DELETE" }),

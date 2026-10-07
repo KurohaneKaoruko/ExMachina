@@ -1088,10 +1088,11 @@ impl ToolGateway {
             },
             "required": ["op"]
         }));
-        push(ToolName::AgentManage, "组内个体管理（仅主智能体）：create/update/remove/setPrimary", serde_json::json!({
+        push(ToolName::AgentManage, "组内个体管理（仅主智能体）：templates/list/create/update/remove；create 支持基于编成模板", serde_json::json!({
             "type": "object",
             "properties": {
-                "op": { "type": "string", "enum": ["create", "update", "remove"] },
+                "op": { "type": "string", "enum": ["templates", "list", "create", "update", "remove"] },
+                "template": { "type": "string", "description": "create 可选:模板 id(unit-*),先 templates 查询;提供后仅 identifier 必填" },
                 "identifier": { "type": "string" },
                 "name": { "type": "string" },
                 "description": { "type": "string" },
@@ -1719,14 +1720,31 @@ impl ToolGateway {
                 "count": self.registry.count(),
                 "isBuiltin": self.registry.is_builtin(&meta.id),
             })),
+            "templates" => {
+                let all = self.registry.list_templates();
+                Ok(serde_json::json!({
+                    "templates": all.iter().map(|t| serde_json::json!({
+                        "id": t.id, "name": t.name, "description": t.description, "kind": t.kind,
+                    })).collect::<Vec<_>>(),
+                    "usage": "create 时传 template=<unit 模板 id>,仅需 identifier;name/description 缺省用模板默认"
+                }))
+            }
             "create" | "update" => {
                 let identifier = s("identifier");
                 let name = s("name");
                 let description = s("description");
+                let template = s("template");
+                // 模板创建:仅 identifier 必填,工具面/能力/提示词由模板提供
+                if op == "create" && !template.is_empty() {
+                    let def = self
+                        .registry
+                        .create_agent_from_template(&meta.id, &template, &identifier, &name, &description)?;
+                    return Ok(serde_json::json!({ "created": def, "fromTemplate": template }));
+                }
                 if (op == "create" && (identifier.is_empty() || name.is_empty() || description.is_empty()))
                     || (op == "update" && identifier.is_empty())
                 {
-                    bail!("create 需要 identifier/name/description；update 需要 identifier");
+                    bail!("create 需要 identifier/name/description（或提供 template）；update 需要 identifier");
                 }
                 // update：基于现有定义合并
                 let mut def = match (op, self.registry.get(&identifier)) {

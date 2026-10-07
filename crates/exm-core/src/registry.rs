@@ -259,6 +259,99 @@ impl LocalRegistry {
         Ok(())
     }
 
+    // ---------------- 编成模板（entities/templates/，用户与 agent 共用） ----------------
+
+    /// 模板根目录:entities/templates/(unit=子个体,group=组)
+    pub fn templates_dir(&self) -> PathBuf {
+        self.dir.join("templates")
+    }
+
+    /// 列出全部编成模板(unit + group)
+    pub fn list_templates(&self) -> Vec<crate::types::TemplateInfo> {
+        let mut out = Vec::new();
+        for kind in ["unit", "group"] {
+            let base = self.templates_dir().join(kind);
+            let Ok(entries) = std::fs::read_dir(&base) else { continue };
+            for e in entries.filter_map(|e| e.ok()) {
+                let tdir = e.path();
+                let meta_path = tdir.join("template.json");
+                if !tdir.is_dir() || !meta_path.is_file() {
+                    continue;
+                }
+                if let Ok(info) =
+                    serde_json::from_str::<crate::types::TemplateInfo>(&std::fs::read_to_string(&meta_path).unwrap_or_default())
+                {
+                    out.push(info);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
+        out
+    }
+
+    /// 占位符渲染:{{identifier}} / {{name}} / {{description}}
+    fn render_template(raw: &str, identifier: &str, name: &str, description: &str) -> String {
+        raw.replace("{{identifier}}", identifier)
+            .replace("{{name}}", name)
+            .replace("{{description}}", description)
+    }
+
+    /// 基于模板创建子个体:agent.json + PROMPT.md 渲染占位符后经 upsert_agent 落盘。
+    /// name/description 缺省时取模板默认。
+    pub fn create_agent_from_template(
+        &self,
+        gid: &str,
+        template_id: &str,
+        identifier: &str,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<AgentDefinition> {
+        Self::validate_identifier(identifier)?;
+        let tdir = self.templates_dir().join("unit").join(template_id);
+        let meta_path = tdir.join("template.json");
+        anyhow::ensure!(meta_path.is_file(), "子个体模板不存在: {template_id}");
+        let tmeta: crate::types::TemplateInfo = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
+        let name = if name.trim().is_empty() { tmeta.name } else { name.trim().to_string() };
+        let description =
+            if description.trim().is_empty() { tmeta.description } else { description.trim().to_string() };
+        let raw = std::fs::read_to_string(tdir.join("agent.json")).context("模板缺少 agent.json")?;
+        let mut def: AgentDefinition =
+            serde_json::from_str(&Self::render_template(&raw, identifier, &name, &description))
+                .context("模板 agent.json 校验失败")?;
+        def.name = name;
+        def.description = description.clone();
+        def.when_to_call = description;
+        let prompt = std::fs::read_to_string(tdir.join("PROMPT.md"))
+            .ok()
+            .map(|t| Self::render_template(&t, identifier, &def.name, &def.description));
+        self.upsert_agent(gid, def, prompt)
+    }
+
+    /// 基于模板创建组:复用 create_group 骨架,附加模板 SOUL.md(组人格)。
+    /// name/description 缺省时取模板默认。
+    pub fn create_group_from_template(
+        &self,
+        template_id: &str,
+        id: Option<String>,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<GroupMeta> {
+        let tdir = self.templates_dir().join("group").join(template_id);
+        let meta_path = tdir.join("template.json");
+        anyhow::ensure!(meta_path.is_file(), "组模板不存在: {template_id}");
+        let tmeta: crate::types::TemplateInfo = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
+        let name = if name.trim().is_empty() { tmeta.name } else { name.trim().to_string() };
+        let description =
+            if description.trim().is_empty() { tmeta.description } else { description.trim().to_string() };
+        let meta = self.create_group(id, &name, &description)?;
+        if let Some(gdir) = self.group_dir(&meta.id) {
+            if let Ok(soul) = std::fs::read_to_string(tdir.join("SOUL.md")) {
+                std::fs::write(gdir.join("SOUL.md"), Self::render_template(&soul, &meta.id, &name, &description))?;
+            }
+        }
+        Ok(meta)
+    }
+
     /// 创建自定义组：目录骨架 + 元数据；返回组 id
     pub fn create_group(
         &self,

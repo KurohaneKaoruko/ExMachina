@@ -152,6 +152,7 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/agents/:identifier/model", axum::routing::put(set_agent_model))
         .route("/api/agents/:identifier/persona", get(get_persona).put(put_persona).delete(reset_persona))
         .route("/api/groups", get(list_groups).post(create_group))
+        .route("/api/templates", get(list_templates))
         .route("/api/groups/active", get(active_group).put(switch_group))
         .route("/api/groups/:id", axum::routing::delete(delete_group))
         .route("/api/groups/:id/activate", post(activate_group))
@@ -1216,6 +1217,9 @@ struct CreateAgentBody {
     /// 目标组；缺省 = 激活组（内置组受保护，写入会被拒绝）
     #[serde(default)]
     group: Option<String>,
+    /// 编成模板 id(entities/templates/unit/<id>):提供后仅 identifier 必填,工具面/能力/提示词由模板提供
+    #[serde(default)]
+    template: Option<String>,
     /// 默认模型（"档案ID" 或 "档案ID/模型名"；缺省 = 跟随所属组/全局生效档案）
     #[serde(default)]
     model: Option<String>,
@@ -1254,6 +1258,29 @@ impl AgentUpdateBody {
 }
 
 async fn create_agent(State(st): State<AppState>, Json(b): Json<CreateAgentBody>) -> impl IntoResponse {
+    // 模板创建:工具面/能力/提示词由模板提供,仅 identifier 必填(name/description 缺省用模板默认)
+    if let Some(tpl) = b.template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let Some(gid) = b.group.clone() else {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "模板创建必须指定目标组 group" }))).into_response();
+        };
+        let meta = st.core.group_meta(&gid);
+        let was_empty = st.core.registry().group_agent_count(&gid) == 0;
+        let result = st
+            .core
+            .registry()
+            .create_agent_from_template(&gid, tpl, &b.identifier, &b.name, &b.description)
+            .map(|saved| {
+                if was_empty {
+                    let _ = st.core.registry().set_primary(&gid, &saved.identifier);
+                }
+                let _ = meta;
+                saved
+            });
+        return match result {
+            Ok(saved) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+        };
+    }
     let def = exm_core::types::AgentDefinition {
         name: b.name,
         identifier: b.identifier,
@@ -1373,9 +1400,28 @@ struct CreateGroupBody {
     id: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    /// 组模板 id(entities/templates/group/<id>):提供后附加模板 SOUL(组人格骨架)
+    #[serde(default)]
+    template: Option<String>,
+}
+
+/// 编成模板清单(GET /api/templates):unit = 子个体模板,group = 组模板
+async fn list_templates(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({ "templates": st.core.registry().list_templates() }))
 }
 
 async fn create_group(State(st): State<AppState>, Json(b): Json<CreateGroupBody>) -> impl IntoResponse {
+    // 模板创建:附加模板 SOUL(组人格骨架)
+    if let Some(tpl) = b.template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        return match st
+            .core
+            .registry()
+            .create_group_from_template(tpl, b.id, &b.name, b.description.as_deref().unwrap_or(""))
+        {
+            Ok(meta) => Json(serde_json::to_value(meta).unwrap_or(Value::Null)).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+        };
+    }
     match st.core.create_group(b.id, &b.name, b.description.as_deref().unwrap_or("")) {
         Ok(meta) => Json(serde_json::to_value(meta).unwrap_or(Value::Null)).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),

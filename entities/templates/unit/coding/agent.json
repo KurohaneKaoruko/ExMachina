@@ -1,0 +1,23 @@
+{
+  "name": "{{name}}",
+  "identifier": "{{identifier}}",
+  "domain": "研发域",
+  "tier": "unit",
+  "description": "{{description}}",
+  "capabilities": [
+    "编码实现",
+    "配置修改",
+    "重构实施"
+  ],
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "filesystem",
+    "terminal",
+    "patch"
+  ],
+  "whenToCall": "{{description}}",
+  "dependencies": [],
+  "composableWith": []
+}

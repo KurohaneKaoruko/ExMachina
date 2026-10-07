@@ -447,6 +447,8 @@ export const en: Partial<Dict> = {
   "groups.modalNew": "New Agent Group",
   "groups.create": "Create",
   "groups.f.name": "Group name",
+  "groups.f.template": "From template",
+  "groups.f.templateBlank": "Blank (no template)",
   "groups.f.namePh": "e.g. R&D",
   "groups.f.id": "Group ID (optional)",
   "groups.f.desc": "Description",
