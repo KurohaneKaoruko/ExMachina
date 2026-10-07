@@ -2096,3 +2096,52 @@ input, textarea { caret-color: var(--accent); }
 }
 .app-banner.ant-alert-warning { border-left: 3px solid var(--accent); }
 .app-banner.ant-alert-error { border-left: 3px solid var(--red); }
+
+/* ============================================================
+   移动端适配（触屏 + 窄屏收口）
+   ============================================================ */
+
+/* 触屏设备（无 hover 语义）：悬停才出现的操作一律常显 */
+@media (hover: none) {
+  .msg-bubble .msg-ops,
+  .msg-bubble .msg-copy,
+  .code-block-wrap .code-copy-btn,
+  .session-row .session-ops,
+  .session-row .session-del {
+    opacity: 1 !important;
+    display: inline-flex !important;
+  }
+  .msg-head .msg-copy { opacity: 1 !important; }
+}
+
+/* 窄屏（≤860px） */
+@media (max-width: 860px) {
+  /* 设置页双栏纵向堆叠；分类导航变横向可滑 */
+  .settings2 { flex-direction: column; gap: 12px; }
+  .cfg-nav { width: 100%; flex-direction: row; overflow-x: auto; gap: 4px; padding-bottom: 6px; }
+  .cfg-nav-item { white-space: nowrap; padding: 6px 10px; }
+
+  /* 表格防溢出：横向滚动兜底 */
+  .ant-table-content { overflow-x: auto; }
+  .ant-table { min-width: 560px; }
+
+  /* 网格卡片窄屏单列 */
+  .skill-grid, .group-grid { grid-template-columns: 1fr; }
+
+  /* 页头操作区独占一行 */
+  .page-actions { width: 100%; justify-content: flex-start; }
+
+  /* 会话行触屏：操作常显 */
+  .session-row .session-ops { display: inline-flex; opacity: 1; }
+
+  /* 安全区：刘海屏底部预留 */
+  .chat-input { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 480px) {
+  .app-content { padding: 10px 10px 14px; }
+  .ant-card .ant-card-body { padding: 10px; }
+  .usage-body { max-height: 240px; }
+  .nexus-link-row { flex-wrap: wrap; }
+  .nexus-link-row .nexus-endpoint { max-width: 100%; }
+}
