@@ -1425,56 +1425,81 @@ async fn version_info() -> impl IntoResponse {
     Json(build_version())
 }
 
-/// 更新检查(GET /api/version/check):对比上游 dev 分支最新提交。
-/// 本地未嵌入 commit(dev 构建)或网络不可达时返回可判定性提示,不臆断。
+/// 更新检查(GET /api/version/check):分支感知——本地在什么分支就对比该分支的上游。
+/// main 用户对比 origin/main,dev 开发者对比 origin/dev,互不干扰;经 /host 视图执行 git。
 async fn version_check() -> impl IntoResponse {
     let mut out = build_version();
-    // 发布口径:更新检查看上游 main 分支(dev 为开发线,发版时 merge 到 main)
-    let fetched = async {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(6))
-            .user_agent("exmachina-gateway")
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client
-            .get("https://api.github.com/repos/KurohaneKaoruko/ExMachina/commits")
-            .query(&[("sha", "main"), ("per_page", "1")])
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err("main".to_string());
-        }
-        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
-    }
-    .await;
-    if fetched == Err("main".to_string()) {
-        out["note"] = serde_json::json!("上游 main 分支尚不存在(尚未发布过版本);发布后此处将显示 main 最新提交");
+    if !std::path::Path::new("/host/.git").exists() {
+        out["note"] = serde_json::json!("未挂载仓库(/host),无法检查更新;请按设置页指引手动更新");
         return Json(out);
     }
-    match fetched {
-        Ok(v) if v.is_array() && !v.as_array().unwrap().is_empty() => {
-            let c = &v.as_array().unwrap()[0];
-            let sha = c["sha"].as_str().unwrap_or_default().to_string();
-            let short = sha.chars().take(7).collect::<String>();
-            let url = c["html_url"].as_str().unwrap_or_default().to_string();
-            let date = c["commit"]["committer"]["date"].as_str().unwrap_or_default().to_string();
-            let local_hash = out["gitHash"].as_str().unwrap_or("dev").to_string();
-            let update_available = if local_hash.is_empty() || local_hash == "dev" {
-                serde_json::Value::Null
-            } else {
-                serde_json::Value::Bool(!sha.starts_with(&local_hash))
-            };
-            out["upstream"] = serde_json::json!({ "sha": sha, "short": short, "url": url, "date": date });
-            out["updateAvailable"] = update_available;
+    let script = r#"
+cd /host || exit 9
+git config --global --add safe.directory /host >/dev/null 2>&1
+branch=$(git rev-parse --abbrev-ref HEAD) || exit 8
+remote=$(git config "branch.$branch.remote" 2>/dev/null || echo origin)
+git fetch --quiet "$remote" "$branch" 2>/dev/null
+head_sha=$(git rev-parse HEAD)
+up_sha=$(git rev-parse "$remote/$branch" 2>/dev/null)
+up_date=$(git show -s --format=%cI "$remote/$branch" 2>/dev/null)
+url=$(git config "remote.$remote.url" 2>/dev/null)
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$branch" "$remote" "$head_sha" "$up_sha" "$up_date" "$url"
+"#;
+    let exec = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        tokio::process::Command::new("sh").arg("-c").arg(script).output(),
+    )
+    .await;
+    let lines: Vec<String> = match exec {
+        Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).collect(),
+        Ok(Err(e)) => {
+            out["note"] = serde_json::json!(format!("仓库视图不可用:{e}"));
+            return Json(out);
         }
-        Ok(_) => {
-            out["note"] = serde_json::json!("上游返回为空,无法判定");
+        Err(_) => {
+            out["note"] = serde_json::json!("检查超时(网络不可达或仓库过大)");
+            return Json(out);
         }
-        Err(e) => {
-            out["note"] = serde_json::json!(format!("更新检查不可达:{e}"));
-        }
+    };
+    let get = |i: usize| lines.get(i).cloned().unwrap_or_default();
+    let (branch, remote, head_sha, up_sha, up_date, remote_url) =
+        (get(0), get(1), get(2), get(3), get(4), get(5));
+    if branch.is_empty() || head_sha.is_empty() {
+        out["note"] = serde_json::json!("无法解析本地仓库状态(分离 HEAD 或视图异常)");
+        return Json(out);
     }
+    let short = |sha: &str| sha.chars().take(7).collect::<String>();
+    out["gitHash"] = serde_json::json!(short(&head_sha));
+    out["branch"] = serde_json::json!(branch);
+    if up_sha.is_empty() {
+        out["note"] = serde_json::json!(format!(
+            "无法解析上游 {remote}/{branch}(fetch 失败或上游未设置;可稍后重试,或手动 git fetch 后再查)"
+        ));
+        out["updateAvailable"] = serde_json::Value::Null;
+        return Json(out);
+    }
+    // github 提交链接:从 remote url 反解 owner/repo(https 或 ssh 形态)
+    let commit_url = remote_url
+        .strip_suffix(".git")
+        .unwrap_or(&remote_url)
+        .trim_start_matches("https://github.com/")
+        .trim_start_matches("git@github.com:")
+        .split('/')
+        .collect::<Vec<_>>()
+        .join("/");
+    let commit_url = if commit_url.contains('/') {
+        format!("https://github.com/{commit_url}/commit/{up_sha}")
+    } else {
+        String::new()
+    };
+    out["upstream"] = serde_json::json!({
+        "ref": format!("{remote}/{branch}"),
+        "sha": up_sha,
+        "short": short(&up_sha),
+        "date": up_date,
+        "url": commit_url,
+    });
+    out["updateAvailable"] = serde_json::json!(head_sha != up_sha);
     Json(out)
 }
 
