@@ -360,7 +360,7 @@ mod tests {
         assert!(srv.resolve_session(&srv.acl(), &ok_session.id).is_ok(), "范围内的会话放行");
 
         // 组范围：建一个组外会话（default 组）→ 拒绝
-        core.registry().set_active_group("default").unwrap();
+        core.registry().set_active_group("exmachina").unwrap();
         let out_session = core.create_session("范围外").unwrap();
         core.registry().set_active_group("t").unwrap();
         let err = srv.resolve_session(&srv.acl(), &out_session.id);

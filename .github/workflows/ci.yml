@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # computer-use 栈(enigo/xcap)链接需要 libxdo;缺库时 cargo test 链接期即失败
+      - name: System libs
+        run: sudo apt-get update && sudo apt-get install -y libxdo-dev
       - name: Cache cargo
         uses: actions/cache@v4
         with:
