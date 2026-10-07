@@ -1,11 +1,10 @@
-# CI：每次 push 自动编译 + 测试（不发布任何产物）
-# 发版走 release.yml（打 v* tag 才触发）
+# CI：仅在 PR 时编译 + 测试（不发布任何产物）
+# dev / main 上的直接 push 不触发任何工作流——日常开发零消耗，验证关口前移到 PR
+# 发版走 release.yml（仅 dev→main 合入触发：自动打 tag + 全平台构建 + 发 GitHub Release）
 name: ci
 on:
-  push:
-    branches: [dev, main]
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
 
 jobs:
   test:
