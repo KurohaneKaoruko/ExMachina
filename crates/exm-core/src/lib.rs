@@ -20,8 +20,10 @@ pub mod orchestrator;
 pub mod parse;
 pub mod patch;
 pub mod provider;
+pub mod nexus;
 pub mod registry;
 pub mod remote;
+pub mod round_trace;
 pub mod runtime;
 pub mod store;
 pub mod task;
@@ -32,8 +34,7 @@ use crate::bus::{InProcessBus, MessageBus};
 use crate::config::ExmConfig;
 use crate::cron::CronStore;
 use crate::memory::{MemoryDraft, MemoryEntry, MemoryKind, MemoryStore, RecallHit};
-use crate::orchestrator::{Orchestrator, ORCHESTRATOR_ID};
-use crate::provider::{
+use crate::orchestrator::{Orchestrator, ORCHESTRATOR_ID};use crate::provider::{
     FailoverState, LlmProvider, MockLlmProvider, ModelPool, OpenAiCompatibleProvider,
     UnconfiguredProvider,
 };
@@ -206,7 +207,7 @@ impl Core {
     }
 
     /// 重新生成基础记忆文件（memory.md，全局浅层视图）；
-    /// 同时刷新：每组一份 `groups/<gid>/MEMORY.md`（组浅层记忆）、每单体一份 `singles/<id>/MEMORY.md`。
+    /// 同时刷新：每组一份 `groups/<gid>/MEMORY.md`（组浅层记忆）、每单体一份 `entities/agents/<id>/MEMORY.md`。
     /// 深层记忆始终在 MemoryStore（数据库检索/衰减/压缩）——MEMORY.md 只是容量受限的人读快照。
     pub fn render_memory_md(&self) -> anyhow::Result<usize> {
         let cfg = self.config();
@@ -588,6 +589,8 @@ impl Core {
             summary_upto: None,
             parent_session: Some(src.id.clone()),
             parent_upto: Some(upto_turn),
+                last_message_preview: None,
+                last_active_at: None,
             ledger: src.ledger.clone(),
             created_at: now.clone(),
             updated_at: now,
@@ -626,8 +629,29 @@ impl Core {
                 .clone()
         };
         let _guard = lock.lock().await;
-        let orch = self.orchestrator();
-        orch.handle_user_message(session_id, text).await
+        // 轮次生命周期：开始（登记取消令牌）→ 执行 → 结束（移除）
+        crate::round_trace::begin(session_id);
+        let result = self.orchestrator().handle_user_message(session_id, text).await;
+        crate::round_trace::end(session_id);
+        result
+    }
+
+    /// 停止会话运行中的轮次：置位取消令牌（工具循环检查点终止），返回已执行的工具次数。
+    /// 空闲会话（无运行中轮次）返回错误。
+    pub fn stop_session(&self, session_id: &str) -> anyhow::Result<usize> {
+        if !crate::round_trace::is_running(session_id) {
+            anyhow::bail!("该会话当前没有运行中的任务");
+        }
+        crate::round_trace::request_cancel(session_id);
+        let n = crate::round_trace::tool_count(session_id);
+        let _ = self.store.audit_tool(
+            "system",
+            "session_stop",
+            &serde_json::json!({ "session": session_id }),
+            &format!("用户请求停止（当时已执行 {n} 次工具调用）"),
+            0,
+        );
+        Ok(n)
     }
 
     pub fn mcp(&self) -> Arc<crate::mcp::McpRegistry> {
@@ -835,7 +859,13 @@ impl Core {
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
-        self.store.list_sessions()
+        let mut list = self.store.list_sessions()?;
+        // 末条消息预览（chat-ergonomics）：会话量级 ≤200，末行微读成本可控
+        for s in list.iter_mut() {
+            s.last_message_preview = self.store.last_message_preview(&s.id, 80);
+            s.last_active_at = Some(s.updated_at.clone());
+        }
+        Ok(list)
     }
 
     pub fn agents(&self) -> Vec<AgentDefinition> {
@@ -1213,6 +1243,7 @@ pub fn build_orchestrator(
         max_concurrency: cfg.max_concurrency,
         max_unit_steps: cfg.automation.unit_max_steps,
         auto_adapt: cfg.automation.auto_adapt,
+        config_snapshot: Arc::new(parking_lot::RwLock::new(cfg.clone())),
     })
 }
 

@@ -199,6 +199,8 @@ export interface CronJob {
   lastRunAt?: string;
   lastStatus?: string;
   createdAt: string;
+  /** 下次执行时间（启用且 cron 命中时由服务端计算） */
+  nextRunAt?: string;
 }
 
 export interface CronRun {
@@ -210,6 +212,17 @@ export interface CronRun {
   finishedAt: string;
   status: string;
   summary: string;
+}
+
+/** 智能连结网络连结体（实验性） */
+export interface NexusLink {
+  id: string;
+  name: string;
+  kind: string;
+  endpoint?: string;
+  apiKey?: string;
+  command?: string;
+  enabled: boolean;
 }
 
 export interface ApprovalRequest {
@@ -383,13 +396,26 @@ export const api = {
   sessionSnapshots: (id: string) =>
     req<{ turn: number; messageCount: number; status: string }[]>(`/sessions/${id}/snapshots`),
   messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
-  chat: (id: string, text: string, images?: string[]) =>
+  nexusLinks: () => req<{ links: NexusLink[] }>("/nexus/links"),
+  saveNexusLink: (body: NexusLink) =>
+    req<{ ok: boolean; link: NexusLink }>("/nexus/links", { method: "POST", body: JSON.stringify(body) }),
+  deleteNexusLink: (id: string) => req<{ ok: boolean }>(`/nexus/links/${id}`, { method: "DELETE" }),
+  stopSession: (id: string) =>
+    req<{ ok: boolean; toolsExecuted: number }>(`/sessions/${id}/stop`, { method: "POST", body: JSON.stringify({}) }),
+  audit: (params: { agent?: string; tool?: string; limit?: number }) =>
+    req<{ items: Array<Record<string, unknown>> }>("/audit?" + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)])).toString()),
+  channelTest: (id: string) =>
+    req<{ ok: boolean; category?: string; identity?: string; message?: string; error?: string }>(`/channels/${id}/test`, { method: "POST", body: JSON.stringify({}) }),
+  chat: (id: string, text: string, images?: string[], mode?: string) =>
     req<{ accepted: boolean }>(`/sessions/${id}/chat`, {
       method: "POST",
-      body: JSON.stringify(images?.length ? { text, images } : { text }),
+      body: JSON.stringify({
+        text,
+        ...(images?.length ? { images } : {}),
+        ...(mode ? { mode } : {}),
+      }),
     }),
-  agents: () => req<AgentDefinition[]>("/agents"),
-  groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),
+  agents: () => req<AgentDefinition[]>("/agents"),  groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),
   createGroup: (body: { name: string; id?: string; description?: string }) =>
     req<GroupMeta>("/groups", { method: "POST", body: JSON.stringify(body) }),
   switchGroup: (id: string) =>
@@ -419,7 +445,7 @@ export const api = {
     }),
   resetPersona: (identifier: string) =>
     req<{ ok: boolean }>(`/agents/${identifier}/persona`, { method: "DELETE" }),
-  /** 单体智能体人设（agents/singles/personas/<id>.md，与组内个体同语义） */
+  /** 单体智能体人设（entities/agents/<id>/SOUL.md，与组内个体同语义） */
   singlePersona: (id: string) => req<PersonaInfo>(`/singles/${id}/persona`),
   singlesSetPersona: (id: string, persona: string) =>
     req<{ ok: boolean }>(`/singles/${id}/persona`, { method: "PUT", body: JSON.stringify({ persona }) }),
@@ -571,6 +597,21 @@ export const api = {
     req<{ ok: boolean; mock?: boolean; configured?: boolean; status?: number; snippet?: string; message?: string; error?: string }>("/llm/test", {
       method: "POST",
       body: JSON.stringify(id ? { id } : {}),
+    }),
+  // 系统提示词（PROMPT）读写：组内个体按组作用域；单体走 singles 端点
+  getAgentPrompt: (gid: string, identifier: string) =>
+    req<{ identifier: string; promptFile: string; prompt: string }>(`/groups/${gid}/agents/${identifier}/prompt`),
+  putAgentPrompt: (gid: string, identifier: string, prompt: string) =>
+    req<{ ok: boolean }>(`/groups/${gid}/agents/${identifier}/prompt`, { method: "PUT", body: JSON.stringify({ prompt }) }),
+  getSinglePrompt: (id: string) =>
+    req<{ identifier: string; promptFile: string; prompt: string }>(`/singles/${id}/prompt`),
+  putSinglePrompt: (id: string, prompt: string) =>
+    req<{ ok: boolean }>(`/singles/${id}/prompt`, { method: "PUT", body: JSON.stringify({ prompt }) }),
+  // 拉取端点可用模型清单：按档案 id（沿用已存密钥）或显式端点+明文密钥
+  listProviderModels: (body: { id?: string; baseUrl?: string; apiKey?: string; apiFormat?: string }) =>
+    req<{ ok: boolean; configured?: boolean; status?: number; models: string[]; message?: string; error?: string }>("/llm/models", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   llmCapabilities: () => req<LlmCapabilities>("/llm/capabilities"),
   saveLlmCapabilities: (body: Partial<LlmCapabilities>) =>

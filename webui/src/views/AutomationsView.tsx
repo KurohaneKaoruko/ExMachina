@@ -7,6 +7,15 @@ import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
 
+/** 常用 cron 模板（4.4）：一键填入表达式 */
+const CRON_TEMPLATES: { expr: string; labelKey: "cron.tpl.daily" | "cron.tpl.weekday" | "cron.tpl.hourly" | "cron.tpl.weekly" | "cron.tpl.monthly" }[] = [
+  { expr: "0 9 * * *", labelKey: "cron.tpl.daily" },
+  { expr: "0 9 * * 1-5", labelKey: "cron.tpl.weekday" },
+  { expr: "0 * * * *", labelKey: "cron.tpl.hourly" },
+  { expr: "0 9 * * 1", labelKey: "cron.tpl.weekly" },
+  { expr: "0 9 1 * *", labelKey: "cron.tpl.monthly" },
+];
+
 export function AutomationsView(): React.ReactElement {
   const t = useT();
   const { groups, activeGroup } = useExm();
@@ -106,8 +115,14 @@ export function AutomationsView(): React.ReactElement {
             },
             {
               title: t("cron.colSchedule"),
-              render: (_, j) =>
-                j.cron ? <Tag color="cyan">cron[{j.cron}]</Tag> : <Tag color="purple">{t("cron.oneOff", { at: j.at ?? "" })}</Tag>,
+              render: (_, j) => (
+                <Space direction="vertical" size={2}>
+                  {j.cron ? <Tag color="cyan">cron[{j.cron}]</Tag> : <Tag color="purple">{t("cron.oneOff", { at: j.at ?? "" })}</Tag>}
+                  {j.enabled && j.nextRunAt && (
+                    <span className="dim mono">{t("cron.nextRun", { at: new Date(j.nextRunAt).toLocaleString() })}</span>
+                  )}
+                </Space>
+              ),
             },
             { title: t("cron.colGroup"), render: (_, j) => <span className="mono">{j.group ?? t("cron.currentGroup")}</span> },
             {
@@ -183,13 +198,29 @@ export function AutomationsView(): React.ReactElement {
                   <Input placeholder="2026-09-13T09:00:00Z" />
                 </Form.Item>
               ) : (
-                <Form.Item
-                  name="cron"
-                  label={t("cron.f.cron")}
-                  rules={[{ required: true }, { pattern: /^(\S+\s+){4}\S+$/, message: t("cron.cronPattern") }]}
-                >
-                  <Input placeholder="0 9 * * *" />
-                </Form.Item>
+                <>
+                  <Form.Item label={t("cron.templates")} style={{ marginBottom: 6 }}>
+                    <Space size={4} wrap>
+                      {CRON_TEMPLATES.map((tpl) => (
+                        <Button
+                          key={tpl.expr}
+                          size="small"
+                          onClick={() => form.setFieldsValue({ cron: tpl.expr })}
+                          title={tpl.expr}
+                        >
+                          {t(tpl.labelKey)}
+                        </Button>
+                      ))}
+                    </Space>
+                  </Form.Item>
+                  <Form.Item
+                    name="cron"
+                    label={t("cron.f.cron")}
+                    rules={[{ required: true }, { pattern: /^(\S+\s+){4}\S+$/, message: t("cron.cronPattern") }]}
+                  >
+                    <Input placeholder="0 9 * * *" />
+                  </Form.Item>
+                </>
               )
             }
           </Form.Item>

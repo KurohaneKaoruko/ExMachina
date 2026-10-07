@@ -1,9 +1,13 @@
-/** 智能体组页：组列表 + 编成管理 + 组设置弹窗（切组在「对话」页左栏进行） */
+/** 智能体组页：组卡片总览 → 点入组详情（编成管理 / 组设置 / 子个体成员一体）。
+ *  子个体是组的成员：成员的新建 / 编辑 / 人设 / 经验优化 / 删除都在组详情内完成（不再单设页面）。 */
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message,
+  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Table, Tag, message,
 } from "antd";
-import { PlusOutlined, SettingOutlined, UsergroupDeleteOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined, DeleteOutlined, EditOutlined, FormOutlined, PlusOutlined,
+  SettingOutlined, UndoOutlined, UsergroupDeleteOutlined,
+} from "@ant-design/icons";
 import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
@@ -14,7 +18,8 @@ import { useT } from "../i18n/core";
 export function GroupsView(): React.ReactElement {
   const t = useT();
   const { groups, activeGroup, refreshAgents } = useExm();
-  const [selected, setSelected] = useState<string>("");
+  /** null = 卡片总览；非空 = 已进入该组详情 */
+  const [entered, setEntered] = useState<string | null>(null);
   const [members, setMembers] = useState<AgentDefinition[]>([]);
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<GroupOverview | null>(null);
@@ -22,15 +27,24 @@ export function GroupsView(): React.ReactElement {
   const [modelDraft, setModelDraft] = useState<string>("");
   const [groupModal, setGroupModal] = useState(false);
   const [agentModal, setAgentModal] = useState(false);
-  const [settingsModal, setSettingsModal] = useState(false);
   const [wsDraft, setWsDraft] = useState("");
   const [descDraft, setDescDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [capsDraft, setCapsDraft] = useState<GroupCapabilities>({});
   const [groupForm] = Form.useForm();
   const [agentForm] = Form.useForm();
+  // 成员编辑 / 人设（原「子个体」页能力并入组详情）
+  const [editing, setEditing] = useState<AgentDefinition | null>(null);
+  const [editForm] = Form.useForm();
+  const [editFormProfiles, setEditFormProfiles] = useState<LlmProfile[]>([]);
+  const [promptLoading, setPromptLoading] = useState(false);
+  // 成员 SOUL.md（人设）编辑
+  const [personaOf, setPersonaOf] = useState<AgentDefinition | null>(null);
+  const [personaInfo, setPersonaInfo] = useState<import("../api").PersonaInfo | null>(null);
+  const [personaDraft, setPersonaDraft] = useState("");
+  const [personaSaving, setPersonaSaving] = useState(false);
 
-  const meta: GroupMeta | undefined = groups.find((g) => g.id === selected) ?? groups.find((g) => g.id === activeGroup);
+  const meta: GroupMeta | undefined = groups.find((g) => g.id === entered) ?? undefined;
 
   const loadMembers = useCallback(async (gid: string) => {
     if (!gid) return;
@@ -44,13 +58,16 @@ export function GroupsView(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    const gid = selected || activeGroup;
-    if (gid) void loadMembers(gid);
-  }, [selected, activeGroup, loadMembers]);
+    if (entered) void loadMembers(entered);
+  }, [entered, loadMembers]);
 
   useEffect(() => {
     void (async () => {
-      try { setProfiles((await api.llmProfiles()).profiles); } catch { /* noop */ }
+      try {
+        const p = (await api.llmProfiles()).profiles;
+        setProfiles(p);
+        setEditFormProfiles(p);
+      } catch { /* noop */ }
     })();
   }, []);
 
@@ -61,13 +78,14 @@ export function GroupsView(): React.ReactElement {
       message.success(t("groups.created", { name: v.name }));
       setGroupModal(false);
       groupForm.resetFields();
-      setSelected(v.id);
+      setEntered(v.id || "");
     } catch (e) {
       message.error(t("groups.createFailed", { err: String(e) }));
     }
   };
 
   const submitAgent = async () => {
+    if (!meta) return;
     const v = await agentForm.validateFields();
     try {
       await api.createAgent({
@@ -75,12 +93,13 @@ export function GroupsView(): React.ReactElement {
         identifier: v.identifier,
         description: v.description,
         tier: v.tier || undefined,
-        group: meta?.id,
+        prompt: v.prompt || undefined,
+        group: meta.id,
       });
       message.success(t("groups.agentCreated", { id: v.identifier }));
       setAgentModal(false);
       agentForm.resetFields();
-      await loadMembers(meta!.id);
+      await loadMembers(meta.id);
       await refreshAgents();
     } catch (e) {
       message.error(t("groups.createFailed", { err: String(e) }));
@@ -91,16 +110,17 @@ export function GroupsView(): React.ReactElement {
     try {
       await api.deleteGroup(gid);
       message.success(t("groups.groupDeleted", { id: gid }));
-      if (selected === gid) setSelected("");
+      setEntered(null);
     } catch (e) {
       message.error(t("groups.deleteFailed", { err: String(e) }));
     }
   };
 
   const doRemoveAgent = async (identifier: string) => {
+    if (!meta) return;
     try {
-      await api.removeAgent(identifier);
-      await loadMembers(meta!.id);
+      await api.removeGroupAgent(meta.id, identifier);
+      await loadMembers(meta.id);
       await refreshAgents();
       message.success(t("groups.agentDeleted", { id: identifier }));
     } catch (e) {
@@ -109,9 +129,10 @@ export function GroupsView(): React.ReactElement {
   };
 
   const doSetPrimary = async (identifier: string) => {
+    if (!meta) return;
     try {
-      await api.setGroupPrimary(meta!.id, identifier);
-      await loadMembers(meta!.id);
+      await api.setGroupPrimary(meta.id, identifier);
+      await loadMembers(meta.id);
       message.success(t("groups.primarySet", { id: identifier }));
     } catch (e) {
       message.error(t("groups.setFailed", { err: String(e) }));
@@ -120,7 +141,7 @@ export function GroupsView(): React.ReactElement {
 
   const isBuiltin = meta?.builtin ?? true;
 
-  // 打开设置弹窗时从 meta 同步草稿
+  // ---- 组设置（工作区 / 默认模型 / 能力覆盖） ----
   const openSettings = () => {
     setWsDraft(meta?.workspace ?? "");
     setDescDraft(meta?.description ?? "");
@@ -143,7 +164,6 @@ export function GroupsView(): React.ReactElement {
     }
   };
 
-  /** 组级能力覆盖行：空 = 跟随全局槽位 */
   const capField = (key: keyof GroupCapabilities, label: string) => (
     <div className="cap-row" key={key}>
       <div className="cap-label">{label}</div>
@@ -158,6 +178,373 @@ export function GroupsView(): React.ReactElement {
     </div>
   );
 
+  // ---- 成员编辑 / 人设（并入原「子个体」页能力） ----
+  const openPersona = async (a: AgentDefinition) => {
+    setPersonaOf(a);
+    setPersonaInfo(null);
+    setPersonaDraft("");
+    try {
+      const info = await api.getPersona(a.identifier);
+      setPersonaInfo(info);
+      setPersonaDraft(info.persona);
+    } catch (e) {
+      message.error(t("agents.personaReadFailed", { err: String(e).slice(0, 120) }));
+      setPersonaOf(null);
+    }
+  };
+
+  const savePersona = async () => {
+    if (!personaOf) return;
+    setPersonaSaving(true);
+    try {
+      await api.putPersona(personaOf.identifier, personaDraft);
+      message.success(t("agents.personaSaved"));
+      setPersonaInfo(await api.getPersona(personaOf.identifier));
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e).slice(0, 120) }));
+    } finally {
+      setPersonaSaving(false);
+    }
+  };
+
+  const resetPersona = async () => {
+    if (!personaOf) return;
+    try {
+      await api.resetPersona(personaOf.identifier);
+      setPersonaInfo(await api.getPersona(personaOf.identifier));
+      setPersonaDraft("");
+      message.success(t("agents.personaReset"));
+    } catch (e) {
+      message.error(t("agents.resetFailed", { err: String(e).slice(0, 120) }));
+    }
+  };
+
+  const openEdit = async (a: AgentDefinition) => {
+    setEditing(a);
+    editForm.setFieldsValue({
+      name: a.name,
+      description: a.description,
+      modelHint: a.modelHint ?? undefined,
+      prompt: "",
+    });
+    setPromptLoading(true);
+    try {
+      const info = await api.getAgentPrompt(meta!.id, a.identifier);
+      editForm.setFieldsValue({ prompt: info.prompt });
+    } catch {
+      editForm.setFieldsValue({ prompt: "" });
+      message.info(t("agents.promptMissing"));
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const submitEdit = async () => {
+    if (!editing || !meta) return;
+    const v = await editForm.validateFields();
+    try {
+      await api.updateAgent(editing.identifier, {
+        name: v.name,
+        description: v.description,
+        modelHint: v.modelHint ?? "",
+      });
+      if ((v.prompt ?? "").trim()) {
+        await api.putAgentPrompt(meta.id, editing.identifier, v.prompt);
+      }
+      message.success(t("agents.editSaved", { name: v.name }));
+      setEditing(null);
+      await loadMembers(meta.id);
+      await refreshAgents();
+    } catch (e) {
+      message.error(t("common.saveFailed", { err: String(e) }));
+    }
+  };
+
+  // 在途个体（任务图运行中）：成员表状态列
+  const busyAgents = new Set(
+    (useExm((s) => s.graph)?.nodes ?? [])
+      .filter((n) => ["running", "dispatched", "syncing"].includes(n.status))
+      .map((n) => n.agentIdentifier),
+  );
+
+  // ================= 组详情视图 =================
+  if (entered && meta) {
+    return (
+      <div className="pane-wrap">
+        <PageHeader
+          en="GROUP"
+          title={meta.name}
+          desc={
+            <Space size={6} wrap>
+              <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setEntered(null)}>
+                {t("groups.back")}
+              </Button>
+              <span className="mono dim">{groupIdEn(meta.id)}</span>
+              {meta.builtin ? <Tag>{t("groups.builtinProtected")}</Tag> : <Tag color="purple">{t("groups.customGroup")}</Tag>}
+              {meta.id === activeGroup && <Tag color="cyan">{t("groups.activeTag")}</Tag>}
+            </Space>
+          }
+          actions={
+            <Space>
+              <Button icon={<SettingOutlined />} onClick={() => { openSettings(); }}>
+                {t("groups.settings")}
+              </Button>
+              <Popconfirm
+                title={t("groups.groupDeleteConfirm", { name: meta.name })}
+                disabled={isBuiltin || meta.id === activeGroup}
+                onConfirm={() => void doDeleteGroup(meta.id)}
+              >
+                <Button danger icon={<UsergroupDeleteOutlined />} disabled={isBuiltin || meta.id === activeGroup}>
+                  {t("groups.del")}
+                </Button>
+              </Popconfirm>
+              {!isBuiltin && (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => setAgentModal(true)}>
+                  {t("groups.newAgent")}
+                </Button>
+              )}
+            </Space>
+          }
+        />
+
+        <div className="pane-body">
+          {overview && (
+            <div className="overview-chips">
+              <div className="chip"><span className="chip-num">{overview.agents}</span><span className="chip-label">{t("groups.chipAgents")}</span></div>
+              <div className="chip"><span className="chip-num">{overview.playbooks}</span><span className="chip-label">{t("groups.chipPlaybooks")}</span></div>
+              <div className="chip"><span className="chip-num">{overview.sessions}</span><span className="chip-label">{t("groups.chipSessions")}</span></div>
+              <div className="chip"><span className="chip-num">{overview.memory.group}</span><span className="chip-label">{t("groups.chipGroupMem")}</span></div>
+              <div className="chip"><span className="chip-num">{overview.memory.shared}</span><span className="chip-label">{t("groups.chipShared")}</span></div>
+            </div>
+          )}
+          {overview && overview.agentStats.length > 0 && (
+            <div className="member-stats">
+              <div className="rail-label">{t("groups.reliability")}</div>
+              {overview.agentStats.slice(0, 6).map((s) => (
+                <div key={s.agentId} className="member-stat-row">
+                  <span className="mono">{s.agentId}</span>
+                  <span className="dim">
+                    {t("groups.stat", { runs: s.runs, done: s.done, blocked: s.blocked, conf: s.avgConfidence.toFixed(2) })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <Card size="small" className="hud" title={t("groups.membersTitle")}>
+            <Spin spinning={loading}>
+              <Table
+                size="small"
+                rowKey="identifier"
+                pagination={false}
+                tableLayout="fixed"
+                dataSource={[...members].sort((a, b) => {
+                  const pa = meta.primary === a.identifier ? 0 : 1;
+                  const pb = meta.primary === b.identifier ? 0 : 1;
+                  return pa - pb || a.identifier.localeCompare(b.identifier);
+                })}
+                columns={[
+                  {
+                    title: t("agents.colUnit"),
+                    key: "name",
+                    width: 220,
+                    render: (_, a: AgentDefinition) => (
+                      <span className="member-cell">
+                        <span className="member-line1">
+                          <b>{a.name}</b>
+                          {meta.primary === a.identifier && <Tag color="blue">{t("agents.primaryTag")}</Tag>}
+                        </span>
+                        <code className="member-id">{a.identifier}</code>
+                      </span>
+                    ),
+                  },
+                  { title: t("agents.colDuty"), dataIndex: "description", key: "desc", ellipsis: true },
+                  {
+                    title: t("agents.colTools"),
+                    dataIndex: "tools",
+                    key: "tools",
+                    width: 300,
+                    render: (tools: string[]) => (tools ?? []).map((tl) => <Tag key={tl}>{tl}</Tag>),
+                  },
+                  {
+                    title: t("agents.colState"),
+                    key: "state",
+                    width: 72,
+                    render: (_, a: AgentDefinition) =>
+                      busyAgents.has(a.identifier) ? <Tag color="processing">{t("agents.busy")}</Tag> : <Tag>{t("agents.idle")}</Tag>,
+                  },
+                  {
+                    title: t("agents.colOps"),
+                    key: "ops",
+                    width: 220,
+                    render: (_, a: AgentDefinition) => (
+                      <Space size={4}>
+                        <Button size="small" icon={<FormOutlined />} onClick={() => void openEdit(a)}>
+                          {t("agents.edit")}
+                        </Button>
+                        <Button size="small" icon={<EditOutlined />} onClick={() => void openPersona(a)}>
+                          {t("agents.soulBtn")}
+                        </Button>
+                        {!isBuiltin && meta.primary !== a.identifier && (
+                          <>
+                            <Button size="small" onClick={() => void doSetPrimary(a.identifier)}>
+                              {t("groups.setPrimary")}
+                            </Button>
+                            <Popconfirm title={t("groups.agentDeleteConfirm")} onConfirm={() => void doRemoveAgent(a.identifier)}>
+                              <Button size="small" danger icon={<DeleteOutlined />} />
+                            </Popconfirm>
+                          </>
+                        )}
+                      </Space>
+                    ),
+                  },
+                ]}
+              />
+              {members.length === 0 && <Empty description={t("groups.emptyMembers")} className="pane-empty" />}
+            </Spin>
+          </Card>
+        </div>
+
+        <Modal open={groupModal} title={t("groups.modalNew")} onCancel={() => setGroupModal(false)} onOk={() => void submitGroup()} okText={t("groups.create")}>
+          <Form form={groupForm} layout="vertical">
+            <Form.Item name="name" label={t("groups.f.name")} rules={[{ required: true }]}>
+              <Input placeholder={t("groups.f.namePh")} />
+            </Form.Item>
+            <Form.Item name="id" label={t("groups.f.id")} rules={[{ pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
+              <Input placeholder={t("groups.idAuto")} />
+            </Form.Item>
+            <Form.Item name="description" label={t("groups.f.desc")}>
+              <Input.TextArea rows={2} placeholder={t("groups.f.descPh")} />
+            </Form.Item>
+            <div className="persona-hint">{t("groups.newHint")}</div>
+          </Form>
+        </Modal>
+
+        <Modal open={agentModal} title={t("groups.modalNewAgent", { name: meta.name })} onCancel={() => setAgentModal(false)} onOk={() => void submitAgent()} okText={t("groups.create")}>
+          <Form form={agentForm} layout="vertical">
+            <Form.Item name="name" label={t("groups.f.agentName")} rules={[{ required: true }]}>
+              <Input placeholder={t("groups.f.agentNamePh")} />
+            </Form.Item>
+            <Form.Item name="identifier" label={t("groups.f.identifier")} rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
+              <Input placeholder={t("groups.f.identifierPh")} />
+            </Form.Item>
+            <Form.Item name="description" label={t("groups.duty")} rules={[{ required: true }]}>
+              <Input.TextArea rows={2} placeholder={t("groups.f.dutyPh")} />
+            </Form.Item>
+            <Form.Item name="prompt" label={t("agents.f.prompt")} extra={t("agents.f.promptExtra")}>
+              <Input.TextArea rows={4} placeholder={t("agents.f.promptPh")} />
+            </Form.Item>
+            <Form.Item name="tier" label={t("groups.f.tier")} initialValue="unit">
+              <Select options={[{ value: "unit", label: t("groups.tier.unit") }, { value: "orchestrator", label: t("groups.tier.orch") }]} />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        {/* 成员编辑弹窗 */}
+        <Modal
+          open={editing !== null}
+          title={editing ? t("agents.editTitle", { name: editing.name }) : ""}
+          onCancel={() => setEditing(null)}
+          onOk={() => void submitEdit()}
+          okText={t("common.save")}
+        >
+          <Form form={editForm} layout="vertical">
+            <Form.Item name="name" label={t("agents.f.name")} rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="description" label={t("agents.f.duty")} rules={[{ required: true }]}>
+              <Input.TextArea rows={2} />
+            </Form.Item>
+            <Spin spinning={promptLoading}>
+              <Form.Item
+                name="prompt"
+                label={t("agents.f.promptTitle")}
+                extra={t("agents.f.promptEditExtra")}
+                rules={[{ required: true, whitespace: true, message: t("agents.f.promptRequired") }]}
+              >
+                <Input.TextArea rows={12} className="prompt-editor" spellCheck={false} />
+              </Form.Item>
+            </Spin>
+            <Form.Item name="modelHint" label={t("agents.f.model")} extra={t("agents.f.modelExtra")}>
+              <Select
+                allowClear
+                showSearch
+                style={{ width: "100%" }}
+                options={buildModelOptions(editFormProfiles)}
+                placeholder={t("agents.f.modelPh")}
+              />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+
+        {/* 成员 SOUL.md 编辑弹窗 */}
+        <Modal
+          open={personaOf !== null}
+          title={personaOf ? t("agents.soulTitle", { name: personaOf.name }) : ""}
+          onCancel={() => setPersonaOf(null)}
+          width={640}
+          footer={
+            <Space>
+              <Popconfirm
+                title={t("agents.resetConfirm")}
+                onConfirm={() => void resetPersona()}
+                disabled={personaInfo ? !personaInfo.custom : false}
+              >
+                <Button disabled={personaInfo ? !personaInfo.custom : false}>{t("agents.soulReset")}</Button>
+              </Popconfirm>
+              <Button onClick={() => setPersonaOf(null)}>{t("common.close")}</Button>
+              <Button type="primary" loading={personaSaving} onClick={() => void savePersona()}>
+                {t("agents.saveHot")}
+              </Button>
+            </Space>
+          }
+        >
+          {personaInfo && (
+            <div style={{ marginBottom: 8 }}>
+              {personaInfo.custom ? <Tag color="gold">{t("agents.soulCustom")}</Tag> : <Tag>{t("agents.soulDefault")}</Tag>}
+            </div>
+          )}
+          <Input.TextArea
+            rows={14}
+            className="prompt-editor"
+            spellCheck={false}
+            value={personaDraft}
+            onChange={(e) => setPersonaDraft(e.target.value)}
+          />
+        </Modal>
+
+        {/* 组设置弹窗 */}
+        <Modal
+          open={settingsOpen}
+          title={t("groups.modalSettings", { name: meta.name })}
+          onCancel={() => setSettingsOpen(false)}
+          onOk={() => void saveSettings()}
+          okText={t("common.save")}
+          width={520}
+        >
+          <Form layout="vertical">
+            <Form.Item label={t("groups.f.workspace")} help={t("groups.f.workspaceHelp")}>
+              <Input value={wsDraft} onChange={(e) => setWsDraft(e.target.value)} placeholder={t("groups.f.wsPh")} />
+            </Form.Item>
+            <Form.Item label={t("groups.f.model")} help={t("groups.f.modelHelp")}>
+              <Select value={modelDraft || undefined} onChange={setModelDraft} options={buildModelOptions(profiles)} allowClear />
+            </Form.Item>
+            <Form.Item label={t("groups.capsTitle")} help={t("groups.capsHint")} style={{ marginBottom: 8 }}>
+              <div className="cap-grid" style={{ gap: "8px 14px" }}>
+                {capField("speech", t("models.capSpeech"))}
+                {capField("transcribe", t("models.capStt"))}
+                {capField("visionRelay", t("models.capVisionRelay"))}
+                {capField("embedding", t("models.capEmbed"))}
+              </div>
+            </Form.Item>
+          </Form>
+        </Modal>
+      </div>
+    );
+  }
+
+  // ================= 卡片总览视图 =================
   return (
     <div className="pane-wrap">
       <PageHeader
@@ -165,135 +552,37 @@ export function GroupsView(): React.ReactElement {
         title={t("nav.groups")}
         desc={t("groups.desc")}
         actions={
-          <>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
-              {t("groups.new")}
-            </Button>
-            <Button
-              danger
-              icon={<UsergroupDeleteOutlined />}
-              disabled={!meta || meta.builtin || meta.id === activeGroup}
-              onClick={() => meta && void doDeleteGroup(meta.id)}
-            >
-              {t("groups.del")}
-            </Button>
-          </>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
+            {t("groups.new")}
+          </Button>
         }
       />
 
-      <div className="pane-body groups-layout">
-        {/* 组列表 */}
-        <div className="list-rail">
+      <div className="pane-body">
+        <div className="group-grid">
           {groups.map((g) => (
-            <div
+            <Card
               key={g.id}
-              className={`list-row ${(selected || activeGroup) === g.id ? "active" : ""}`}
-              onClick={() => setSelected(g.id)}
+              size="small"
+              className="group-card hud"
+              onClick={() => setEntered(g.id)}
+              title={
+                <div className="group-card-head">
+                  <span className="group-card-name">{g.name}</span>
+                  <span className="group-card-id">{groupIdEn(g.id)}</span>
+                </div>
+              }
             >
-              <div className="list-row-head">
-                <b>{g.name}</b>
+              <div className="group-card-meta">
                 {g.builtin ? <Tag>{t("groups.builtin")}</Tag> : <Tag color="purple">{t("groups.custom")}</Tag>}
+                {g.id === activeGroup && <Tag color="cyan">{t("groups.activeTag")}</Tag>}
+                {g.primary && <Tag color="blue">{t("groups.primaryShort")}: {g.primary}</Tag>}
               </div>
-              <div className="list-row-sub mono">{groupIdEn(g.id)}</div>
-              {g.description && <div className="list-row-sub">{g.description}</div>}
-            </div>
+              {g.description && <div className="group-card-desc">{g.description}</div>}
+            </Card>
           ))}
         </div>
-
-        {/* 组详情与成员 */}
-        <div className="pane-detail">
-          {!meta ? (
-            <Empty description={t("groups.emptyPick")} className="graph-empty" />
-          ) : (
-            <Card
-              size="small"
-              className="hud"
-              title={
-                <Space>
-                  <span>{meta.name}</span>
-                  <span className="mono dim">{groupIdEn(meta.id)}</span>
-                  {meta.builtin ? <Tag>{t("groups.builtinProtected")}</Tag> : <Tag color="purple">{t("groups.customGroup")}</Tag>}
-                </Space>
-              }
-              extra={
-                <Space>
-                  <Button size="small" icon={<SettingOutlined />} onClick={() => { openSettings(); }}>
-                    {t("groups.settings")}
-                  </Button>
-                  {!isBuiltin && (
-                    <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setAgentModal(true)}>
-                      {t("groups.newAgent")}
-                    </Button>
-                  )}
-                </Space>
-              }
-            >
-              {overview && (
-                <div className="overview-chips">
-                  <div className="chip"><span className="chip-num">{overview.agents}</span><span className="chip-label">{t("groups.chipAgents")}</span></div>
-                  <div className="chip"><span className="chip-num">{overview.playbooks}</span><span className="chip-label">{t("groups.chipPlaybooks")}</span></div>
-                  <div className="chip"><span className="chip-num">{overview.sessions}</span><span className="chip-label">{t("groups.chipSessions")}</span></div>
-                  <div className="chip"><span className="chip-num">{overview.memory.group}</span><span className="chip-label">{t("groups.chipGroupMem")}</span></div>
-                  <div className="chip"><span className="chip-num">{overview.memory.shared}</span><span className="chip-label">{t("groups.chipShared")}</span></div>
-                </div>
-              )}
-              {overview && overview.agentStats.length > 0 && (
-                <div className="member-stats">
-                  <div className="rail-label">{t("groups.reliability")}</div>
-                  {overview.agentStats.slice(0, 6).map((s) => (
-                    <div key={s.agentId} className="member-stat-row">
-                      <span className="mono">{s.agentId}</span>
-                      <span className="dim">
-                        {t("groups.stat", { runs: s.runs, done: s.done, blocked: s.blocked, conf: s.avgConfidence.toFixed(2) })}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <Spin spinning={loading}>
-                <table className="plain-table">
-                  <thead>
-                    <tr><th>{t("groups.unit")}</th><th>{t("groups.duty")}</th><th>{t("groups.role")}</th><th>{t("groups.actions")}</th></tr>
-                  </thead>
-                  <tbody>
-                    {[...members]
-                      .sort((a, b) => {
-                        const pa = meta.primary === a.identifier ? 0 : 1;
-                        const pb = meta.primary === b.identifier ? 0 : 1;
-                        return pa - pb || a.identifier.localeCompare(b.identifier);
-                      })
-                      .map((a) => (
-                      <tr key={a.identifier}>
-                        <td>
-                          <b>{a.name}</b> <span className="mono dim">{a.identifier}</span>
-                        </td>
-                        <td className="dim">{a.description}</td>
-                        <td>
-                          {meta.primary === a.identifier ? <Tag color="cyan">{t("groups.primary")}</Tag> : <Tag>{t("groups.unit")}</Tag>}
-                        </td>
-                        <td>
-                          {!isBuiltin && meta.primary !== a.identifier && (
-                            <Space>
-                              <Button size="small" onClick={() => void doSetPrimary(a.identifier)}>
-                                {t("groups.setPrimary")}
-                              </Button>
-                              <Popconfirm title={t("groups.agentDeleteConfirm")} onConfirm={() => void doRemoveAgent(a.identifier)}>
-                                <Button size="small" danger>{t("common.delete")}</Button>
-                              </Popconfirm>
-                            </Space>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {members.length === 0 && (
-                  <Empty description={t("groups.emptyMembers")} className="pane-empty" />
-                )}
-              </Spin>
-            </Card>
-          )}
-        </div>
+        {groups.length === 0 && <Empty description={t("groups.none")} className="pane-empty" />}
       </div>
 
       <Modal open={groupModal} title={t("groups.modalNew")} onCancel={() => setGroupModal(false)} onOk={() => void submitGroup()} okText={t("groups.create")}>
@@ -307,61 +596,7 @@ export function GroupsView(): React.ReactElement {
           <Form.Item name="description" label={t("groups.f.desc")}>
             <Input.TextArea rows={2} placeholder={t("groups.f.descPh")} />
           </Form.Item>
-          <div className="persona-hint">
-            {t("groups.newHint")}
-          </div>
-        </Form>
-      </Modal>
-
-      <Modal open={agentModal} title={t("groups.modalNewAgent", { name: meta?.name ?? "" })} onCancel={() => setAgentModal(false)} onOk={() => void submitAgent()} okText={t("groups.create")}>
-        <Form form={agentForm} layout="vertical">
-          <Form.Item name="name" label={t("groups.f.agentName")} rules={[{ required: true }]}>
-            <Input placeholder={t("groups.f.agentNamePh")} />
-          </Form.Item>
-          <Form.Item name="identifier" label={t("groups.f.identifier")} rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
-            <Input placeholder={t("groups.f.identifierPh")} />
-          </Form.Item>
-          <Form.Item name="description" label={t("groups.duty")} rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder={t("groups.f.dutyPh")} />
-          </Form.Item>
-          <Form.Item name="tier" label={t("groups.f.tier")} initialValue="unit">
-            <Select options={[{ value: "unit", label: t("groups.tier.unit") }, { value: "orchestrator", label: t("groups.tier.orch") }]} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      {/* 组设置弹窗 */}
-      <Modal
-        open={settingsOpen}
-        title={t("groups.modalSettings", { name: meta?.name ?? "" })}
-        onCancel={() => setSettingsOpen(false)}
-        onOk={() => void saveSettings()}
-        okText={t("common.save")}
-        width={520}
-      >
-        <Form layout="vertical">
-          <Form.Item label={t("groups.f.workspace")} help={t("groups.f.workspaceHelp")}>
-            <Input
-              value={wsDraft}
-              onChange={(e) => setWsDraft(e.target.value)}
-              placeholder={t("groups.f.wsPh")}
-            />
-          </Form.Item>
-          <Form.Item label={t("groups.f.model")} help={t("groups.f.modelHelp")}>
-            <Select
-              value={modelDraft}
-              onChange={setModelDraft}
-              options={buildModelOptions(profiles)}
-            />
-          </Form.Item>
-          <Form.Item label={t("groups.capsTitle")} help={t("groups.capsHint")} style={{ marginBottom: 8 }}>
-            <div className="cap-grid" style={{ gap: "8px 14px" }}>
-              {capField("speech", t("models.capSpeech"))}
-              {capField("transcribe", t("models.capStt"))}
-              {capField("visionRelay", t("models.capVisionRelay"))}
-              {capField("embedding", t("models.capEmbed"))}
-            </div>
-          </Form.Item>
+          <div className="persona-hint">{t("groups.newHint")}</div>
         </Form>
       </Modal>
     </div>

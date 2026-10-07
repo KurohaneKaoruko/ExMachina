@@ -31,3 +31,6 @@ agents/active_group
 agents/dist/
 
 desktop/src-tauri/gen/
+
+# 部署密钥（不入库）
+.env

@@ -272,8 +272,9 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                         mentioned = mentioned || hit;
                     }
                 }
+                let chat_key = chat_id.to_string();
                 match admit(&core, &ch, &InboundCtx {
-                    text: &text, external_id: &from_id, display_name: &display, is_group, mentioned,
+                    text: &text, external_id: &from_id, display_name: &display, is_group, mentioned, chat_key: &chat_key,
                 }).await {
                     GateDecision::Allow => {
                         handle_message(&core, &ch, chat_id, &from_id, inbound_media.unwrap_or_default(), &text).await

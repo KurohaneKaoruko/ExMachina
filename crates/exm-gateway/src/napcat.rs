@@ -229,7 +229,12 @@ async fn napcat_gate(
     let raw_text = raw.get("message").map(|m| m.to_string()).unwrap_or_default();
     let mentioned = raw_text.contains("CQ:at");
     let external_id = user_id.map(|u| u.to_string()).unwrap_or_default();
-    let ctx = InboundCtx { text, external_id: &external_id, display_name: &external_id, is_group, mentioned };
+    // 会话键（与 ChannelRun::begin 同口径）：群号优先，私聊为用户 id
+    let peer = group_id
+        .map(|g| g.to_string())
+        .or_else(|| user_id.map(|u| u.to_string()))
+        .unwrap_or_default();
+    let ctx = InboundCtx { text, external_id: &external_id, display_name: &external_id, is_group, mentioned, chat_key: &peer };
     match admit(core, ch, &ctx).await {
         GateDecision::Allow => Some(external_id),
         GateDecision::Ignore => None,

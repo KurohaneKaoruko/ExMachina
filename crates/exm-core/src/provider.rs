@@ -14,6 +14,139 @@ pub struct ToolSpec {
     pub parameters: serde_json::Value,
 }
 
+/// 内联 `<think>` 分流状态机（provider 不经手，正文增量的前置过滤）。
+/// 某些端点（MiniMax-M1 / DeepSeek R1 文本形态）把思考链以 `<think>…</think>`
+/// 内联在正文里——本机把它切到思维链轨道，正文只留答案。
+/// state：0 = 未判定（前缀不足以判定是否思考开头）1 = 思考中 2 = 正文。
+pub mod inline_think {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+
+    /// 输入一段正文增量，返回 (是否思考, 文本) 段列表（可能同时含两轨）。
+    pub fn route(state: &mut u8, buf: &mut String, delta: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        match *state {
+            2 => {
+                if !delta.is_empty() {
+                    out.push((false, delta.to_string()));
+                }
+            }
+            0 => {
+                buf.push_str(delta);
+                if buf.starts_with(OPEN) {
+                    *state = 1;
+                    let rest = buf[OPEN.len()..].to_string();
+                    buf.clear();
+                    out.extend(route(state, buf, &rest));
+                } else if buf.len() >= OPEN.len() {
+                    // 前缀不是 "<think>"：整段正文直通（后续增量不再判）
+                    *state = 2;
+                    let all = std::mem::take(buf);
+                    out.push((false, all));
+                }
+                // else：不足判定长度，继续攒（流结束时的收尾统一冲刷）
+            }
+            _ => {
+                // 1 = 思考中：找闭合标签；找不到则放出安全前缀（保留可能的半截 "</…"）。
+                // 注意 drain 的截断点必须落在字符边界上——按字节回退到最近的合法边界，
+                // 否则中文等多字节内容会触发 is_char_boundary 断言（线上已踩）。
+                buf.push_str(delta);
+                if let Some(pos) = buf.find(CLOSE) {
+                    let th = buf[..pos].to_string();
+                    let rest = buf[pos + CLOSE.len()..].to_string();
+                    buf.clear();
+                    *state = 2;
+                    if !th.is_empty() {
+                        out.push((true, th));
+                    }
+                    out.extend(route(state, buf, &rest));
+                } else {
+                    let keep = CLOSE.len().saturating_sub(1).min(buf.len());
+                    let mut emit = buf.len() - keep;
+                    while emit > 0 && !buf.is_char_boundary(emit) {
+                        emit -= 1;
+                    }
+                    if emit > 0 {
+                        let th: String = buf.drain(..emit).collect();
+                        out.push((true, th));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod inline_think_tests {
+    use super::inline_think;
+
+    /// 思考中含中文：小步增量喂入，截断点必须落在字符边界（回归：is_char_boundary 断言恐慌）
+    #[test]
+    fn 思考中多字节字符不恐慌且内容完整() {
+        let mut state: u8 = 1; // 已进入思考段
+        let mut buf = String::new();
+        let mut thinking = String::new();
+        let mut text = String::new();
+        let payload = "思考中包含中文与 emoji 🎉 以及Mixed内容，用来压边界。";
+        // 逐字符小步喂入（模拟 SSE 小增量），反复走 drain 截断路径
+        for ch in payload.chars() {
+            for (is_think, part) in inline_think::route(&mut state, &mut buf, &ch.to_string()) {
+                if is_think {
+                    thinking.push_str(&part);
+                } else {
+                    text.push_str(&part);
+                }
+            }
+        }
+        // 收尾冲刷
+        if !buf.is_empty() {
+            let t = std::mem::take(&mut buf);
+            if state == 1 {
+                thinking.push_str(&t);
+            } else {
+                text.push_str(&t);
+            }
+        }
+        assert_eq!(thinking, payload, "思考内容应逐段完整重组");
+        assert_eq!(text, "", "未出现闭合标签前不应有正文");
+    }
+
+    /// 完整闭环：<think>中文</think>正文 → 思考轨 + 正文轨分离
+    #[test]
+    fn 完整思考段分离() {
+        let mut state: u8 = 0;
+        let mut buf = String::new();
+        let mut thinking = String::new();
+        let mut text = String::new();
+        for (is_think, part) in inline_think::route(&mut state, &mut buf, "<think>用户在问\n我是谁？</think>我是 Machina。") {
+            if is_think {
+                thinking.push_str(&part);
+            } else {
+                text.push_str(&part);
+            }
+        }
+        assert_eq!(thinking, "用户在问\n我是谁？");
+        assert_eq!(text, "我是 Machina。");
+        assert_eq!(state, 2);
+    }
+
+    /// 非思考正文直通（前缀判定）
+    #[test]
+    fn 正文前缀判定直通() {
+        let mut state: u8 = 0;
+        let mut buf = String::new();
+        let mut text = String::new();
+        for piece in ["<", "p", ">", "正文"] {
+            for (_, part) in inline_think::route(&mut state, &mut buf, piece) {
+                text.push_str(&part);
+            }
+        }
+        assert_eq!(text, "<p>正文");
+        assert_eq!(state, 2);
+    }
+}
+
 /// 模型发起的一次工具调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -976,6 +1109,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let mut acc = String::new();
         let mut reasoning_acc = String::new();
         let mut buf = String::new();
+        // 内联思维链分流（MiniMax-M1 等把思考放 <think>…</think> 正文内）：0=未判定 1=思考中 2=正文
+        let mut think_state: u8 = 0;
+        let mut think_buf = String::new();
         // 用量统计（三协议：openai 末块 usage / anthropic message_start+message_delta / gemini usageMetadata）
         let mut usage_prompt: u64 = 0;
         let mut usage_completion: u64 = 0;
@@ -1062,8 +1198,16 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         let _ = tx.send(StreamDelta::Thinking(t));
                     }
                     if let Some(d) = text_delta {
-                        acc.push_str(&d);
-                        let _ = tx.send(StreamDelta::Text(d));
+                        // 正文增量先过内联 <think> 分流，再分别入轨
+                        for (is_think, part) in inline_think::route(&mut think_state, &mut think_buf, &d) {
+                            if is_think {
+                                reasoning_acc.push_str(&part);
+                                let _ = tx.send(StreamDelta::Thinking(part));
+                            } else {
+                                acc.push_str(&part);
+                                let _ = tx.send(StreamDelta::Text(part));
+                            }
+                        }
                     }
                     // 用量：openai（末块 usage）/ anthropic（message_start 输入）/ gemini
                     if let Some(u) = v.get("usage") {
@@ -1096,6 +1240,17 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         }
                     }
                 }
+            }
+        }
+        // 收尾：未判定的前缀缓冲（不足 "<think>" 长度即结束）或未闭合的思考尾段冲刷
+        if !think_buf.is_empty() {
+            let text = std::mem::take(&mut think_buf);
+            if think_state == 1 {
+                reasoning_acc.push_str(&text);
+                let _ = tx.send(StreamDelta::Thinking(text));
+            } else {
+                acc.push_str(&text);
+                let _ = tx.send(StreamDelta::Text(text));
             }
         }
         let mut tool_calls: Vec<ToolCall> = call_frags

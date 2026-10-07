@@ -9,7 +9,7 @@ use exm_core::Core;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
-/// 测试串行锁：Core 型测试共享仓库工作区（agents/active_group 等运行时文件），并行互踩
+/// 测试串行锁：Core 型测试共享仓库工作区（entities/active_group 等运行时文件），并行互踩
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -19,9 +19,14 @@ fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
 fn test_config() -> ExmConfig {
     let root = std::env::current_dir().unwrap().join("..").join("..");
     let mut cfg = ExmConfig::load(&root);
-    // 编成隔离副本：复制 agents/（跳过运行时残留 groups/active_*），测试互不污染仓库工作区
-    let agents_copy = std::env::temp_dir().join(format!("exm-agents-{}", uuid::Uuid::new_v4()));
-    copy_agents_tree(&root.join("agents"), &agents_copy);
+    // 编成隔离副本：复制 entities/（跳过运行时残留 groups/active_*），测试互不污染仓库工作区
+    // 编成根临时目录:entities/ + skills/ 兄弟布局(skills_dir = 编成根父目录下的 skills/)
+    let base = std::env::temp_dir().join(format!("exm-fleet-{}", uuid::Uuid::new_v4()));
+    let agents_copy = base.join("entities");
+    copy_agents_tree(&root.join("entities"), &agents_copy);
+    if root.join("skills").is_dir() {
+        copy_agents_tree(&root.join("skills"), &base.join("skills"));
+    }
     cfg.agents_dir = agents_copy;
     cfg.data_dir = std::env::temp_dir().join(format!("exm-test-{}", uuid::Uuid::new_v4()));
     cfg.use_mock = true;
@@ -113,7 +118,7 @@ fn 自由建组_自定义集群热切换() {
 
     // 建组演练不依赖默认组编成：残留先清理，保证可重跑
     let root = std::env::current_dir().unwrap().join("..").join("..");
-    let _ = std::fs::remove_dir_all(root.join("agents").join("groups").join("smoke-style"));
+    let _ = std::fs::remove_dir_all(root.join("entities").join("groups").join("smoke-style"));
 
     let g = core
         .create_group(Some("smoke-style".into()), "风格实验组", "验证自由建组与热切换")
@@ -158,7 +163,7 @@ fn 自由建组_自定义集群热切换() {
     );
 
     // 切回默认组后身份与记忆范围随之切换
-    core.switch_group("default").expect("切回失败");
+    core.switch_group("exmachina").expect("切回失败");
     assert_ne!(core.orchestrator_id(), "chief-writer");
     let after_back = core.memory_recall("风格组私有结论", Some(5)).unwrap();
     assert!(
@@ -423,11 +428,11 @@ async fn 执行审批_等待批准_结果回灌与拒绝短路() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_agent_target_switch_and_l0_direct() {
     let cfg = test_config();
-    // 残留清理（只清演练个体与目标状态；不得动 agents/singles 全目录——默认智能体种子在此）
-    let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("agents");
+    // 残留清理（只清演练个体与目标状态；不得动 entities/agents 全目录——默认智能体种子在此）
+    let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("entities");
     let _ = std::fs::remove_file(agents_root.join("active_single"));
-    let _ = std::fs::remove_file(agents_root.join("singles").join("lone-writer.json")); // 旧布局残留
-    let _ = std::fs::remove_dir_all(agents_root.join("singles").join("lone-writer"));
+    let _ = std::fs::remove_file(agents_root.join("agents").join("lone-writer.json")); // 旧布局残留
+    let _ = std::fs::remove_dir_all(agents_root.join("agents").join("lone-writer"));
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     assert!(!core.registry().single_mode(), "默认为组模式");
     let group_agents = core.registry().list().len();
@@ -447,7 +452,7 @@ async fn single_agent_target_switch_and_l0_direct() {
     assert!(core.registry().units().is_empty(), "单体模式无派发个体");
     let active_list = core.registry().list_active();
     assert!(active_list.iter().any(|a| a.identifier == "lone-writer"), "当前范围应含目标单体");
-    assert!(active_list.iter().all(|a| a.identifier != "exmachina-orchestrator"), "单体模式不应混入组编成");
+    assert!(active_list.iter().all(|a| a.identifier != "orchestrator"), "单体模式不应混入组编成");
     let scope = core.registry().active_scope();
     assert_eq!(scope, "single:lone-writer");
 
@@ -477,7 +482,7 @@ async fn single_agent_target_switch_and_l0_direct() {
     let prompt = core.registry().load_single_prompt(&machina.prompt_file).unwrap();
     assert!(prompt.contains("本机"), "Machina 提示词应含「本机」自称");
     // 指挥体不叫 Machina（组指挥体 ≠ 默认智能体）
-    let orch = core.agent("exmachina-orchestrator").expect("指挥体应存在");
+    let orch = core.agent("orchestrator").expect("指挥体应存在");
     assert_ne!(orch.name, "Machina");
 }
 
@@ -581,7 +586,7 @@ fn temp_registry(tag: &str) -> exm_core::registry::LocalRegistry {
     let dir = std::env::temp_dir().join(format!("exm-reg-test-{}-{tag}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let meta = GroupMeta {
-        id: "default".into(),
+        id: "exmachina".into(),
         name: "测试组".into(),
         description: String::new(),
         primary: None,

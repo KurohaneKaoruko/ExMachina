@@ -20,6 +20,8 @@ export interface ChatMessage {
   createdAt: string;
   /** 本轮收束时附带执行的工具轨迹（本地组装，刷新后由审计页回看） */
   toolCalls?: ToolCallItem[];
+  /** 本轮思维链（本地组装：随收束留存，刷新后不在） */
+  thinking?: string;
 }
 
 /** 工具执行轨迹（tool.call / tool.result 事件组装）：编程软件式过程透明 */
@@ -78,6 +80,8 @@ export interface Session {
   ledger: SessionLedger;
   createdAt: string;
   updatedAt: string;
+  lastMessagePreview?: string;
+  lastActiveAt?: string;
 }
 
 export type TaskStatus =

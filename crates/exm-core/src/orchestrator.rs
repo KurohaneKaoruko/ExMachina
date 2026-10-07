@@ -14,7 +14,32 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc::unbounded_channel, Mutex};
 
-pub const ORCHESTRATOR_ID: &str = "exmachina-orchestrator";
+pub const ORCHESTRATOR_ID: &str = "orchestrator";
+
+// ---------------------------------------------------------------- 会话轮次模式（思考模式：直答 / 集群）
+
+/// 本轮模式暂存（会话 → 模式）：对话请求携带、`plan()` 取走即消费。
+/// direct = 强制 L0 直答（一轮工具循环内闭环）；full = 强制拆解派发（禁止 L0）。
+static SESSION_MODES: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+fn session_modes() -> &'static parking_lot::Mutex<std::collections::HashMap<String, String>> {
+    SESSION_MODES.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 登记某会话下一轮的执行模式（"direct" | "full"；其他值忽略）
+pub fn set_session_mode(session_id: &str, mode: &str) {
+    match mode {
+        "direct" | "full" => {
+            session_modes().lock().insert(session_id.to_string(), mode.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn take_session_mode(session_id: &str) -> Option<String> {
+    session_modes().lock().remove(session_id)
+}
 
 /// 自定义组的规划契约：主智能体提示词 + 该契约 = 指挥体能力
 pub const PLANNING_CONTRACT: &str = "
@@ -44,28 +69,28 @@ pub const PLANNING_CONTRACT: &str = "
 - agentIdentifier 只能取自下方可调度子个体清单。
 - 创建/修改组内个体必须由用户明确要求；用户未要求时禁止规划任何个体管理类节点。";
 
-/// 单体模式契约：单体智能体直接完成任务，不派发
+/// 单体模式契约：仅约定输出格式，如何回应（直答 / 分步执行）由模型自主判断
 pub const SINGLE_CONTRACT: &str = r#"""
 
 ---
 
-## 单体契约（系统追加，必须遵守）
+## 输出契约（OrchestratorPlan，系统强制校验）
 
-你是单体智能体：独立直接服务于用户，本范围内没有任何可调度的子个体。
-禁止规划任何派发节点。
-
-## 输出契约（OrchestratorPlan，运行时强制校验）
-
-只输出一个 JSON 代码块（```json ... ```）：
+只输出一个 JSON 代码块（```json ... ```），结构：
 {
-  "routeLevel": "L0",
+  "routeLevel": "L0|L1|L2|L3",
   "goal": "<用户目标>",
   "boundary": { "inScope": ["…"], "forbidden": ["…"] },
-  "acceptance": ["…"],
-  "nodes": [],
+  "acceptance": ["可验证的验收口径"],
+  "nodes": [{
+    "id": "T1", "title": "…", "agentIdentifier": "<执行个体 identifier>",
+    "objective": "<该节点要完成什么>", "acceptance": ["…"],
+    "dependsOn": [], "priority": "P0|P1|P2|P3"
+  }],
   "finalAnswer": [{ "tag": "报告|肯定|…", "text": "…" }]
 }
-- routeLevel 必须为 L0；nodes 必须为空；finalAnswer 必填（完整回答放这里）。"#;
+- 如何回应由你自主判断：能直接完成的写入 finalAnswer（此时 nodes 为空）；确需分步执行时再规划 nodes。
+- finalAnswer 必填。"#;
 
 pub struct Orchestrator {
     pub registry: Arc<LocalRegistry>,
@@ -97,11 +122,18 @@ pub struct Orchestrator {
     pub max_concurrency: usize,
     /// 子个体单次派发的最大工具步数（配置分档：L0 直答 3 / 一般 8 / 编码类 20）
     pub max_unit_steps: usize,
+    /// 智能连结等路径读取的全量配置快照（apply/构建时写入）
+    pub config_snapshot: Arc<parking_lot::RwLock<crate::config::ExmConfig>>,
     /// 新教训达阈值时自动提炼经验改进要点（docs/10 §5）
     pub auto_adapt: bool,
 }
 
 impl Orchestrator {
+    /// 配置快照（智能连结等需要读全量配置的路径用）
+    pub fn config_snapshot(&self) -> crate::config::ExmConfig {
+        self.config_snapshot.read().clone()
+    }
+
     /// 能力槽位目标（组覆盖优先）：激活组的组级覆盖 → 全局槽位（模型设置页）。
     /// 返回 None = 该槽位全局与组都未配置（调用方回落出厂默认）。
     fn capability_target(&self, slot: &str) -> Option<String> {
@@ -126,7 +158,7 @@ impl Orchestrator {
         target.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
-    /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 exmachina-orchestrator）。
+    /// 指挥体身份 = 激活组主智能体 identifier（组感知；内置组即 orchestrator）。
     /// 语音转写：组覆盖 → 全局槽位指定的档案/模型；未配置回落全局生效档案的 whisper-1
     pub async fn transcribe_audio(&self, audio: &[u8], filename: &str) -> anyhow::Result<String> {
         match self.capability_target("transcribe").and_then(|t| self.resolve_capability(&t)) {
@@ -507,6 +539,40 @@ impl Orchestrator {
         result
     }
 
+    /// 停止轮次的统一收束：停止陈述作为最终消息（含过程数据），审计事件落账
+    fn finish_stopped_round(&self, session_id: &str, tools_executed: usize) -> anyhow::Result<()> {
+        let text = format!("【警告】本轮已被用户停止（已执行 {} 次工具调用）。", tools_executed);
+        let statements = vec![Statement::warn(text)];
+        let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+        self.store.add_message_full(
+            session_id,
+            MessageRole::System,
+            None,
+            statements,
+            thinking,
+            tool_calls,
+        )?;
+        let _ = self.store.audit_tool(
+            "system",
+            "session_stop",
+            &serde_json::json!({ "session": session_id }),
+            &format!("用户停止本轮（已执行 {} 次工具调用）", tools_executed),
+            0,
+        );
+        self.emit(
+            session_id,
+            "run.finished",
+            serde_json::json!({
+                "routeLevel": "STOPPED",
+                "agentId": self.orch_id(),
+                "statements": [ { "tag": "警告", "text": "本轮已被用户停止。" } ],
+                "stopped": true,
+                "artifacts": self.store.outbox_drain(session_id).unwrap_or_default()
+            }),
+        );
+        Ok(())
+    }
+
     /// 轮次快照记录：turn = 既有快照数 + 1；游标 = 当前消息条数；
     /// 检查点链 = 本轮写类工具登记的检查点引用（读出即清）；用量 = 本轮增量（台账差分）
     fn record_turn_snapshot(&self, session_id: &str, status: &str) {
@@ -555,15 +621,23 @@ impl Orchestrator {
 
         // L0 直达：不派发
         if matches!(plan.route_level, RouteLevel::L0) || plan.nodes.is_empty() {
+            // 用户请求停止：以停止陈述收束本轮，不再产出内容
+            if crate::round_trace::is_cancelled(session_id) {
+                let n = crate::round_trace::tool_count(session_id);
+                return self.finish_stopped_round(session_id, n);
+            }
             let statements = plan
                 .final_answer
                 .clone()
                 .unwrap_or_else(|| vec![Statement::report("本机直接回答（L0）。")]);
-            self.store.add_message(
+            let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+            self.store.add_message_full(
                 session_id,
                 MessageRole::Orchestrator,
                 Some(self.orch_id().as_str()),
                 statements.clone(),
+                thinking,
+                tool_calls,
             )?;
             self.emit(
                 session_id,
@@ -615,13 +689,25 @@ impl Orchestrator {
             .await;
 
         let final_reports = reports.lock().await.clone();
-        let final_text = self.converge(session_id, &plan, &final_reports, &graph).await?;
+        // 用户请求停止：跳过 LLM 收束，以停止陈述收束本轮
+        let cancelled = crate::round_trace::is_cancelled(session_id);
+        let final_text = if cancelled {
+            format!(
+                "【警告】本轮已被用户停止（已执行 {} 次工具调用）。",
+                crate::round_trace::tool_count(session_id)
+            )
+        } else {
+            self.converge(session_id, &plan, &final_reports, &graph).await?
+        };
         let statements = text_to_statements(&final_text);
-        self.store.add_message(
+        let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+        self.store.add_message_full(
             session_id,
             MessageRole::Orchestrator,
             Some(self.orch_id().as_str()),
             statements.clone(),
+            thinking,
+            tool_calls,
         )?;
 
         // 只更新阻断项，保留并发节点写入的证据/风险（原子读改写）
@@ -928,14 +1014,14 @@ impl Orchestrator {
     // ---------------------------------------------------------- 分解
 
     async fn plan(self: &Arc<Self>, session_id: &str, text: &str) -> anyhow::Result<OrchestratorPlan> {
-        // 组感知：规划提示统一取组内主智能体的职责提示词；内置组即全连结指挥体
+        // 组感知：规划提示统一取组内主智能体的职责提示词；内置组即指挥体
         let primary = self.registry.primary().ok_or_else(|| {
             anyhow::anyhow!("当前组未设置主智能体（exm group info 查看；用 agent_manage 或 exm agent create 创建）")
         })?;
         let mut system_prompt = self.registry.load_prompt(&primary.prompt_file).unwrap_or_else(|_| {
             format!("# {}\n\n你是本组的主智能体，直接对接用户并调度组内个体。", primary.name)
         });
-        // 主智能体人格（用户面 SOUL）：单体模式读 singles/<id>/SOUL.md，组模式读组根 SOUL.md（热读取）
+        // 主智能体人格（用户面 SOUL）：单体模式读 entities/agents/<id>/SOUL.md，组模式读组根 SOUL.md（热读取）
         let soul = if self.registry.single_mode() {
             self.registry
                 .active_single()
@@ -946,7 +1032,7 @@ impl Orchestrator {
         .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
         system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
         if self.registry.single_mode() {
-            // 单体模式：单体智能体直接完成，禁止派发
+            // 单体模式：追加输出契约(如何回应由模型自主判断)
             system_prompt.push_str(SINGLE_CONTRACT);
         } else if !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true) {
             // 自定义组：追加系统级规划契约（内置组提示词已内含）
@@ -959,6 +1045,12 @@ impl Orchestrator {
             .map(|d| format!("- {}（{}）：{}", d.identifier, d.name, d.description))
             .collect::<Vec<_>>()
             .join("\n");
+        // 清单为空时不渲染该段（单体模式不宣传派发能力，也不否认——交由模型自主判断）
+        let registry_section = if registry_brief.is_empty() {
+            String::new()
+        } else {
+            format!("## 当前可调度子个体\n{registry_brief}\n\n")
+        };
 
         // 技能包清单（数据驱动）：命中触发词的技能会随派发自动携带
         let skill_brief = match self.registry.load_skills() {
@@ -1090,14 +1182,27 @@ impl Orchestrator {
         }
         let mut messages = vec![
             ChatMessage::system(format!(
-                "{system_prompt}\n\n## 当前可调度子个体\n{registry_brief}\n\n{skill_brief}{playbook_brief}{stats_block}{memory_block}"
+                "{system_prompt}\n\n{registry_section}{skill_brief}{playbook_brief}{stats_block}{memory_block}"
             )),
             user_msg,
         ];
 
+        // 轮次模式（思考模式）：direct = 强制 L0 直答；full = 强制拆解派发。提示注入 + 校验双保险
+        let forced_mode = take_session_mode(session_id);
+        if let Some(mode) = &forced_mode {
+            let line = match mode.as_str() {
+                "direct" => "【本轮模式：直答】routeLevel 必须为 \"L0\"，nodes 必须为空数组，答案完整写入 finalAnswer。",
+                _ => "【本轮模式：集群】除非单体模式，routeLevel 不得为 \"L0\"：必须拆解为可派发的 nodes（至少一个节点）。",
+            };
+            if let Some(last) = messages.last_mut() {
+                last.content.push_str(&format!("\n\n{line}"));
+            }
+        }
+
         let mut last_err = String::new();
         for _attempt in 0..3 {
-            let output = self.call_orch_stream(session_id, &messages).await?;
+            // 规划阶段：输出为内部协议 JSON，不进可见输出区（改道思维轨收起栏）
+            let output = self.call_orch_stream(session_id, &messages, false).await?;
             match parse::parse_plan(&output) {
                 Ok(plan) => {
                     let unknown: Vec<String> = plan
@@ -1106,8 +1211,17 @@ impl Orchestrator {
                         .filter(|n| self.registry.get(&n.agent_identifier).is_none())
                         .map(|n| n.agent_identifier.clone())
                         .collect();
-                    if self.registry.single_mode() && !plan.nodes.is_empty() {
-                        last_err = "单体模式只支持 L0 直答：nodes 必须为空，回答放进 finalAnswer".into();
+                    let mode_violation = match forced_mode.as_deref() {
+                        Some("direct") => !(matches!(plan.route_level, RouteLevel::L0) || plan.nodes.is_empty()),
+                        Some("full") => {
+                            matches!(plan.route_level, RouteLevel::L0)
+                                && plan.nodes.is_empty()
+                                && !self.registry.single_mode()
+                        }
+                        _ => false,
+                    };
+                    if mode_violation {
+                        last_err = "计划违反本轮模式约束（direct = 仅 L0 直答 / full = 必须派发），请重新规划".into();
                     } else if unknown.is_empty() {
                         return Ok(plan);
                     } else {
@@ -1142,7 +1256,7 @@ impl Orchestrator {
             .registry
             .load_prompt(&primary.prompt_file)
             .unwrap_or_else(|_| format!("# {}\n\n你是本组的主智能体。", primary.name));
-        // 主智能体人格（用户面 SOUL）：单体模式读 singles/<id>/SOUL.md，组模式读组根 SOUL.md
+        // 主智能体人格（用户面 SOUL）：单体模式读 entities/agents/<id>/SOUL.md，组模式读组根 SOUL.md
         let soul = if self.registry.single_mode() {
             self.registry
                 .active_single()
@@ -1152,10 +1266,6 @@ impl Orchestrator {
         }
         .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
         system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
-        if self.registry.single_mode() {
-            // 单体模式：禁止派发（单体直接完成）
-            system_prompt.push_str(SINGLE_CONTRACT);
-        }
         let digest = graph
             .list()
             .iter()
@@ -1177,13 +1287,15 @@ impl Orchestrator {
                 plan.acceptance.join("；")
             )),
         ];
-        self.call_orch_stream(session_id, &messages).await
+        // 收束阶段：输出为用户面最终结果，流式可见
+        self.call_orch_stream(session_id, &messages, true).await
     }
 
     async fn call_orch_stream(
         &self,
         session_id: &str,
         messages: &[ChatMessage],
+        visible_tokens: bool,
     ) -> anyhow::Result<String> {
         // 回退链逐档尝试：失败且未发出任何 token 时切换下一档案并冷却失败者
         let candidates = self.orch_candidates();
@@ -1201,11 +1313,16 @@ impl Orchestrator {
                 match delta {
                     // 思维链单独成轨：渠道折叠呈现「思考」，不与回答混流
                     StreamDelta::Thinking(t) => {
+                        // 思维增量随轮次留存（过程收起栏/落盘数据源）
+                        crate::round_trace::push_thinking(session_id, &t);
                         self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": t }));
                     }
                     StreamDelta::Text(t) => {
                         acc.push_str(&t);
-                        self.emit(session_id, "orchestrator.token", serde_json::json!({ "delta": t }));
+                        // 规划阶段输出的是内部协议（OrchestratorPlan JSON），不是用户面文本：
+                        // 改道思维轨（收起栏），可见输出区只保留收束阶段的用户面文本
+                        let kind = if visible_tokens { "orchestrator.token" } else { "orchestrator.thinking" };
+                        self.emit(session_id, kind, serde_json::json!({ "delta": t }));
                     }
                 }
             }
@@ -1227,13 +1344,22 @@ impl Orchestrator {
                             &model,
                         );
                         if !fallback.reasoning.is_empty() {
+                            crate::round_trace::push_thinking(session_id, &fallback.reasoning);
                             self.emit(session_id, "orchestrator.thinking", serde_json::json!({ "delta": fallback.reasoning }));
                         }
-                        self.emit(
-                            session_id,
-                            "orchestrator.token",
-                            serde_json::json!({ "delta": fallback.content }),
-                        );
+                        // 非流式回退：内联 <think> 与协议正文按阶段分轨（不裸奔到可见输出）
+                        for (is_think, part) in crate::provider::inline_think::route(
+                            &mut (if resp.reasoning.is_empty() && fallback.content.starts_with("<think>") { 0u8 } else { 2u8 }),
+                            &mut String::new(),
+                            &fallback.content,
+                        ) {
+                            let kind = if is_think || !visible_tokens {
+                                "orchestrator.thinking"
+                            } else {
+                                "orchestrator.token"
+                            };
+                            self.emit(session_id, kind, serde_json::json!({ "delta": part }));
+                        }
                         return Ok(fallback.content);
                     }
                     return Ok(if resp.content.is_empty() { acc } else { resp.content });
@@ -1291,6 +1417,10 @@ pub struct ExecCtx {
 
 impl ExecCtx {
     pub async fn run_node(&self, node: TaskNode) -> NodeOutcome {
+        // 停止检查点：已请求停止的会话，剩余节点快速失败（不再派发 LLM/工具）
+        if crate::round_trace::is_cancelled(&self.session_id) {
+            return NodeOutcome::failed(node.id.clone(), String::from("本轮已被用户停止"));
+        }
         let o = self.orchestrator.clone();
         // 上游回流快照（短暂持锁，随即释放，不跨 await）
         let snapshot: Arc<Reports> = Arc::new(self.reports.lock().await.clone());
@@ -1301,6 +1431,62 @@ impl ExecCtx {
                 format!("注册表不存在个体: {}", node.agent_identifier),
             );
         };
+
+        // 智能连结（实验性）：连结体代理个体 → 任务转交外部连结体执行，
+        // 回流走与本地一致的 SyncReport 口径（存储/消息/事件齐全）
+        if let Some(link_id) = &def.link {
+            let objective = if node.objective.is_empty() { node.title.clone() } else { node.objective.clone() };
+            let (status, statements, summary, confidence) =
+                match crate::nexus::execute_link(&o.config_snapshot(), link_id, &objective, &node.acceptance).await {
+                    Ok((summary, output)) => (SyncStatus::Done, vec![Statement::report(output)], summary, 0.85),
+                    Err(e) => (
+                        SyncStatus::Blocked,
+                        vec![Statement::warn(format!("连结体执行失败：{e}"))],
+                        format!("连结体执行失败: {e}"),
+                        0.2,
+                    ),
+                };
+            let report = SyncReport {
+                source_agent: def.identifier.clone(),
+                task_node_id: node.id.clone(),
+                status,
+                statements: statements.clone(),
+                summary: summary.clone(),
+                evidence: vec![],
+                risks: vec![],
+                blockers: vec![],
+                conflicts: None,
+                next_suggestion: Default::default(),
+                confidence,
+            };
+            let _ = o.store.add_sync_report(&report);
+            let _ = o.store.add_message(
+                &self.session_id,
+                MessageRole::Unit,
+                Some(def.identifier.as_str()),
+                statements,
+            );
+            o.emit(
+                &self.session_id,
+                "sync.received",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "report": serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
+                    "nexus": true
+                }),
+            );
+            let outcome_status = if report.status == SyncStatus::Done {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Failed
+            };
+            return NodeOutcome {
+                node_id: node.id.clone(),
+                status: outcome_status,
+                error: (outcome_status == TaskStatus::Failed).then_some(summary),
+                appends: vec![],
+            };
+        }
 
         let order = DispatchOrder {
             task_node_id: node.id.clone(),

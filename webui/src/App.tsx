@@ -1,9 +1,10 @@
 /** 主框架：纯导航侧栏——组切换在对话页内，组管理独立成页 */
 import React, { useEffect, useState } from "react";
-import { Menu, Tag } from "antd";
+import { Menu, message, Tag } from "antd";
 import {
   ApartmentOutlined,
   BellOutlined,
+  ClusterOutlined,
   CloseOutlined,
   CodeOutlined,
   DatabaseOutlined,
@@ -28,14 +29,13 @@ import { CharStream } from "./components/CharStream";
 import { AsciiDivider } from "./components/Ascii";
 import { LoginView } from "./views/LoginView";
 import { ChatView } from "./views/ChatView";
-import { CodingView } from "./views/CodingView";
 import { ModelsView } from "./views/ModelsView";
 import { GraphView } from "./views/GraphView";
-import { AgentsView } from "./views/AgentsView";
 import { LedgerView } from "./views/LedgerView";
 import { MemoryView } from "./views/MemoryView";
 import { SettingsView } from "./views/SettingsView";
 import { GroupsView } from "./views/GroupsView";
+import { NexusView } from "./views/NexusView";
 import { SinglesView } from "./views/SinglesView";
 import { SkillsView } from "./views/SkillsView";
 import { AutomationsView } from "./views/AutomationsView";
@@ -45,11 +45,10 @@ import { ActivityView } from "./views/ActivityView";
 
 type ViewKey =
   | "chat"
-  | "code"
   | "graph"
   | "agent"
   | "groups"
-  | "agents"
+  | "nexus"
   | "skills"
   | "models"
   | "automations"
@@ -60,22 +59,39 @@ type ViewKey =
   | "activity"
   | "settings";
 
+/** 合法视图键（hash 路由白名单校验） */
+const VIEW_KEYS: ViewKey[] = [
+  "chat", "agent", "groups", "nexus", "graph", "automations",
+  "skills", "models", "approvals", "channels", "ledger", "memory", "activity", "settings",
+];
+
+/** 从 hash 解析视图：#/chat/<sessionId> → { view: chat, session }; 非法回落 chat */
+function parseHash(): { view: ViewKey; session?: string } {
+  const h = location.hash.replace(/^#\/?/, "");
+  if (!h) return { view: "chat" };
+  const [head, sub] = h.split("/");
+  const view = VIEW_KEYS.find((k) => k === head);
+  if (!view) return { view: "chat" };
+  return { view, session: sub };
+}
+
 /** 侧栏清单 */
 export const NAV_ITEMS: {
   key: ViewKey;
   en: string;
   labelKey: string;
   icon: React.ReactNode;
+  /** 实验性功能标记：侧栏显示「实验」角标 */
+  experimental?: boolean;
 }[] = [
   { key: "chat", en: "CHAT", labelKey: "nav.chat", icon: <MessageOutlined /> },
-  { key: "code", en: "CODE", labelKey: "nav.code", icon: <CodeOutlined /> },
   { key: "agent", en: "AGENTS", labelKey: "nav.agent", icon: <UserOutlined /> },
   { key: "groups", en: "GROUPS", labelKey: "nav.groups", icon: <TeamOutlined /> },
-  { key: "agents", en: "UNITS", labelKey: "nav.units", icon: <RobotOutlined /> },
-  { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
-  { key: "models", en: "MODELS", labelKey: "nav.models", icon: <ApiOutlined /> },
+  { key: "nexus", en: "NEXUS", labelKey: "nav.nexus", icon: <ClusterOutlined />, experimental: true },
   { key: "graph", en: "DAG", labelKey: "nav.dag", icon: <ApartmentOutlined /> },
   { key: "automations", en: "CRON", labelKey: "nav.cron", icon: <ClockCircleOutlined /> },
+  { key: "skills", en: "SKILLS", labelKey: "nav.skills", icon: <DeploymentUnitOutlined /> },
+  { key: "models", en: "MODELS", labelKey: "nav.models", icon: <ApiOutlined /> },
   { key: "approvals", en: "APPROVALS", labelKey: "nav.approvals", icon: <BellOutlined /> },
   { key: "channels", en: "CHANNELS", labelKey: "nav.channels", icon: <CloudUploadOutlined /> },
   { key: "ledger", en: "LEDGER", labelKey: "nav.ledger", icon: <FundOutlined /> },
@@ -90,7 +106,34 @@ export default function App(): React.ReactElement {
   const init = useExm((s) => s.init);
   const accent = useTheme((s) => s.accent);
   const setAccent = useTheme((s) => s.setAccent);
-  const [view, setView] = useState<ViewKey>("chat");
+  const initial = parseHash();
+  const [view, setViewState] = useState<ViewKey>(initial.view);
+  /** 切视图并同步 hash（app-shell-routing） */
+  const setView = (v: ViewKey) => {
+    setViewState(v);
+    const target = "#/" + v + (location.hash.startsWith("#/chat/") && v === "chat" ? "" : "");
+    if (location.hash !== target) {
+      history.replaceState(null, "", target);
+    }
+  };
+  const navRequest = useExm((st) => st.navRequest);
+  useEffect(() => {
+    if (!navRequest) return;
+    if (navRequest.view === "chat" && navRequest.sessionId) {
+      void useExm.getState().selectSession(navRequest.sessionId);
+    }
+    setView(navRequest.view as ViewKey);
+    useExm.setState({ navRequest: null });
+  }, [navRequest]);
+  // hashchange：前进/后退导航（hashchange 时不回写 hash，避免回环）
+  useEffect(() => {
+    const onHash = () => {
+      const { view: v } = parseHash();
+      setViewState(v);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [themeOpen, setThemeOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   /** 移动端侧栏抽屉（≤860px 时侧栏覆盖呈现） */
@@ -109,7 +152,19 @@ export default function App(): React.ReactElement {
         const key = localStorage.getItem("exm.key") ?? "";
         const r = await api.verifyAuth(key);
         setAuthed(r.ok);
-        if (r.ok) void init();
+        if (r.ok) {
+          await init();
+          // 会话深链（app-shell-routing）：#/chat/<sessionId> → 选中该会话
+          const { view, session } = parseHash();
+          if (view === "chat" && session) {
+            const exists = useExm.getState().sessions.some((s) => s.id === session);
+            if (exists) {
+              await useExm.getState().selectSession(session);
+            } else {
+              message.info(t("route.sessionGone"));
+            }
+          }
+        }
       } catch {
         setAuthed(false);
       }
@@ -177,10 +232,11 @@ export default function App(): React.ReactElement {
           }))}
           onClick={({ key }) => {
             setView(key as ViewKey);
+            history.replaceState(null, "", "#/" + key);
             setNavOpen(false); // 移动端：选中即收起抽屉
           }}
         />
-        <AsciiDivider label="CHANNEL" className="sider-divider" />
+        <AsciiDivider className="sider-divider" />
         <div className={`theme-switcher ${themeOpen ? "open" : ""}`}>
           <button className="theme-toggle" onClick={() => setThemeOpen(!themeOpen)}>
             <span className="theme-label">{t("theme.label")}</span>
@@ -242,10 +298,9 @@ export default function App(): React.ReactElement {
         {view === "graph" && <GraphView />}
         {view === "agent" && <SinglesView />}
         {view === "groups" && <GroupsView />}
-        {view === "agents" && <AgentsView />}
+        {view === "nexus" && <NexusView />}
         {view === "skills" && <SkillsView />}
         {view === "models" && <ModelsView />}
-        {view === "code" && <CodingView />}
         {view === "automations" && <AutomationsView />}
         {view === "approvals" && <ApprovalsView />}
         {view === "channels" && <ChannelsView />}

@@ -140,6 +140,8 @@ export function ChannelsView(): React.ReactElement {
   const { groups } = useExm();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [status, setStatus] = useState<Record<string, ChannelStatus>>({});
+  const [testing, setTesting] = useState<string>("");
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; category?: string; identity?: string; message?: string; error?: string }>>({});
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<Channel | null>(null);
@@ -350,6 +352,38 @@ export function ChannelsView(): React.ReactElement {
             },
             { title: t("channels.colSecret"), render: (_, c) => credTag(c) },
             { title: t("channels.colStatus"), render: (_, c) => statusCell(c) },
+            {
+              title: t("channels.colTest"),
+              width: 110,
+              render: (_, c) => {
+                const st = testResult[c.id];
+                return (
+                  <Space size={4} direction="vertical">
+                    <Button
+                      size="small"
+                      loading={testing === c.id}
+                      onClick={() => {
+                        setTesting(c.id);
+                        api.channelTest(c.id)
+                          .then((r) => {
+                            setTestResult((m) => ({ ...m, [c.id]: r }));
+                            if (r.ok) message.success(t("channels.testOk", { id: r.identity ?? "" }));
+                            else message.warning(t("channels.testFailC", { cat: r.category ?? "", msg: r.message ?? r.error ?? "" }));
+                          })
+                          .catch((e) => message.error(t("channels.testFailC", { cat: "", msg: String(e).slice(0, 120) })));
+                      }}
+                    >
+                      {t("channels.testBtn")}
+                    </Button>
+                    {st && (
+                      <Tag color={st.ok ? "success" : st.category === "auth" ? "error" : st.category === "missing" ? "warning" : "default"}>
+                        {st.ok ? st.identity || t("channels.testOkShort") : t("channels.testCat." + st.category, { msg: (st.message ?? "").slice(0, 60) })}
+                      </Tag>
+                    )}
+                  </Space>
+                );
+              },
+            },
             {
               title: t("channels.colReply"),
               render: (_, c) => {

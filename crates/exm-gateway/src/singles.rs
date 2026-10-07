@@ -118,6 +118,7 @@ pub async fn create_single(State(st): State<AppState>, Json(b): Json<SingleBody>
         output_schema: Default::default(),
         prompt_file: String::new(),
         model_hint: b.model.filter(|s| !s.trim().is_empty()),
+        link: None,
     };
     match st.core.registry().upsert_single(def, b.prompt) {
         Ok(saved) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),
@@ -201,4 +202,48 @@ pub fn routes() -> Router<AppState> {
             "/api/singles/:id/persona",
             get(get_single_persona).put(put_single_persona).delete(delete_single_persona),
         )
+        .route(
+            "/api/singles/:id/prompt",
+            get(get_single_prompt).put(put_single_prompt),
+        )
+}
+
+// ---------------------------------------------------------------- 系统提示词（PROMPT.md）读写
+
+/// 单体系统提示词读取（GET /api/singles/:id/prompt）
+pub async fn get_single_prompt(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let Some(def) = st.core.registry().single(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "智能体不存在" }))).into_response();
+    };
+    match st.core.registry().load_single_prompt(&def.prompt_file) {
+        Ok(prompt) => Json(json!({ "identifier": id, "promptFile": def.prompt_file, "prompt": prompt })).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "提示词文件不存在", "promptFile": def.prompt_file })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PromptBody {
+    pub prompt: String,
+}
+
+/// 单体系统提示词保存（PUT /api/singles/:id/prompt）：热生效，下一轮对话即装载
+pub async fn put_single_prompt(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(b): Json<PromptBody>,
+) -> impl IntoResponse {
+    let Some(def) = st.core.registry().single(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "智能体不存在" }))).into_response();
+    };
+    if b.prompt.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "提示词不能为空" }))).into_response();
+    }
+    match st.core.registry().write_single_prompt(&def.prompt_file, &b.prompt) {
+        Ok(_) => Json(json!({ "ok": true, "identifier": id })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }

@@ -34,7 +34,8 @@ COPY --from=rust-builder /build/target/release/exm /usr/local/bin/exm
 COPY --from=rust-builder /build/target/release/exmachina /usr/local/bin/exmachina
 COPY --from=rust-builder /build/target/release/exm-gateway /usr/local/bin/exm-gateway
 COPY --from=webui-builder /build/dist ./webui/dist
-COPY agents ./agents
+COPY entities ./entities
+COPY skills ./skills
 ENV EXM_LANG=zh
 ENV RUST_LOG=info
 EXPOSE 4173

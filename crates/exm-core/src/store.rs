@@ -45,11 +45,13 @@ impl Store {
             id: new_id(),
             title: title.to_string(),
             status: "active".into(),
-            group_id: if group_id.trim().is_empty() { "default".into() } else { group_id.to_string() },
+            group_id: if group_id.trim().is_empty() { "exmachina".into() } else { group_id.to_string() },
             rolling_summary: None,
             summary_upto: None,
             parent_session: None,
             parent_upto: None,
+                last_message_preview: None,
+                last_active_at: None,
             ledger: SessionLedger::default(),
             created_at: now.clone(),
             updated_at: now,
@@ -67,6 +69,23 @@ impl Store {
         list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         list.truncate(200);
         Ok(list)
+    }
+
+    /// 会话最后一条消息的纯文本预览（末行 JSONL 直接取，避免整文件反序列化）
+    pub fn last_message_preview(&self, session_id: &str, max_chars: usize) -> Option<String> {
+        let path = self.db.root().join("messages").join(format!("{session_id}.jsonl"));
+        let content = std::fs::read_to_string(path).ok()?;
+        let last_line = content.lines().rev().find(|l| !l.trim().is_empty())?;
+        let v: serde_json::Value = serde_json::from_str(last_line).ok()?;
+        let text = v
+            .get("statements")
+            .and_then(|s| s.as_array())
+            .and_then(|a| a.first())
+            .and_then(|s| s.get("text"))
+            .and_then(|t| t.as_str())?
+            .trim()
+            .to_string();
+        Some(text.chars().take(max_chars).collect())
     }
 
     pub fn update_ledger(&self, session_id: &str, ledger: &SessionLedger) -> Result<()> {
@@ -144,8 +163,29 @@ impl Store {
             statements,
             created_at: now_iso(),
             token_usage: None,
+            thinking: None,
+            tool_calls: Vec::new(),
+            last_message_preview: None,
+            last_active_at: None,
         };
         self.db.append_line("messages", session_id, &msg)?;
+        Ok(msg)
+    }
+
+    /// 带过程数据的消息落盘（思维链 + 工具轨迹；过程收起栏的数据来源）
+    pub fn add_message_full(
+        &self,
+        session_id: &str,
+        role: MessageRole,
+        agent_id: Option<&str>,
+        statements: Vec<Statement>,
+        thinking: Option<String>,
+        tool_calls: Vec<crate::round_trace::ToolCallRecord>,
+    ) -> Result<ChatMessage> {
+        let mut msg = self.add_message(session_id, role, agent_id, statements)?;
+        msg.thinking = thinking.filter(|s| !s.trim().is_empty());
+        msg.tool_calls = tool_calls;
+        self.db.put("messages", &msg.id, &msg)?;
         Ok(msg)
     }
 
@@ -307,6 +347,29 @@ impl Store {
 
     pub fn list_tool_audit(&self, agent_id: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
         self.db.read_lines("tool_audit", agent_id, limit)
+    }
+
+    /// 跨个体聚合的工具审计查询（agent/tool 过滤，时间倒序，limit 封顶）
+    pub fn list_tool_audit_filtered(
+        &self,
+        agent: Option<&str>,
+        tool: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut all: Vec<serde_json::Value> = self.db.list("tool_audit")?;
+        if let Some(a) = agent {
+            all.retain(|v| v.get("agentId").and_then(|x| x.as_str()) == Some(a));
+        }
+        if let Some(t) = tool {
+            all.retain(|v| v.get("tool").and_then(|x| x.as_str()).map(|x| x.to_lowercase()).unwrap_or_default().contains(&t.to_lowercase()));
+        }
+        all.sort_by(|a, b| {
+            let ka = a.get("createdAt").and_then(|x| x.as_str()).unwrap_or("");
+            let kb = b.get("createdAt").and_then(|x| x.as_str()).unwrap_or("");
+            kb.cmp(ka)
+        });
+        all.truncate(limit);
+        Ok(all)
     }
 
     // ---------------- 用量台账（真实 token，替代字符粗估） ----------------

@@ -47,6 +47,6 @@ export function groupIdEn(id: string): string {
 
 /** 个体 identifier 的英文标注（纯展示映射）：指挥体去 EXMACHINA- 冗余前缀 */
 export function agentIdEn(identifier: string): string {
-  if (identifier === "exmachina-orchestrator") return tr("enAgent.orchestrator");
+  if (identifier === "orchestrator") return tr("enAgent.orchestrator");
   return identifier.toUpperCase();
 }

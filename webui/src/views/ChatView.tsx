@@ -1,7 +1,7 @@
 /** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
-import { AudioOutlined, CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { AudioOutlined, CheckOutlined, CloudUploadOutlined, CloseOutlined, EditOutlined, ExportOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { agentIdEn } from "../models";
 import { useExm } from "../store";
@@ -12,50 +12,88 @@ import { StatementList } from "../components/Statements";
 import { Markdown } from "../components/Markdown";
 import { AsciiMeter } from "../components/Ascii";
 import { ToolCallList } from "../components/ToolCall";
+import { copyText } from "../components/Markdown";
+import { UsageBar } from "../components/UsageBar";
+import { SkeletonList } from "../components/SkeletonList";
 import { TurnOps } from "../components/HistoryOps";
 import type { ChatMessage } from "../types";
 
-function MessageBubble({ m, turn, ops }: { m: ChatMessage; turn?: number; ops?: React.ReactNode }): React.ReactElement {
+function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: number; ops?: React.ReactNode; orchLabel?: string }): React.ReactElement {
   const tb = useT();
   const isUser = m.role === "user";
-  const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? tb("chat.role.orchestrator") : (m.agentId ?? tb("chat.role.system"));
+  const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? (orchLabel ?? tb("chat.role.orchestrator")) : (m.agentId ?? tb("chat.role.system"));
+  const hasThinking = Boolean(m.thinking && m.thinking.trim());
+  const hasTools = Boolean(m.toolCalls && m.toolCalls.length > 0);
   return (
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
         {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
         {turn != null && <span className="msg-turn mono">#{turn}</span>}
+        {!isUser && (
+          <button
+            className="msg-copy"
+            title="复制"
+            onClick={async () => {
+              const text = m.statements.map((st) => st.text).join("\n\n");
+              if (await copyText(text)) {
+                message.success("已复制");
+              }
+            }}
+          >
+            ⧉
+          </button>
+        )}
         {ops && <span className="msg-ops">{ops}</span>}
       </div>
-      {m.toolCalls && m.toolCalls.length > 0 && <ToolCallList calls={m.toolCalls} />}
+      {(hasThinking || hasTools) && (
+        <div className="msg-process">
+          {hasThinking && (
+            <UsageBar label={tUsage(tb, m.thinking!.length)}>
+              <pre className="usage-think">{m.thinking}</pre>
+            </UsageBar>
+          )}
+          {hasTools && (
+            <UsageBar label={tb("chat.usedTools", { n: m.toolCalls!.length })}>
+              <ToolCallList calls={m.toolCalls!} />
+            </UsageBar>
+          )}
+        </div>
+      )}
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
   );
 }
 
-/** 折叠思维流：分轨呈现「思考」，默认收起、流式时显示最新一行预览 */
-function ThinkingBlock({ text, label }: { text: string; label: string }): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  if (!text.trim()) return <></>;
-  const preview = text.trimEnd().split("\n").pop() ?? "";
-  return (
-    <div className="thinking-block" onClick={() => setOpen(!open)}>
-      <div className="thinking-head">
-        <span className="thinking-dot" /> {label}
-        {!open && <span className="thinking-preview">{preview.slice(-60)}</span>}
-      </div>
-      {open && <pre className="thinking-body">{text}</pre>}
-    </div>
-  );
+/** 思考栏摘要文案（OpenCode 口径：使用了 N 个思考；本地思维流以字数计量） */
+function tUsage(tb: (k: string, v?: Record<string, string>) => string, chars: number): string {
+  return tb("chat.usedThinking", { n: String(chars) });
+}
+
+/** 相对时间（chat-ergonomics）：刚刚 / N 分钟前 / N 小时前 / 昨天 / N 天前 / 日期 */
+export function relativeTime(iso?: string): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const diff = Date.now() - t;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return `${min} 分钟前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour} 小时前`;
+  const day = Math.floor(hour / 24);
+  if (day === 1) return "昨天";
+  if (day < 7) return `${day} 天前`;
+  return iso.slice(0, 10);
 }
 
 export function ChatView(): React.ReactElement {
   const t = useT();
-  const {
-    messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
+  const {     messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
     timeline, running, send, wsConnected, decideApproval,
     sessions, sessionId, selectSession, newSession,
     groups, activeGroup, setTarget,
     refreshAgents,
+    sessionsLoaded,
   } = useExm();
   const [target, setTargetInfo] = useState<TargetInfo>({ mode: "group", id: activeGroup });
   const [singles, setSinglesList] = useState<{ identifier: string; name: string }[]>([]);
@@ -84,6 +122,8 @@ export function ChatView(): React.ReactElement {
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [sessionFilter, setSessionFilter] = useState("");
+  /** 会话类型过滤（2.2）：all / normal / channel */
+  const [sessionKind, setSessionKind] = useState("all");
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [recording, setRecording] = useState(false);
   const [usage, setUsage] = useState<{
@@ -94,6 +134,8 @@ export function ChatView(): React.ReactElement {
     measured?: boolean;
   } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  /** 上箭头召回的游标（null = 未处于召回态） */
+  const recallIdxRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const chunksRef = useRef<Blob[]>([]);
@@ -160,8 +202,25 @@ export function ChatView(): React.ReactElement {
     }
   };
 
+  // 切会话恢复草稿（chat-ergonomics）
+  useEffect(() => {
+    if (!sessionId) return;
+    setText(useExm.getState().drafts[sessionId] ?? "");
+    recallIdxRef.current = null;
+  }, [sessionId]);
+
+  // 是否已滚离底部（chat-ergonomics：显示「回到底部」按钮）
+  const [showBottomBtn, setShowBottomBtn] = useState(false);
+  useEffect(() => {
+    const el = document.querySelector(".chat-scroll");
+    if (!el) return;
+    const onScroll = () => setShowBottomBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 120);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setShowBottomBtn(false);
   }, [messages, liveOrch, liveUnits, runToolCalls, timeline]);
 
   useEffect(() => {
@@ -177,11 +236,17 @@ export function ChatView(): React.ReactElement {
 
   const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
   const activeMeta = groups.find((g) => g.id === activeGroup);
+  // 指挥体显示名（10）：单体模式显示该智能体名；组模式显示「指挥体 [组名]」
+  const orchLabel = target.mode === "single"
+    ? (singles.find((x) => x.identifier === target.id)?.name ?? target.id)
+    : t("chat.orchGroup", { group: activeMeta?.name ?? target.id });
 
   const removeSession = async (id: string) => {
     try {
       await api.deleteSession(id);
-      const rest = sessions.filter((s) => s.id !== id);
+      // 从最新状态构建列表（不用渲染闭包的旧快照），无论删的是否为当前会话都先落列表
+      const rest = useExm.getState().sessions.filter((s) => s.id !== id);
+      useExm.setState({ sessions: rest });
       if (id === sessionId) {
         useExm.setState({ sessionId: undefined, messages: [], graph: null });
         if (rest.length > 0) {
@@ -189,11 +254,42 @@ export function ChatView(): React.ReactElement {
         } else {
           await newSession();
         }
-      } else {
-        useExm.setState({ sessions: rest });
       }
     } catch {
       // 删除失败静默：会话可能在运行中被网关拒绝
+    }
+  };
+
+  // ---- 会话导出 Markdown（2.3）：角色前缀正文 + 工具摘要 + 思维链折叠引用 ----
+  const exportSession = async (id: string, title: string) => {
+    try {
+      const msgs = await api.messages(id);
+      const lines: string[] = [`# ${title}`, "", `> 导出时间：${new Date().toLocaleString()}`, ""];
+      for (const m of msgs) {
+        const role = m.role === "user" ? "👤 用户" : m.role === "orchestrator" ? (m.agentId ? `🤖 ${m.agentId}` : "🤖 指挥体") : "⚙️ 系统";
+        lines.push(`## ${role} · ${m.createdAt}`, "");
+        if (m.thinking) {
+          lines.push("<details><summary>思维过程</summary>", "", "```", m.thinking, "```", "", "</details>", "");
+        }
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          lines.push("<details><summary>工具调用</summary>", "");
+          for (const tc of m.toolCalls) {
+            lines.push(`- \`${tc.tool}\` ${tc.status === "ok" ? "✅" : tc.status === "error" ? "❌" : "⏳"} ${tc.summary || ""}`);
+          }
+          lines.push("", "</details>", "");
+        }
+        lines.push(m.statements.map((st) => st.text).join("\n\n"), "");
+      }
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title.replace(/[\\/:*?"<>|]/g, "_") || "session"}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success(t("chat.exportDone"));
+    } catch (e) {
+      message.error(t("chat.exportFailed", { err: String(e).slice(0, 120) }));
     }
   };
 
@@ -321,8 +417,22 @@ export function ChatView(): React.ReactElement {
             value={sessionFilter}
             onChange={(e) => setSessionFilter(e.target.value)}
           />
+          {/* 会话类型过滤（2.2）：全部 / 普通 / 通道 */}
+          <Select
+            size="small"
+            value={sessionKind}
+            onChange={setSessionKind}
+            className="session-kind"
+            options={[
+              { value: "all", label: t("chat.kind.all") },
+              { value: "normal", label: t("chat.kind.normal") },
+              { value: "channel", label: t("chat.kind.channel") },
+            ]}
+          />
           <div className="session-list">
+            {sessions.length === 0 && !sessionsLoaded && <SkeletonList rows={6} />}
             {sessions
+              .filter((s) => (sessionKind === "all" ? true : sessionKind === "channel" ? s.title.startsWith("channel:") : !s.title.startsWith("channel:")))
               .filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase()))
               .map((s) => (
               <div
@@ -330,10 +440,25 @@ export function ChatView(): React.ReactElement {
                 className={`session-row ${s.id === sessionId ? "active" : ""}`}
                 onClick={() => void selectSession(s.id)}
               >
-                <MessageOutlined className="session-row-icon" />
-                <span className="session-title">{s.title}</span>
+                <div className="session-row-top">
+                  {s.title.startsWith("channel:") ? <CloudUploadOutlined className="session-row-icon" /> : <MessageOutlined className="session-row-icon" />}
+                  <span className="session-title">{s.title.replace(/^channel:[^:]+:/, "↗ ")}</span>
+                  <span className="session-time">{relativeTime(s.lastActiveAt ?? s.createdAt)}</span>
+                </div>
+                {s.lastMessagePreview && <div className="session-preview">{s.lastMessagePreview}</div>}
                 {s.id === sessionId && running && <span className="session-live-dot" />}
                 <span className="session-ops" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="small"
+                    type="text"
+                    className="session-edit"
+                    icon={<ExportOutlined />}
+                    title={t("chat.export")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void exportSession(s.id, s.title);
+                    }}
+                  />
                   <Button
                     size="small"
                     type="text"
@@ -380,6 +505,7 @@ export function ChatView(): React.ReactElement {
           <span className="console-sep" />
           <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
           <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
+
           {usage && (
             <span className="readout console-usage">
               <span className="k">TOKENS</span>
@@ -390,7 +516,7 @@ export function ChatView(): React.ReactElement {
           )}
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
         </div>
-        {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert" />}
+        {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert app-banner" />}
         {/* 内联审批：命令被拦截时在消息流中直接裁决——批准后输出回灌，模型继续干活 */}
         {approvals.map((a) => (
           <Card key={a.approvalId} size="small" className="approval-card">
@@ -421,6 +547,7 @@ export function ChatView(): React.ReactElement {
               key={m.id}
               m={m}
               turn={turn}
+              orchLabel={orchLabel}
               ops={
                 turn != null && !running ? (
                   <TurnOps turn={turn} onEdit={openEdit} onUndo={doUndo} onFork={doFork} />
@@ -429,22 +556,35 @@ export function ChatView(): React.ReactElement {
             />
           ))}
 
-          {running && (
+          {/* 等待首个输出：加载卡（一旦有流式输出/子个体产出即让位，避免与输出卡并存） */}
+          {running && !liveOrch && liveUnitEntries.length === 0 && (
             <Card size="small" className="msg-bubble msg-agent">
               <Space direction="vertical" className="full-width">
                 <div>
-                  <Spin size="small" /> <b>{t("chat.orchRunning")}</b>
+                  <Spin size="small" /> <b>{`${orchLabel} …`}</b>
                 </div>
-                {timeline.map((tl, i) => (
-                  <div key={i} className={`timeline-item tl-${tl.kind}`}>
-                    <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
-                      {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
-                    </Tag>
-                    <span className="tl-text">{tl.text}</span>
+                {(liveThinking.trim() || timeline.length > 0 || runToolCalls.length > 0) && (
+                  <div className="msg-process">
+                    {liveThinking.trim() && (
+                      <UsageBar label={t("chat.usedThinking", { n: String(liveThinking.length) })} live>
+                        <pre className="usage-think">{liveThinking}</pre>
+                      </UsageBar>
+                    )}
+                    {(timeline.length > 0 || runToolCalls.length > 0) && (
+                      <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
+                        {timeline.map((tl, i) => (
+                          <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+                            <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                              {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                            </Tag>
+                            <span className="tl-text">{tl.text}</span>
+                          </div>
+                        ))}
+                        {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
+                      </UsageBar>
+                    )}
                   </div>
-                ))}
-                {/* 工具执行轨迹：文件操作 / 终端命令 / 截屏全程可见 */}
-                <ToolCallList calls={runToolCalls} />
+                )}
               </Space>
             </Card>
           )}
@@ -454,7 +594,11 @@ export function ChatView(): React.ReactElement {
               <div className="msg-head">
                 <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
               </div>
-              <ThinkingBlock text={liveUnitThinking[agent] ?? ""} label={t("chat.thinking")} />
+              {(liveUnitThinking[agent] ?? "").trim() && (
+                <UsageBar label={t("chat.usedThinking", { n: String((liveUnitThinking[agent] ?? "").length) })} live>
+                  <pre className="usage-think">{liveUnitThinking[agent]}</pre>
+                </UsageBar>
+              )}
               <pre className="live-pre">{content}</pre>
             </Card>
           ))}
@@ -462,11 +606,41 @@ export function ChatView(): React.ReactElement {
           {liveOrch && (
             <Card size="small" className="msg-bubble msg-agent live-card">
               <div className="msg-head">
-                <RobotOutlined /> <b>{t("chat.role.orchestrator")}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
+                <RobotOutlined /> <b>{orchLabel}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
               </div>
-              <ThinkingBlock text={liveThinking} label={t("chat.thinking")} />
+              {(liveThinking.trim() || timeline.length > 0 || runToolCalls.length > 0) && (
+                <div className="msg-process">
+                  {liveThinking.trim() && (
+                    <UsageBar label={t("chat.usedThinking", { n: String(liveThinking.length) })} live>
+                      <pre className="usage-think">{liveThinking}</pre>
+                    </UsageBar>
+                  )}
+                  {(timeline.length > 0 || runToolCalls.length > 0) && (
+                    <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
+                      {timeline.map((tl, i) => (
+                        <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+                          <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                            {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                          </Tag>
+                          <span className="tl-text">{tl.text}</span>
+                        </div>
+                      ))}
+                      {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
+                    </UsageBar>
+                  )}
+                </div>
+              )}
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
+          )}
+          {showBottomBtn && (
+            <button
+              className="scroll-bottom-btn"
+              aria-label={t("chat.scrollToBottom")}
+              onClick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+            >
+              ↓
+            </button>
           )}
           <div ref={bottomRef} />
         </div>
@@ -490,7 +664,10 @@ export function ChatView(): React.ReactElement {
           )}
           <Input.TextArea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (sessionId) useExm.getState().setDraft(sessionId, e.target.value);
+            }}
             placeholder={`> ${t("chat.inputPlaceholder")}`}
             autoSize={{ minRows: 1, maxRows: 6 }}
             onPressEnter={(e) => {
@@ -500,6 +677,29 @@ export function ChatView(): React.ReactElement {
                   doSend();
                 }
               }
+            }}
+            onKeyDown={(e) => {
+              // 上/下箭头召回历史用户消息（chat-ergonomics）：仅在空输入时接管
+              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+              if (text.trim()) return;
+              const userMsgs = messages.filter((m) => m.role === "user");
+              if (userMsgs.length === 0) return;
+              e.preventDefault();
+              let idx = recallIdxRef.current;
+              if (e.key === "ArrowUp") {
+                idx = idx === null ? userMsgs.length - 1 : Math.max(0, idx - 1);
+              } else {
+                if (idx === null) return;
+                idx = idx + 1;
+                if (idx >= userMsgs.length) {
+                  recallIdxRef.current = null;
+                  setText("");
+                  return;
+                }
+              }
+              recallIdxRef.current = idx;
+              const recalled = userMsgs[idx]?.statements.map((st) => st.text).join("\n") ?? "";
+              setText(recalled);
             }}
           />
           <Button
@@ -532,6 +732,19 @@ export function ChatView(): React.ReactElement {
           >
             {t("chat.send")}
           </Button>
+          {running && sessionId && (
+            <Popconfirm
+              title={t("chat.stopConfirm")}
+              onConfirm={() => {
+                if (!sessionId) return;
+                api.stopSession(sessionId)
+                  .then((r) => message.success(t("chat.stopDone", { n: String(r.toolsExecuted) })))
+                  .catch((e) => message.error(t("chat.stopFail", { err: String(e).slice(0, 120) })));
+              }}
+            >
+              <Button danger icon={<PauseCircleOutlined />}>{t("chat.stop")}</Button>
+            </Popconfirm>
+          )}
           {renaming && (
             <Modal
               open

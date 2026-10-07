@@ -15,7 +15,7 @@ import { api, serverBase, type GatewayConfig, type GroupMeta, type RecallHit } f
 import { tr } from "./i18n/core";
 
 export interface TimelineItem {
-  kind: "dispatch" | "sync" | "arbitration" | "memory" | "error";
+  kind: "dispatch" | "sync" | "arbitration" | "memory" | "error" | "cron";
   agentId?: string;
   nodeId?: string;
   text: string;
@@ -61,17 +61,86 @@ interface ExmState {
   refreshAgents: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   newSession: () => Promise<void>;
-  send: (text: string, images?: string[]) => Promise<void>;
+  send: (text: string, images?: string[], mode?: string | null) => Promise<void>;
+  /** 会话列表已完成首次加载（骨架屏判定） */
+  sessionsLoaded: boolean;
+  /** 会话输入草稿（内存态；sessionStorage 镜像持久化） */
+  drafts: Record<string, string>;
+  setDraft: (sessionId: string, text: string) => void;
+  /** 新消息落会话列表时刷新该会话的末条预览（chat-ergonomics） */
+  updateSessionPreview: (sessionId: string, preview: string) => void;
   saveConfig: (body: Record<string, unknown>) => Promise<void>;
   decideApproval: (id: string, approve: boolean) => Promise<void>;
   handleEvent: (evt: WsEvent) => void;
   setWs: (ok: boolean) => void;
   bumpMemory: () => void;
+  /** 跨视图导航请求（审批→会话跳转等）：App 订阅消费 */
+  navRequest: { view: string; sessionId?: string; nonce: number } | null;
+  requestNav: (view: string, sessionId?: string) => void;
+  markSessionsLoaded: () => void;
+}
+
+/** 会话输入草稿（chat-ergonomics）：内存 + sessionStorage 双写；发送成功即清除 */
+const draftKey = (id: string) => `exm.draft.${id}`;
+
+/** 浏览器通知偏好（web-notifications）：localStorage 持久化 */
+export interface NotifyPrefs {
+  enabled: boolean;
+  approval: boolean;
+  roundDone: boolean;
+  cronDone: boolean;
+}
+
+export function loadNotifyPrefs(): NotifyPrefs {
+  const def: NotifyPrefs = { enabled: false, approval: true, roundDone: false, cronDone: true };
+  try {
+    const raw = localStorage.getItem("exm.notify");
+    return raw ? { ...def, ...JSON.parse(raw) } : def;
+  } catch {
+    return def;
+  }
+}
+
+export function saveNotifyPrefs(prefs: NotifyPrefs): void {
+  try { localStorage.setItem("exm.notify", JSON.stringify(prefs)); } catch { /* 忽略 */ }
+}
+
+/** 触发系统通知（授权 + 偏好由调用方判断），点击聚焦并跳转会话 */
+function fireNotification(title: string, body: string, sessionId?: string): void {
+  try {
+    const n = new Notification(title, { body: body.slice(0, 200), tag: sessionId ?? title });
+    n.onclick = () => {
+      window.focus();
+      if (sessionId) useExm.getState().requestNav("chat", sessionId);
+    };
+  } catch { /* 通知不可用时静默 */ }
+}
+
+/** 是否允许对某会话弹通知：已授权 + 页面隐藏 或 事件非当前会话 */
+function fireNotificationLocal(title: string, body: string, sessionId?: string): void {
+  try {
+    const n = new Notification(title, { body: body.slice(0, 200), tag: sessionId ?? title });
+    n.onclick = () => {
+      window.focus();
+      if (sessionId) useExm.getState().requestNav("chat", sessionId);
+    };
+  } catch { /* 忽略 */ }
+}
+
+function shouldNotifySession(sessionId?: string): boolean {
+  if (document.visibilityState !== "hidden" && sessionId && sessionId === useExm.getState().sessionId) return false;
+  return true;
 }
 
 let ws: WebSocket | null = null;
 /** 连接代际号：每次 connectWs 递增。旧代际残留的 onclose/定时器一律失效，根治 A→B→A 快速切换的闭包竞态 */
 let wsGen = 0;
+/** 连续失败退避（2s → 5s → 10s → 30s 封顶）：成功 open 即归零 */
+let wsBackoff = 0;
+/** 心跳看门狗：超过该时长未收到任何帧（含协议 Pong）即判死重连 */
+const WS_STALE_MS = 45000;
+let wsLastFrame = 0;
+let wsWatch: ReturnType<typeof setInterval> | null = null;
 
 function connectWs(get: () => ExmState): void {
   const sessionId = get().sessionId;
@@ -84,8 +153,10 @@ function connectWs(get: () => ExmState): void {
   const host = base ? base.replace(/^https?:\/\//, "") : location.host;
   ws = new WebSocket(`${proto}://${host}/ws?sessionId=${sessionId}&key=${encodeURIComponent(localStorage.getItem("exm.key") ?? "")}`);
   let reconnected = false; // 本代际是否经历过断连重连（成功后补偿拉取丢失的事件）
+  wsLastFrame = Date.now();
   ws.onopen = () => {
     if (gen !== wsGen) return;
+    wsBackoff = 0; // 连上即归零退避
     get().setWs(true);
     if (!reconnected) return;
     // 断连补偿：重拉消息与任务图恢复丢失事件；图无在途节点则解除 running 卡死
@@ -106,22 +177,56 @@ function connectWs(get: () => ExmState): void {
     if (gen !== wsGen) return; // 旧代际：静默退出，不碰当前连接、不重连
     get().setWs(false);
     reconnected = true;
+    const delay = [2000, 5000, 10000, 30000][Math.min(wsBackoff, 3)];
+    wsBackoff += 1;
     setTimeout(() => {
       if (gen !== wsGen || get().sessionId !== sessionId) return;
       connectWs(get);
-    }, 2000);
+    }, delay);
   };
   ws.onmessage = (m) => {
+    wsLastFrame = Date.now();
     try {
       get().handleEvent(JSON.parse(String(m.data)) as WsEvent);
     } catch {
       /* 忽略坏帧 */
     }
   };
+  // 心跳看门狗（单例）：空闲超时强制重连（浏览器对协议 Pong 不暴露事件，以「收帧时刻」为准——
+  // 服务端 25s 一跳且事件流通常活跃，45s 静默基本等于链路已死）
+  if (wsWatch === null) {
+    wsWatch = setInterval(() => {
+      const cur = ws;
+      if (!cur || cur.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - wsLastFrame > WS_STALE_MS) {
+        cur.close(); // 触发 onclose → 指数退避重连
+      }
+    }, 10000);
+  }
+}
+
+// 网络恢复 / 页面回前台：立即重连（不等退避计时器）
+function reconnectNow(): void {
+  const cur = ws;
+  if (cur && cur.readyState === WebSocket.OPEN) return;
+  wsBackoff = 0;
+  cur?.close(); // 触发 onclose → 立即档退避
+  // onclose 携带旧代际时不会自愈（例如从未连上过），此处直接补一跳
+  setTimeout(() => {
+    if (!ws || ws.readyState === WebSocket.CLOSED) wsBackoff = 0;
+  }, 0);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", reconnectNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") reconnectNow();
+  });
 }
 
 export const useExm = create<ExmState>((set, get) => ({
   sessions: [],
+  sessionsLoaded: false,
   sessionId: null,
   messages: [],
   graph: null,
@@ -149,6 +254,7 @@ export const useExm = create<ExmState>((set, get) => ({
       api.getConfig(),
     ]);
     set({ sessions, agents, config });
+    get().markSessionsLoaded();
     await get().loadGroups();
     if (sessions.length > 0) {
       await get().selectSession(sessions[0].id);
@@ -250,7 +356,7 @@ export const useExm = create<ExmState>((set, get) => ({
     await get().selectSession(s.id);
   },
 
-  send: async (text, images) => {
+  send: async (text, images, sendMode) => {
     const id = get().sessionId;
     if (!id || !text.trim()) return;
     const label = images?.length ? tr("store.withImages", { text, n: images.length }) : text;
@@ -275,7 +381,16 @@ export const useExm = create<ExmState>((set, get) => ({
         },
       ],
     });
-    await api.chat(id, text, images);
+    try {
+      await api.chat(id, text, images, sendMode ?? undefined);
+    } finally {
+      // 草稿已发出：清除（chat-ergonomics）
+      try {
+        sessionStorage.removeItem(draftKey(id));
+      } catch { /* 隐私模式忽略 */ }
+      set((s) => ({ drafts: { ...s.drafts, [id]: "" } }));
+    }
+    get().updateSessionPreview(id, label);
   },
 
   saveConfig: async (body) => {
@@ -294,6 +409,21 @@ export const useExm = create<ExmState>((set, get) => ({
     } catch (e) {
       message.error(String(e));
     }
+  },
+
+  navRequest: null,
+  requestNav: (view, sessionId) => set({ navRequest: { view, sessionId, nonce: Date.now() } }),
+  markSessionsLoaded: () => set({ sessionsLoaded: true }),
+
+  drafts: (() => {
+    try { return JSON.parse(sessionStorage.getItem("exm.drafts") ?? "{}"); } catch { return {}; }
+  })(),
+  setDraft: (sessionId, text) => {
+    set((s) => ({ drafts: { ...s.drafts, [sessionId]: text } }));
+    try { sessionStorage.setItem("exm.drafts", JSON.stringify({ ...useExm.getState().drafts, [sessionId]: text })); } catch { /* 隐私模式忽略 */ }
+  },
+  updateSessionPreview: (sessionId, preview) => {
+    set((s) => ({ sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, lastMessagePreview: preview, lastActiveAt: new Date().toISOString() } : x)) }));
   },
 
   handleEvent: (evt) => {
@@ -344,7 +474,15 @@ export const useExm = create<ExmState>((set, get) => ({
         });
         break;
       }
-      case "approval.required":
+      case "approval.required": {
+        const prefs = loadNotifyPrefs();
+        if (prefs.enabled && prefs.approval && document.visibilityState === "hidden" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          fireNotification(
+            "审批请求待处理",
+            String(p.command ?? p.agentId ?? ""),
+            evt.sessionId || undefined,
+          );
+        }
         set({
           approvals: [
             ...get().approvals.filter((a) => a.approvalId !== String(p.approvalId)),
@@ -356,6 +494,7 @@ export const useExm = create<ExmState>((set, get) => ({
           ],
         });
         break;
+      }
       case "approval.resolved":
         set({ approvals: get().approvals.filter((a) => a.approvalId !== String(p.approvalId)) });
         break;
@@ -442,10 +581,19 @@ export const useExm = create<ExmState>((set, get) => ({
         set({ ledger: p as unknown as SessionLedger });
         break;
       case "run.finished": {
+        // 浏览器通知（web-notifications）：非当前会话或页面隐藏时提醒
+        {
+          const prefs = loadNotifyPrefs();
+          if (prefs.enabled && prefs.roundDone && typeof Notification !== "undefined" && Notification.permission === "granted" && shouldNotifySession(evt.sessionId)) {
+            const first = ((p.statements ?? []) as Array<{ text?: string }>)[0];
+            fireNotificationLocal("轮次完成", String(first?.text ?? "已完成"), evt.sessionId);
+          }
+        }
         const statements = (p.statements ?? []) as Statement[];
         const id = get().sessionId!;
-        // 工具轨迹随最终消息留存（思维流与实时卡一并清场）
+        // 工具轨迹与思维链随最终消息留存（收起栏可随时展开回看，不再「突然消失」）
         const toolCalls = get().runToolCalls;
+        const thinking = get().liveThinking;
         set({
           running: false,
           liveOrch: "",
@@ -462,10 +610,23 @@ export const useExm = create<ExmState>((set, get) => ({
               agentId: typeof p.agentId === "string" ? p.agentId : "orchestrator",
               statements,
               toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+              thinking: thinking.trim() ? thinking : undefined,
               createdAt: new Date().toISOString(),
             },
           ],
         });
+        const finText = statements.map((st) => st.text).join(" ");
+        if (finText.trim()) get().updateSessionPreview(id, finText);
+        break;
+      }
+      case "cron.finished": {
+        const prefs = loadNotifyPrefs();
+        if (prefs.enabled && prefs.cronDone && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const name = String(p.jobName ?? "");
+          const status = String(p.status ?? "");
+          fireNotificationLocal(`定时任务${status === "done" ? "完成" : "失败"}：${name}`, String(p.summary ?? status), undefined);
+        }
+        set({ timeline: [...get().timeline, { kind: "cron", text: tr("store.tl.cron", { name: String(p.jobName ?? ""), status: String(p.status ?? "") }) }] });
         break;
       }
       case "run.error":

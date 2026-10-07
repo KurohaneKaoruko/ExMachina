@@ -16,14 +16,15 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+pub mod channel_test;
 pub mod git_panel;
-pub mod identity;
-pub mod limits;
+pub mod identity;pub mod limits;
 pub mod llm_admin;
 pub mod singles;
 pub mod discord;
 pub mod matrix;
 pub mod napcat;
+pub mod nexus_api;
 pub mod platform;
 pub mod qqbot;
 pub mod slack;
@@ -44,13 +45,14 @@ async fn auth_middleware(
 ) -> axum::response::Response {
     let required = !st.core.config().security.auth_key.is_empty();
     let path = req.uri().path();
-    // 守 /api/* 与 /ws（WS 在升级提取前完成鉴权）；静态资源（壳/登录页）与 verify 豁免。
-    // MCP HTTP 挂载（10.3）复用同一鉴权中间件：挂载路径启用时一并纳入守卫
+    // 守 /api/* 与 MCP 挂载；静态资源（壳/登录页）与 verify 豁免。
+    // /ws 不在此守卫：浏览器 WebSocket 无法携带自定义头，由 ws_handler 自身校验查询参数密钥
+    // （缺失/错误同样 401，安全口径不降级）。MCP HTTP 挂载（10.3）启用时纳入守卫。
     let mcp_path = {
         let c = st.core.config();
         if c.mcp_serve.enabled { format!("/{}", c.mcp_serve.http_path.trim_matches('/')) } else { String::new() }
     };
-    let guarded = path.starts_with("/api/") || path == "/ws" || (!mcp_path.is_empty() && path == mcp_path);
+    let guarded = path.starts_with("/api/") || (!mcp_path.is_empty() && path == mcp_path);
     if !required || path == "/api/auth/verify" || !guarded {
         return next.run(req).await;
     }
@@ -183,10 +185,21 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .merge(singles::routes())
         .merge(worker_hub::routes())
         .merge(triggers::routes())
+        .merge(nexus_api::routes())
         .route(
             "/api/groups/:gid/agents/:identifier",
             axum::routing::delete(remove_agent_from_group),
         )
+        .route(
+            "/api/groups/:gid/agents/:identifier/prompt",
+            get(get_agent_prompt).put(put_agent_prompt),
+        )
+        // 停止会话运行中的轮次（process-transparency）
+        .route("/api/sessions/:id/stop", post(stop_session))
+        // 工具审计聚合（ops-visibility）
+        .route("/api/audit", get(list_audit))
+        // 通道连通测试（integration-ux）
+        .route("/api/channels/:id/test", post(crate::channel_test::test_channel))
         .route("/api/auth/verify", post(verify_auth))
         // MCP 服务端 HTTP 挂载（10.3）：配置启用时挂载（默认关闭 = 不挂载）；
         // 挂载在鉴权中间件之前，复用同一鉴权口径
@@ -989,6 +1002,9 @@ struct ChatBody {
     /// 图片附件（data URL，多模态输入；随本轮进入规划）
     #[serde(default)]
     images: Vec<String>,
+    /// 本轮模式（思考模式）：direct = 强制 L0 直答；full = 强制拆解派发。缺省 = 跟随指挥体规划
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Json<ChatBody>) -> impl IntoResponse {
@@ -1004,6 +1020,9 @@ async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Js
     let images = body.images.clone();
     if !images.is_empty() {
         core.stage_images(&id, images);
+    }
+    if let Some(mode) = &body.mode {
+        exm_core::orchestrator::set_session_mode(&id, mode);
     }
     tokio::spawn(async move {
         if let Err(e) = core.chat(&id, &text).await {
@@ -1042,6 +1061,39 @@ async fn rename_session(
     match st.core.store.update_session_title(&id, &title) {
         Ok(_) => Json(json!({ "ok": true, "title": title })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- 工具审计聚合（ops-visibility）
+
+/// 工具审计查询（GET /api/audit）：跨个体聚合既有审计分片，服务端过滤
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditQuery {
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn list_audit(State(st): State<AppState>, Query(q): Query<AuditQuery>) -> impl IntoResponse {
+    match st.core.store.list_tool_audit_filtered(q.agent.as_deref(), q.tool.as_deref(), q.limit.unwrap_or(200).min(1000)) {
+        Ok(items) => Json(json!({ "items": items })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// 停止会话运行中的轮次（POST /api/sessions/:id/stop）：运行中返回已执行工具数，空闲返回 409
+async fn stop_session(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match st.core.stop_session(&id) {
+        Ok(tools) => Json(json!({ "ok": true, "toolsExecuted": tools })).into_response(),
+        Err(e) => {
+            let idle = e.to_string().contains("没有运行中的任务");
+            let code = if idle { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(json!({ "error": e.to_string() }))).into_response()
+        }
     }
 }
 
@@ -1221,6 +1273,7 @@ async fn create_agent(State(st): State<AppState>, Json(b): Json<CreateAgentBody>
         output_schema: Default::default(),
         prompt_file: String::new(),
         model_hint: b.model.filter(|s| !s.trim().is_empty()),
+        link: None,
     };
     // 目标组：显式指定时写入该组（首个个体自动成为该组主智能体），否则激活组
     let result = match &b.group {
@@ -1365,8 +1418,47 @@ async fn get_agent(State(st): State<AppState>, Path(identifier): Path<String>) -
 
 // ---------------------------------------------------------------- 人设（说话风格）
 
-async fn get_persona(State(st): State<AppState>, Path(identifier): Path<String>) -> impl IntoResponse {
-    match st.core.persona(&identifier) {
+// ---------------------------------------------------------------- 组内个体系统提示词（PROMPT 读写）
+
+/// 组内个体系统提示词读取（GET /api/groups/:gid/agents/:identifier/prompt）
+async fn get_agent_prompt(
+    State(st): State<AppState>,
+    Path((gid, identifier)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let Some(def) = st.core.registry().agents_in_group(&gid).into_iter().find(|a| a.identifier == identifier)
+    else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "个体不存在" }))).into_response();
+    };
+    match st.core.registry().load_group_prompt(&gid, &def.prompt_file) {
+        Ok(prompt) => Json(json!({ "identifier": identifier, "promptFile": def.prompt_file, "prompt": prompt })).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "提示词文件不存在", "promptFile": def.prompt_file })),
+        )
+            .into_response(),
+    }
+}
+
+/// 组内个体系统提示词保存（PUT）：热生效，下一轮派发即装载
+async fn put_agent_prompt(
+    State(st): State<AppState>,
+    Path((gid, identifier)): Path<(String, String)>,
+    Json(b): Json<crate::singles::PromptBody>,
+) -> impl IntoResponse {
+    let Some(def) = st.core.registry().agents_in_group(&gid).into_iter().find(|a| a.identifier == identifier)
+    else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "个体不存在" }))).into_response();
+    };
+    if b.prompt.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "提示词不能为空" }))).into_response();
+    }
+    match st.core.registry().write_group_prompt(&gid, &def.prompt_file, &b.prompt) {
+        Ok(_) => Json(json!({ "ok": true, "identifier": identifier })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+async fn get_persona(State(st): State<AppState>, Path(identifier): Path<String>) -> impl IntoResponse {    match st.core.persona(&identifier) {
         Ok(persona) => {
             let custom = st.core.persona_is_custom(&identifier).unwrap_or(false);
             Json(json!({
@@ -1741,8 +1833,18 @@ async fn ws_handler(
 
 async fn ws_loop(mut socket: WebSocket, core: Arc<Core>, session_filter: Option<String>) {
     let mut rx = core.subscribe();
+    // 心跳保活：周期性协议层 Ping（浏览器自动 Pong）。空闲连接经 NAT/代理常被静默丢弃，
+    // 且无事件流时客户端无从判活——Ping 既保活又让断连可感知。
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(25));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    ping.tick().await; // 首跳立即返回，跳过
     loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if socket.send(Message::Ping(Vec::new())).await.is_err() {
+                    break;
+                }
+            }
             evt = rx.recv() => {
                 match evt {
                     Ok(e) => {
@@ -1849,12 +1951,16 @@ pub async fn serve(core: Arc<Core>, port: u16, host: Option<&str>) -> anyhow::Re
         let st = AppState { core: core.clone() };
         core.set_remote(worker_hub::hub(&st))?;
     }
-    // 断点续跑：上次进程中断的会话（图非终态）自动重新调度收束
+    // 断点续跑：上次进程中断的会话（图非终态）自动重新调度收束。
+    // 后台执行——续跑可能包含完整的多节点调度与 LLM 往返，绝不能阻塞端口绑定（否则健康检查超时、整站 502）
     {
-        let n = core.resume_interrupted().await;
-        if n > 0 {
-            println!("[gateway] 断点续跑：已恢复 {n} 个中断会话");
-        }
+        let core = core.clone();
+        tokio::spawn(async move {
+            let n = core.resume_interrupted().await;
+            if n > 0 {
+                println!("[gateway] 断点续跑：已恢复 {n} 个中断会话（后台）");
+            }
+        });
     }
     // MCP 工具清单后台刷新（懒连接，失败仅记录；首次调用会重试）
     {

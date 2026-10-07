@@ -128,8 +128,7 @@ pub fn job_due(job: &CronJob, now: DateTime<Utc>) -> bool {
 }
 
 /// 五段 cron 匹配：分(0-59) 时(0-23) 日(1-31) 月(1-12) 周(0-6，0=周日)
-pub fn cron_matches(expr: &str, now: DateTime<Utc>) -> bool {
-    let fields: Vec<&str> = expr.split_whitespace().collect();
+pub fn cron_matches(expr: &str, now: DateTime<Utc>) -> bool {    let fields: Vec<&str> = expr.split_whitespace().collect();
     if fields.len() != 5 {
         return false;
     }
@@ -138,6 +137,22 @@ pub fn cron_matches(expr: &str, now: DateTime<Utc>) -> bool {
         && field_matches(fields[2], now.day(), 1, 31)
         && field_matches(fields[3], now.month(), 1, 12)
         && field_matches(fields[4], now.weekday().num_days_from_sunday(), 0, 7)
+}
+
+/// 最近一次命中时间：从 from 的下一分钟起逐分钟扫描（上限 max_minutes）。
+/// 五段匹配为纯算术，最坏 52.7 万次迭代在毫秒级——不引入 cron 解析依赖。
+pub fn next_run(expr: &str, from: DateTime<Utc>, max_minutes: u32) -> Option<DateTime<Utc>> {
+    if expr.split_whitespace().count() != 5 {
+        return None;
+    }
+    let mut t = from + chrono::Duration::minutes(1);
+    for _ in 0..max_minutes {
+        if cron_matches(expr, t) {
+            return Some(t);
+        }
+        t += chrono::Duration::minutes(1);
+    }
+    None
 }
 
 /// 单字段匹配：`*` | 数字 | `a-b` | 列表 `a,b,c` | 步进 `*/n`、`a-b/n`
@@ -190,6 +205,20 @@ mod tests {
         assert!(!cron_matches("0 9 * * 1-5", at(2026, 9, 13, 9, 0))); // 周日
         assert!(cron_matches("5,25 8-18/2 1,15 * *", at(2026, 9, 15, 10, 25)));
         assert!(!cron_matches("bad expr", at(2026, 9, 12, 10, 30)));
+    }
+
+    #[test]
+    fn 下次执行时间_命中与无命中() {
+        // 每日 9:00：从 10:30 起最近命中是次日 9:00
+        let from = at(2026, 10, 7, 10, 30);
+        let next = next_run("0 9 * * *", from, 527040).unwrap();
+        assert_eq!(next, at(2026, 10, 8, 9, 0));
+        // 每小时整点：从 10:30 起最近命中 11:00
+        let next = next_run("0 * * * *", from, 60).unwrap();
+        assert_eq!(next, at(2026, 10, 7, 11, 0));
+        // 非法表达式 / 无命中
+        assert!(next_run("bad expr", from, 10).is_none());
+        assert!(next_run("0 9 * * *", from, 10).is_none(), "上限内无命中返回 None");
     }
 
     #[test]

@@ -3,14 +3,14 @@
  * 字段定义来自后端 config_schema()；LLM 接入在「提供商」页维护。
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Input, InputNumber, message, Select, Switch } from "antd";
-import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, GlobalOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
+import { Alert, Button, Input, InputNumber, message, Select, Switch, Card } from "antd";
+import { BgColorsOutlined, CloudServerOutlined, DatabaseOutlined, DesktopOutlined, FieldTimeOutlined, GlobalOutlined, IdcardOutlined, NotificationOutlined, PieChartOutlined, RadarChartOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
 import { PageHeader } from "../components/PageHeader";
-import { LimitsPanel } from "../components/LimitsPanel";
-import { api, type ConfigSchema, type ConfigSchemaField, type GatewayConfig } from "../api";
+import { api, limitsStats, type ConfigSchema, type ConfigSchemaField, type GatewayConfig, type LimitsStats } from "../api";
+import { loadNotifyPrefs, saveNotifyPrefs, type NotifyPrefs } from "../store";
 
 /** 分组元数据。ui 是本地偏好分区，不属于后端 config schema */
 const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey: TKey }> = {
@@ -22,6 +22,12 @@ const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey:
   sandbox: { icon: <SafetyOutlined />, titleKey: "sec.sandbox", descKey: "sec.sandbox.desc" },
   browser: { icon: <RobotOutlined />, titleKey: "sec.browser", descKey: "sec.browser.desc" },
   hooks: { icon: <ThunderboltOutlined />, titleKey: "sec.hooks", descKey: "sec.hooks.desc" },
+  computer: { icon: <DesktopOutlined />, titleKey: "sec.computer", descKey: "sec.computer.desc" },
+  identity: { icon: <IdcardOutlined />, titleKey: "sec.identity", descKey: "sec.identity.desc" },
+  limits: { icon: <PieChartOutlined />, titleKey: "sec.limits", descKey: "sec.limits.desc" },
+  triggers: { icon: <RadarChartOutlined />, titleKey: "sec.triggers", descKey: "sec.triggers.desc" },
+  mcpServe: { icon: <CloudServerOutlined />, titleKey: "sec.mcpServe", descKey: "sec.mcpServe.desc" },
+  notify: { icon: <NotificationOutlined />, titleKey: "sec.notify", descKey: "sec.notify.desc" },
   tools: { icon: <ToolOutlined />, titleKey: "sec.tools", descKey: "sec.tools.desc" },
   ui: { icon: <BgColorsOutlined />, titleKey: "sec.ui", descKey: "sec.ui.desc" },
 };
@@ -180,7 +186,7 @@ export function SettingsView(): React.ReactElement {
   }, [config]);
 
   const groups = useMemo(() => schema?.groups ?? [], [schema]);
-  const current = groups.find((g) => g.key === selected) ?? groups[0];
+  const current = groups.find((g) => g.key === selected) ?? null;
   const meta = current ? SECTIONS[current.key] : undefined;
 
   const setField = (key: string, v: unknown) => setValues((p) => ({ ...p, [key]: v }));
@@ -266,6 +272,7 @@ export function SettingsView(): React.ReactElement {
             <div className="cfg2-foot">
               <span className="dim">{t("settings.localTip")}</span>
             </div>
+            <NotifyPrefsCard />
           </>
         ) : current && meta ? (
           <>
@@ -273,6 +280,7 @@ export function SettingsView(): React.ReactElement {
               <h3>{t(meta.titleKey)}</h3>
               <p>{t(meta.descKey)}。{t("settings.hotTip")}</p>
             </header>
+            {current.key === "limits" && <LimitsStatsCard />}
             <div className="cfg-list">
               {current.fields.map((f) => {
                 const value = values[f.key];
@@ -335,8 +343,109 @@ export function SettingsView(): React.ReactElement {
           <div className="pane-loading"><i /></div>
         )}
         </section>
-        <LimitsPanel />
       </div>
     </div>
+  );
+}
+
+/** 用量统计卡（ops-visibility）：消费既有 /limits/stats 快照 */
+function LimitsStatsCard(): React.ReactElement {
+  const t = useT();
+  const [stats, setStats] = useState<LimitsStats | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try { setStats(await limitsStats()); } catch { setStats(null); }
+    })();
+  }, []);
+  if (!stats) return <></>;
+  return (
+    <Card size="small" className="hud" style={{ marginBottom: 12 }}>
+      {stats.enabled ? (
+        <>
+          <div className="dim" style={{ marginBottom: 6 }}>
+            {t("cfg.limitsStatsEnabled", { window: stats.windowSecs, max: stats.maxRequests > 0 ? stats.maxRequests : "∞", period: stats.quotaPeriod })}
+          </div>
+          {stats.counters.length === 0 ? (
+            <div className="dim">{t("cfg.limitsNoCounters")}</div>
+          ) : (
+            <table className="plain-table">
+              <thead><tr><th>{t("cfg.limitsSubject")}</th><th>{t("cfg.limitsCount")}</th></tr></thead>
+              <tbody>
+                {stats.counters.map((c) => (
+                  <tr key={c.key}><td className="mono">{c.key}</td><td className="mono">{c.count}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      ) : (
+        <div className="dim">{t("cfg.limitsDisabled")}</div>
+      )}
+    </Card>
+  );
+}
+
+/** 浏览器通知偏好卡（web-notifications）：授权 + 类别开关，本地持久化 */
+function NotifyPrefsCard(): React.ReactElement {
+  const t = useT();
+  const [prefs, setPrefs] = useState<NotifyPrefs>(() => loadNotifyPrefs());
+  const [denied, setDenied] = useState(false);
+
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "denied") setDenied(true);
+  }, []);
+
+  const setEnabled = async (v: boolean) => {
+    if (v && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setDenied(true);
+        return;
+      }
+    }
+    setDenied(typeof Notification !== "undefined" && Notification.permission === "denied");
+    const next = { ...prefs, enabled: v };
+    setPrefs(next);
+    saveNotifyPrefs(next);
+  };
+
+  const setCat = (key: "approval" | "roundDone" | "cronDone", v: boolean) => {
+    const next = { ...prefs, [key]: v };
+    setPrefs(next);
+    saveNotifyPrefs(next);
+  };
+
+  const unsupported = typeof Notification === "undefined";
+
+  return (
+    <Card size="small" className="hud" style={{ marginBottom: 12 }}>
+      <div className="dim" style={{ marginBottom: 8 }}>{t("notify.desc")}</div>
+      {unsupported ? (
+        <div className="dim">{t("notify.unsupported")}</div>
+      ) : (
+        <>
+          {denied && <Alert type="warning" showIcon message={t("notify.blocked")} style={{ marginBottom: 8 }} />}
+          <div className="cfg2-row">
+            <div className="cfg2-label">
+              <div className="cfg2-name">{t("notify.enabled")}</div>
+              <div className="cfg2-help">{t("notify.enabledHelp")}</div>
+            </div>
+            <Switch checked={prefs.enabled} onChange={(v) => void setEnabled(v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catApproval")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.approval} onChange={(v) => setCat("approval", v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catRound")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.roundDone} onChange={(v) => setCat("roundDone", v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catCron")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.cronDone} onChange={(v) => setCat("cronDone", v)} />
+          </div>
+        </>
+      )}
+    </Card>
   );
 }

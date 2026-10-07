@@ -71,7 +71,7 @@ pub struct LocalRegistry {
     dir: PathBuf,
     groups: RwLock<HashMap<String, GroupData>>,
     active: RwLock<String>,
-    /// 单体智能体（独立于任何组，直接作为交互对象；agents/singles/）
+    /// 单体智能体（独立于任何组，直接作为交互对象；entities/agents/）
     singles: RwLock<HashMap<String, AgentDefinition>>,
     /// 当前交互目标：None = 激活组；Some(id) = 单体智能体
     active_single: RwLock<Option<String>>,
@@ -87,11 +87,11 @@ fn valid_id(s: &str) -> bool {
 impl LocalRegistry {
     pub fn new(agents_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let dir = agents_dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(dir.join("singles"))?;
+        std::fs::create_dir_all(dir.join("agents"))?;
         let reg = LocalRegistry {
             dir,
             groups: RwLock::new(HashMap::new()),
-            active: RwLock::new("default".to_string()),
+            active: RwLock::new("exmachina".to_string()),
             singles: RwLock::new(HashMap::new()),
             active_single: RwLock::new(None),
         };
@@ -105,17 +105,17 @@ impl LocalRegistry {
         // 组统一放 agents/groups/<gid>/；内置默认组 = groups/default（builtin=true，定义受保护）
         let groups_dir = self.dir.join("groups");
         std::fs::create_dir_all(&groups_dir)?;
-        let default_dir = groups_dir.join("default");
+        let default_dir = groups_dir.join("exmachina");
         let default_meta_path = default_dir.join("group.json");
         let default_meta = if default_meta_path.exists() {
             serde_json::from_str(&std::fs::read_to_string(&default_meta_path)?)
                 .context("解析 groups/default/group.json 失败")?
         } else {
             let meta = GroupMeta {
-                id: "default".into(),
-                name: "智械集群".into(),
-                description: "内置默认组：全连结指挥体 + 子个体集群（定义受保护）".into(),
-                primary: Some("exmachina-orchestrator".into()),
+                id: "exmachina".into(),
+                name: "智能连结".into(),
+                description: "内置默认组（连结体）：指挥体 + 子个体集群（定义受保护）".into(),
+                primary: Some("orchestrator".into()),
                 workspace: None,
                 model: None,
                 capabilities: None,
@@ -144,7 +144,7 @@ impl LocalRegistry {
                 if !valid_id(&meta.id) {
                     anyhow::bail!("非法组 id: {}", meta.id);
                 }
-                if meta.id == "default" {
+                if meta.id == "exmachina" {
                     continue; // 默认组已在上方装载
                 }
                 groups.insert(meta.id.clone(), self.load_group(meta, gdir)?);
@@ -153,21 +153,21 @@ impl LocalRegistry {
         if groups.is_empty() {
             anyhow::bail!("未装载到任何智能体组");
         }
-        if !groups.contains_key("default") {
+        if !groups.contains_key("exmachina") {
             anyhow::bail!("缺少内置默认组");
         }
 
-        // 单体智能体：agents/singles/*.json（独立交互对象，不属于任何组）
+        // 单体智能体：entities/agents/*.json（独立交互对象，不属于任何组）
         let mut singles = HashMap::new();
-        let singles_dir = self.dir.join("singles");
+        let singles_dir = self.dir.join("agents");
         if singles_dir.exists() {
-            // 目录制：agents/singles/<id>/agent.json
+            // 目录制：entities/agents/<id>/agent.json
             let mut def_files: Vec<PathBuf> = std::fs::read_dir(&singles_dir)?
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.is_dir() && p.join("agent.json").is_file())
                 .map(|p| p.join("agent.json"))
                 .collect();
-            // 兼容旧布局：singles/<id>.json 平铺定义
+            // 兼容旧布局：<id>.json 平铺定义
             if let Ok(entries) = std::fs::read_dir(&singles_dir) {
                 for e in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
                     if e.is_file() && e.extension().map(|x| x == "json").unwrap_or(false) {
@@ -192,7 +192,7 @@ impl LocalRegistry {
         let active_file = self.dir.join("active_group");
         let saved = std::fs::read_to_string(&active_file).unwrap_or_default();
         let active = saved.trim().to_string();
-        let active = if groups.contains_key(&active) { active } else { "default".to_string() };
+        let active = if groups.contains_key(&active) { active } else { "exmachina".to_string() };
 
         *self.groups.write() = groups;
         *self.active.write() = active;
@@ -298,7 +298,7 @@ impl LocalRegistry {
 
     /// 删除自定义组（内置组与激活组不可删）
     pub fn delete_group(&self, gid: &str) -> anyhow::Result<()> {
-        if gid == "default" || self.group_meta(gid).map(|m| m.builtin).unwrap_or(false) {
+        if gid == "exmachina" || self.group_meta(gid).map(|m| m.builtin).unwrap_or(false) {
             anyhow::bail!("内置组不可删除");
         }
         if self.active_group() == gid {
@@ -403,7 +403,7 @@ impl LocalRegistry {
             return Some(if stem.contains('/') || stem.contains('\\') {
                 self.singles_dir().join(&file)
             } else {
-                self.dir.join("singles").join("prompts").join(&file)
+                self.dir.join("agents").join("prompts").join(&file)
             });
         }
         let groups = self.groups.read();
@@ -417,19 +417,19 @@ impl LocalRegistry {
     }
 
     fn singles_dir(&self) -> PathBuf {
-        self.dir.join("singles")
+        self.dir.join("agents")
     }
 
     fn singles_prompt_path(&self, prompt_file: &str) -> PathBuf {
         if prompt_file.contains('/') || prompt_file.contains('\\') {
-            // 新约定：单体目录 agents/singles/<id>/PROMPT.md
+            // 新约定：单体目录 entities/agents/<id>/PROMPT.md
             self.singles_dir().join(prompt_file)
         } else {
             self.singles_dir().join("prompts").join(prompt_file)
         }
     }
 
-    /// 单体定义文件：agents/singles/<id>/agent.json
+    /// 单体定义文件：entities/agents/<id>/agent.json
     fn single_def_path(&self, id: &str) -> PathBuf {
         self.singles_dir().join(id).join("agent.json")
     }
@@ -438,6 +438,16 @@ impl LocalRegistry {
     pub fn load_single_prompt(&self, prompt_file: &str) -> anyhow::Result<String> {
         std::fs::read_to_string(self.singles_prompt_path(prompt_file))
             .with_context(|| format!("读取单体提示词失败: {prompt_file}"))
+    }
+
+    /// 写入单体提示词文件（PROMPT.md；与激活组状态无关）
+    pub fn write_single_prompt(&self, prompt_file: &str, content: &str) -> anyhow::Result<()> {
+        let p = self.singles_prompt_path(prompt_file);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&p, content)?;
+        Ok(())
     }
 
     /// 新增/更新单体智能体（identifier 冲突即替换）
@@ -462,14 +472,14 @@ impl LocalRegistry {
                 format!(
                     "# {}
 
-你是 EXMACHINA 的单体智能体 {}（identifier: {}），独立直接服务于用户，不经指挥体调度。
-简介：{}
+你是 {}，用户的单体智能体：听清意图、亲手做完、回报结果——分析与实施一体完成。
 
 ## 语言纪律
 - 称用户为\"用户\"，以\"本机\"自称。
-- 独立完成用户交予的全部工作；信息不足时显式说明假设。
+- 被问起你是谁：一句话说明名字与职责，随即回到用户的事上。
+- 信息不足时显式说明假设，再给出最小验证路径。
 ",
-                    def.name, def.name, def.identifier, def.description
+                    def.name, def.name
                 ),
             )?;
         }
@@ -578,7 +588,7 @@ impl LocalRegistry {
         self.groups.read().get(gid).map(|g| g.dir.clone())
     }
 
-    /// 单体目录（singles/，公开供记忆渲染等使用）
+    /// 单体根目录（entities/agents/，公开供记忆渲染等使用）
     pub fn singles_dir_pub(&self) -> PathBuf {
         self.singles_dir()
     }
@@ -641,6 +651,32 @@ impl LocalRegistry {
         Ok(())
     }
 
+    /// 组作用域提示词读取（成员编辑用：不随激活组漂移）
+    pub fn load_group_prompt(&self, gid: &str, prompt_file: &str) -> anyhow::Result<String> {
+        let dir = self.group_dir(gid).context("组不存在")?;
+        let p = if prompt_file.contains('/') || prompt_file.contains('\\') {
+            dir.join(prompt_file)
+        } else {
+            dir.join("prompts").join(prompt_file)
+        };
+        std::fs::read_to_string(&p).with_context(|| format!("读取提示词失败: {}", p.display()))
+    }
+
+    /// 组作用域提示词写入
+    pub fn write_group_prompt(&self, gid: &str, prompt_file: &str, content: &str) -> anyhow::Result<()> {
+        let dir = self.group_dir(gid).context("组不存在")?;
+        let p = if prompt_file.contains('/') || prompt_file.contains('\\') {
+            dir.join(prompt_file)
+        } else {
+            dir.join("prompts").join(prompt_file)
+        };
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&p, content)?;
+        Ok(())
+    }
+
     pub fn load_playbooks(&self) -> anyhow::Result<Vec<crate::types::Playbook>> {
         self.playbooks_in_group(&self.active_group())
     }
@@ -671,12 +707,12 @@ impl LocalRegistry {
 
     // ---------------- 技能包（激活组，docs/10） ----------------
 
-    /// 技能全局目录：`agents/skills/`，全体组共用（技能是动态加载的作业指令，不做组隔离）
+    /// 技能全局目录：`skills/`，全体组共用（技能是动态加载的作业指令，不做组隔离）
     fn skills_dir(&self) -> Option<PathBuf> {
-        Some(self.dir.join("skills"))
+        Some(self.dir.parent().unwrap_or(self.dir.as_path()).join("skills"))
     }
 
-    /// 装载全局技能包（`agents/skills/*.json`，热装载，全体组共用）
+    /// 装载全局技能包（`skills/*.json`，热装载，全体组共用）
     pub fn load_skills(&self) -> anyhow::Result<Vec<crate::types::SkillDef>> {
         let Some(dir) = self.skills_dir() else { return Ok(vec![]) };
         if !dir.exists() {
@@ -1009,7 +1045,7 @@ impl LocalRegistry {
         Ok(())
     }
 
-    /// 个体定义文件：组内 agents/<id>.json（单体 singles/<id>/agent.json）
+    /// 个体定义文件：组内 agents/<id>.json（单体 entities/agents/<id>/agent.json）
     fn def_path_in(g_dir: &Path, identifier: &str) -> PathBuf {
         g_dir.join("agents").join(format!("{identifier}.json"))
     }
@@ -1060,7 +1096,7 @@ impl LocalRegistry {
     /// 本方法与 set_agent_model 同属受限字段编辑，仅放行 AgentPatch 声明的字段，
     /// identifier/tier/prompt_file 与提示词文件恒不可改，落盘回原定义文件。
     pub fn update_agent(&self, identifier: &str, patch: &AgentPatch) -> anyhow::Result<AgentDefinition> {
-        // 1) 单体智能体（agents/singles/<id>.json）
+        // 1) 单体智能体（entities/agents/<id>.json）
         if self.singles.read().contains_key(identifier) {
             let mut d = {
                 let singles = self.singles.read();
@@ -1115,7 +1151,7 @@ impl LocalRegistry {
     }
 
     // ---------------- SOUL（灵魂·人格层）：**仅用户面智能体** ----------------
-    // 组 = 组根 SOUL.md（即主智能体的人格，组对用户的脸面）；单体 = singles/<id>/SOUL.md。
+    // 组 = 组根 SOUL.md（即主智能体的人格，组对用户的脸面）；单体 = entities/agents/<id>/SOUL.md。
     // 子个体无人格层（返回 None）：统一智械纪律已在各自系统提示词内。
 
     /// 组主智能体的 SOUL：组根 SOUL.md。子个体返回 None。
@@ -1187,7 +1223,7 @@ impl LocalRegistry {
         }
     }
 
-    // ---------------- 单体智能体 SOUL（agents/singles/<id>/SOUL.md，同语义） ----------------
+    // ---------------- 单体智能体 SOUL（entities/agents/<id>/SOUL.md，同语义） ----------------
 
     fn single_persona_path(&self, id: &str) -> Option<PathBuf> {
         self.singles
@@ -1210,7 +1246,7 @@ impl LocalRegistry {
     }
 
     pub fn single_set_persona(&self, id: &str, text: &str) -> anyhow::Result<()> {
-        // 写入恒落到单体目录 agents/singles/<id>/SOUL.md
+        // 写入恒落到单体目录 entities/agents/<id>/SOUL.md
         let path = self
             .singles
             .read()
