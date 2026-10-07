@@ -363,7 +363,7 @@ export function GroupsView(): React.ReactElement {
                     title: t("agents.colTools"),
                     dataIndex: "tools",
                     key: "tools",
-                    width: 140,
+                    width: 300,
                     render: (tools: string[]) => (tools ?? []).map((tl) => <Tag key={tl}>{tl}</Tag>),
                   },
                   {
