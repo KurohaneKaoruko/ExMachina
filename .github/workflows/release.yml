@@ -1,12 +1,50 @@
-# 发布流水线：打 tag（v*）即产出预编译产物
-# ⚠️ 功能未完全测试之前不要打 tag——打了就会自动发布 GitHub Release
-# 日常构建验证走 ci.yml（每次 push 自动编译+测试，不发布）
+# 发布流水线：仅 dev→main 合入（push main）触发，日常 dev 提交零触发
+# 流程：读 Cargo.toml workspace 版本号 → 该版本 tag 不存在则：
+#       全平台构建（服务端预编译包 + 桌面端安装包）→ 自动打 tag → 发 GitHub Release
+# 版本号未 bump（tag 已存在）时全部跳过——「只是合入而不发版」是合法操作，不会重复发布
+# 发版纪律：功能未经充分测试不要合入 main——合入即发布
+# 移动端：待 tauri android/ios 工程初始化后，扩展 desktop job 的 matrix 即可
 name: release
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
-  build:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 读取版本号
+        id: ver
+        run: |
+          VER=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          echo "▸ 版本 v$VER"
+      - name: 检查该版本是否已发布
+        id: check
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "exists=yes" >> "$GITHUB_OUTPUT"
+            echo "▸ $TAG 已发布过，本次合入跳过发版"
+          else
+            echo "exists=no" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 服务端预编译包：exm-gateway / exm / exmachina + webui-dist + 文档 ──────────
+  server:
+    needs: version
+    if: needs.version.outputs.exists == 'no'
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: System libs
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxdo-dev
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -34,8 +75,8 @@ jobs:
           mkdir -p bundle
           cp target/release/exm-gateway target/release/exm target/release/exmachina bundle/
           cp -r webui/dist bundle/webui-dist
-          cp -r agents bundle/agents
-          cp README.md docs -r bundle/ 2>/dev/null || cp -r README.md docs bundle/
+          cp README.md bundle/
+          cp -r docs bundle/docs
           tar -czf ${{ matrix.artifact }} -C bundle .
       - name: Package (windows)
         if: runner.os == 'Windows'
@@ -44,10 +85,95 @@ jobs:
           New-Item -ItemType Directory bundle | Out-Null
           Copy-Item target/release/exm-gateway.exe,target/release/exm.exe,target/release/exmachina.exe bundle/
           Copy-Item webui/dist bundle/webui-dist -Recurse
-          Copy-Item agents bundle/agents -Recurse
           Copy-Item README.md bundle/; Copy-Item docs bundle/docs -Recurse
           Compress-Archive -Path bundle/* -DestinationPath ${{ matrix.artifact }}
-      - name: Upload release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # ── 桌面端安装包：Tauri v2（Windows nsis / Linux appimage / macOS dmg）─────────
+  desktop:
+    needs: version
+    if: needs.version.outputs.exists == 'no'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: exmachina-desktop-windows-x64-setup.exe
+          - os: ubuntu-22.04
+            artifact: exmachina-desktop-linux-x64.AppImage
+          - os: macos-14
+            artifact: exmachina-desktop-macos-arm64.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System libs
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxdo-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装 Linux webkit 依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Build WebUI
+        run: npm install && npm run build:webui
+      - name: Build exm-gateway (release，作为桌面端 sidecar)
+        run: cargo build --release -p exm-gateway
+      - name: 放置 sidecar
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          cp target/release/exm-gateway desktop/src-tauri/binaries/
+      - name: 放置 sidecar (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desktop/src-tauri/binaries | Out-Null
+          Copy-Item target/release/exm-gateway.exe desktop/src-tauri/binaries/
+      - name: Tauri build
+        run: cd desktop && npm install && npx tauri build
+      - name: 归档安装包
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) cp desktop/src-tauri/target/release/bundle/nsis/*-setup.exe   "${{ matrix.artifact }}" ;;
+            Linux)   cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "${{ matrix.artifact }}" ;;
+            macOS)   cp desktop/src-tauri/target/release/bundle/dmg/*.dmg           "${{ matrix.artifact }}" ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: ${{ matrix.artifact }}
+
+  # ── 发布：打 tag + 汇总全平台产物发 GitHub Release ─────────────────────────────
+  publish:
+    needs: [version, server, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: 展平产物
+        run: |
+          mkdir -p release
+          find dist -type f -exec mv {} release/ \;
+          ls -la release/
+      - name: 打发布 tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.version.outputs.tag }}" -m "release ${{ needs.version.outputs.tag }}" "${{ github.sha }}"
+          git push origin "${{ needs.version.outputs.tag }}"
+      - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          files: release/*
