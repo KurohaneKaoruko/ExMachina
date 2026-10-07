@@ -381,7 +381,7 @@ pub struct GroupMeta {
     /// 组级能力模型覆盖：每组可用不同模型栈；缺省字段跟随全局槽位
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<GroupCapabilities>,
-    /// 内置组（默认智械体集群）：定义受保护，不可增删个体
+    /// 内置组（默认智能集群）：定义受保护，不可增删个体
     #[serde(default)]
     pub builtin: bool,
     pub created_at: String,

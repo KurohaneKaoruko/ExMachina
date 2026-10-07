@@ -71,7 +71,7 @@ export const zh = {
   "limits.off": "未启用",
   "limits.unavailable": "无法读取限流状态",
   "limits.noCounters": "窗口内暂无计数",
-  "brand.sub": "智械体集群 // 控制台",
+  "brand.sub": "智能集群 // 控制台",
   "theme.label": "主题 [THEME]",
   "lang.label": "语言 [LANGUAGE]",
   "theme.accent.cyan": "荧光青",
@@ -86,7 +86,7 @@ export const zh = {
   "status.connecting": "连结中",
 
   // ── 登录门 ──
-  "login.sub": "智械体集群",
+  "login.sub": "智能集群",
   "login.keyLabel": "访问密钥",
   "login.keyPlaceholder": "输入访问密钥",
   "login.unlock": "解锁进入",

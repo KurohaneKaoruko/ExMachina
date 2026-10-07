@@ -302,7 +302,7 @@ exm memory decay && exm memory reindex                            # 衰减整理
 
 ```bash
 exm persona get context-agent                        # 查看人设（标注 默认/自定义）
-exm persona set context-agent --text "以武侠风格说话，简洁而有侠气。"
+exm persona set context-agent --text "以xx风格说话。"
 exm persona reset context-agent                      # 恢复默认智械体风格
 
 exm agent adaptation <identifier>                    # 查看该个体的行为改进要点
