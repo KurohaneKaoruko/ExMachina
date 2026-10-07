@@ -10,6 +10,11 @@ HELPER_IMAGE="docker:27.5.1-cli"
 git config --global --add safe.directory /host
 cd /host
 
+# docker cli 需要 config.json(拉取镜像时解析仓库认证用);容器内默认没有,造一个空的
+export DOCKER_CONFIG="${DOCKER_CONFIG:-/tmp/.docker}"
+mkdir -p "$DOCKER_CONFIG"
+[ -f "$DOCKER_CONFIG/config.json" ] || echo '{}' > "$DOCKER_CONFIG/config.json"
+
 echo "▸ 步骤 1/3:拉取最新代码"
 git pull --ff-only
 
