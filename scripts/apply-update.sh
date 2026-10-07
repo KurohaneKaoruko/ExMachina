@@ -1,8 +1,11 @@
 #!/bin/sh
 # EXMACHINA 一键更新:由网关容器发起,经挂载的 docker.sock 在宿主引擎上执行。
 # 前置:docker-compose.yml 将仓库根挂载到 /host,并挂载 /var/run/docker.sock。
-# 流程:git pull → compose build(注入 GIT_HASH)→ compose up -d --force-recreate
+# 流程:git pull → compose build → compose up -d(经一次性辅助容器,与被重启的 exmachina 项目隔离)。
+#      直接在本容器跑 up -d 会让 compose 客户端随旧容器一起被杀,recreate 做一半——故步骤 3 必须借道辅助容器。
 set -eu
+
+HELPER_IMAGE="docker:27.5.1-cli"
 
 git config --global --add safe.directory /host
 cd /host
@@ -15,7 +18,12 @@ GIT_HASH=$(git rev-parse --short HEAD)
 export GIT_HASH
 docker compose -p exmachina build
 
-echo "▸ 步骤 3/3:重启容器"
-docker compose -p exmachina up -d --force-recreate
+echo "▸ 步骤 3/3:重启容器(经一次性辅助容器执行,独立于本容器生命周期)"
+docker pull -q "$HELPER_IMAGE"
+docker rm -f exmachina-updater 2>/dev/null || true
+docker run --rm --name exmachina-updater \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /host:/host -w /host \
+  "$HELPER_IMAGE" compose -p exmachina up -d --force-recreate
 
 echo "▸ 更新完成"
