@@ -17,8 +17,6 @@ FROM rust:1.92-bookworm AS rust-builder
 WORKDIR /build
 # libxdo-dev：enigo 键鼠控制链接 libxdo（dbus 已 vendored，无需系统包）
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libxdo-dev && rm -rf /var/lib/apt/lists/*
-ARG GIT_HASH=dev
-ENV EXM_GIT_HASH=${GIT_HASH}
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 # 依赖缓存层（无 lockfile 变更时命中）
@@ -41,6 +39,9 @@ COPY entities ./entities
 COPY skills ./skills
 ENV EXM_LANG=zh
 ENV RUST_LOG=info
+# git 短哈希:runtime 阶段才注入(进程运行时读取)——若放 builder 阶段,每个 commit 都会作废整条 Rust 编译缓存
+ARG GIT_HASH=dev
+ENV EXM_GIT_HASH=${GIT_HASH}
 EXPOSE 4173
 VOLUME ["/app/.exmachina"]
 CMD ["exm-gateway"]

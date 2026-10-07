@@ -1415,7 +1415,8 @@ struct CreateGroupBody {
 fn build_version() -> serde_json::Value {
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "gitHash": option_env!("EXM_GIT_HASH").unwrap_or("dev"),
+        // 运行时读取(runtime 阶段 ENV 注入)——编译期注入会让 commit 变化作废整条编译缓存
+        "gitHash": std::env::var("EXM_GIT_HASH").unwrap_or_else(|_| "dev".into()),
     })
 }
 
