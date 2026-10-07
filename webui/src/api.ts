@@ -430,6 +430,10 @@ export const api = {
   listTemplates: () => req<{ templates: TemplateInfo[] }>("/templates"),
   /** 本机版本 */
   versionInfo: () => req<{ version: string; gitHash: string }>("/version"),
+  /** 一键更新(后台执行 git pull → build → up -d,经 /host + docker.sock) */
+  applyUpdate: () => req<{ started: boolean }>("/version/apply", { method: "POST" }),
+  /** 一键更新状态 */
+  updateStatus: () => req<{ running: boolean; log: string }>("/version/apply/status"),
   /** 更新检查(对比上游 dev):updateAvailable = true/false/null(无法判定) */
   versionCheck: () =>
     req<{

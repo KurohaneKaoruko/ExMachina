@@ -155,6 +155,8 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/templates", get(list_templates))
         .route("/api/version", get(version_info))
         .route("/api/version/check", get(version_check))
+        .route("/api/version/apply", post(version_apply))
+        .route("/api/version/apply/status", get(version_apply_status))
         .route("/api/groups/active", get(active_group).put(switch_group))
         .route("/api/groups/:id", axum::routing::delete(delete_group))
         .route("/api/groups/:id/activate", post(activate_group))
@@ -1463,6 +1465,52 @@ async fn version_check() -> impl IntoResponse {
         }
     }
     Json(out)
+}
+
+/// 一键更新任务是否在运行(pgrep 探测;脚本为独立进程组,容器重启后自然消失)
+fn update_job_running() -> bool {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg("pgrep -f apply-update.sh >/dev/null 2>&1")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 一键更新(POST /api/version/apply):后台执行 scripts/apply-update.sh(git pull → build → up -d)。
+/// 前置:compose 挂载仓库根到 /host + docker.sock。返回 202,进度走 /api/version/apply/status。
+async fn version_apply() -> impl IntoResponse {
+    if !std::path::Path::new("/host/docker-compose.yml").is_file() {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "一键更新需要 compose 挂载:仓库根 → /host 与 /var/run/docker.sock(当前部署未挂载,请按设置页指引手动更新)"
+        }))).into_response();
+    }
+    if update_job_running() {
+        return (StatusCode::CONFLICT, Json(json!({ "error": "更新任务已在进行中" }))).into_response();
+    }
+    use std::os::unix::process::CommandExt;
+    // 独立进程组:容器重启(SIGTERM)不会中断 build/up 流程
+    let spawned = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("exec setsid sh /host/scripts/apply-update.sh >/tmp/exm-update.log 2>&1")
+        .process_group(0)
+        .spawn();
+    match spawned {
+        Ok(_) => (StatusCode::ACCEPTED, Json(json!({ "started": true }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("任务启动失败:{e}") }))).into_response(),
+    }
+}
+
+/// 一键更新状态(GET /api/version/apply/status):running + 日志尾部
+async fn version_apply_status() -> impl IntoResponse {
+    let running = update_job_running();
+    let log = std::fs::read_to_string("/tmp/exm-update.log").unwrap_or_default();
+    let tail: String = {
+        let chars: Vec<char> = log.chars().collect();
+        let start = chars.len().saturating_sub(1500);
+        chars[start..].iter().collect()
+    };
+    Json(json!({ "running": running, "log": tail }))
 }
 
 /// 编成模板清单(GET /api/templates):unit = 子个体模板,group = 组模板

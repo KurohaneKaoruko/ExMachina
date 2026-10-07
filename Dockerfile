@@ -30,8 +30,13 @@ WORKDIR /app
 # 运行时动态库：enigo/xcap 的 X11 栈（libxdo / X11 / xkbcommon；容器内无显示面，Computer Use 默认关闭，
 # 但二进制加载即需这些 .so）+ CA 证书与 curl（健康检查）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl libxdo3 libx11-6 libxcb1 libxext6 libxinerama1 libxtst6 libxkbcommon0 \
+      ca-certificates curl git libxdo3 libx11-6 libxcb1 libxext6 libxinerama1 libxtst6 libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
+# 一键更新工具链:docker cli + compose 插件(静态二进制,经挂载的 docker.sock 操作宿主引擎)
+ADD https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz /tmp/docker.tgz
+RUN tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker && rm /tmp/docker.tgz
+ADD https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64 /usr/local/lib/docker/cli-plugins/docker-compose
+RUN chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 COPY --from=rust-builder /build/target/release/exm /usr/local/bin/exm
 COPY --from=rust-builder /build/target/release/exmachina /usr/local/bin/exmachina
 COPY --from=rust-builder /build/target/release/exm-gateway /usr/local/bin/exm-gateway

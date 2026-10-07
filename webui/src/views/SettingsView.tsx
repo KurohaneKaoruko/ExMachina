@@ -465,6 +465,7 @@ function VersionPanel() {
   const [info, setInfo] = useState<{ version: string; gitHash: string } | null>(null);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<Awaited<ReturnType<typeof api.versionCheck>> | null>(null);
+  const [updatePhase, setUpdatePhase] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -484,6 +485,72 @@ function VersionPanel() {
       setChecking(false);
     }
   };
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** 一键更新:触发 → 轮询脚本日志 → 容器重启失联 → 等恢复并核对 gitHash 变化 */
+  const applyUpdate = async () => {
+    const before = info?.gitHash ?? "";
+    try {
+      await api.applyUpdate();
+    } catch (e) {
+      message.error(String(e));
+      return;
+    }
+    setUpdatingFlag(true);
+    let sawRestart = false;
+    for (let i = 0; i < 240; i++) {
+      await sleep(2500);
+      try {
+        const st = await api.updateStatus();
+        if (st.running) {
+          const lines = st.log.trim().split("\n");
+          setUpdatePhase(lines[lines.length - 1] || t("settings.version.phaseBuilding"));
+          continue;
+        }
+        if (!sawRestart) {
+          // 脚本已退出但容器未重启:可能失败,展示日志尾部
+          const fail = /error|失败|fatal|conflict/i.test(st.log);
+          setUpdatingFlag(false);
+          setUpdatePhase("");
+          if (fail && !/更新完成/.test(st.log)) {
+            message.error(`${t("settings.version.failed")}:${st.log.slice(-300)}`);
+          } else {
+            message.success(t("settings.version.doneNoRestart"));
+          }
+          void refreshInfo();
+          return;
+        }
+      } catch {
+        // 失联 = 容器重启中
+        if (!sawRestart) {
+          sawRestart = true;
+          setUpdatePhase(t("settings.version.phaseRestarting"));
+        }
+      }
+      // 容器恢复后核对 gitHash
+      try {
+        const v = await api.versionInfo();
+        if (before && v.gitHash && v.gitHash !== before) {
+          setUpdatingFlag(false);
+          setUpdatePhase("");
+          setInfo(v);
+          message.success(t("settings.version.success", { hash: v.gitHash }));
+          return;
+        }
+      } catch { /* 仍在重启 */ }
+    }
+    setUpdatingFlag(false);
+    setUpdatePhase("");
+    message.warning(t("settings.version.timeout"));
+  };
+
+  const refreshInfo = async () => {
+    try {
+      setInfo(await api.versionInfo());
+    } catch { /* noop */ }
+  };
+  const [updatingFlag, setUpdatingFlag] = useState(false);
 
   return (
     <>
@@ -510,6 +577,21 @@ function VersionPanel() {
             <Button size="small" loading={checking} onClick={() => void check()}>
               {t("settings.version.checkBtn")}
             </Button>
+          </div>
+        </div>
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.apply")}</div>
+            <div className="cfg2-help">{t("settings.version.applyHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl">
+            {updatePhase ? (
+              <span className="dim">{updatePhase}</span>
+            ) : (
+              <Button size="small" type="primary" danger loading={updatingFlag} onClick={() => void applyUpdate()}>
+                {t("settings.version.applyBtn")}
+              </Button>
+            )}
           </div>
         </div>
         {result && (
