@@ -289,6 +289,29 @@ impl LocalRegistry {
         out
     }
 
+    /// 解析模板目录:优先匹配 template.json 的 id,回退目录名
+    fn find_template_dir(&self, kind: &str, template_id: &str) -> Option<PathBuf> {
+        let base = self.templates_dir().join(kind);
+        let entries = std::fs::read_dir(&base).ok()?;
+        for e in entries.filter_map(|e| e.ok()) {
+            let tdir = e.path();
+            let meta_path = tdir.join("template.json");
+            if !tdir.is_dir() || !meta_path.is_file() {
+                continue;
+            }
+            if let Ok(info) =
+                serde_json::from_str::<crate::types::TemplateInfo>(&std::fs::read_to_string(&meta_path).unwrap_or_default())
+            {
+                if info.id == template_id {
+                    return Some(tdir);
+                }
+            }
+        }
+        // 回退:目录名即模板 id
+        let by_dir = base.join(template_id);
+        by_dir.join("template.json").is_file().then_some(by_dir)
+    }
+
     /// 占位符渲染:{{identifier}} / {{name}} / {{description}}
     fn render_template(raw: &str, identifier: &str, name: &str, description: &str) -> String {
         raw.replace("{{identifier}}", identifier)
@@ -307,9 +330,10 @@ impl LocalRegistry {
         description: &str,
     ) -> anyhow::Result<AgentDefinition> {
         Self::validate_identifier(identifier)?;
-        let tdir = self.templates_dir().join("unit").join(template_id);
+        let tdir = self
+            .find_template_dir("unit", template_id)
+            .with_context(|| format!("子个体模板不存在: {template_id}"))?;
         let meta_path = tdir.join("template.json");
-        anyhow::ensure!(meta_path.is_file(), "子个体模板不存在: {template_id}");
         let tmeta: crate::types::TemplateInfo = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
         let name = if name.trim().is_empty() { tmeta.name } else { name.trim().to_string() };
         let description =
@@ -336,9 +360,10 @@ impl LocalRegistry {
         name: &str,
         description: &str,
     ) -> anyhow::Result<GroupMeta> {
-        let tdir = self.templates_dir().join("group").join(template_id);
+        let tdir = self
+            .find_template_dir("group", template_id)
+            .with_context(|| format!("组模板不存在: {template_id}"))?;
         let meta_path = tdir.join("template.json");
-        anyhow::ensure!(meta_path.is_file(), "组模板不存在: {template_id}");
         let tmeta: crate::types::TemplateInfo = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
         let name = if name.trim().is_empty() { tmeta.name } else { name.trim().to_string() };
         let description =
