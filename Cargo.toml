@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/exm-core", "crates/exm-gateway", "crates/exm-cli"]
 
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 

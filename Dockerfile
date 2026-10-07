@@ -28,8 +28,9 @@ WORKDIR /app
 # 运行时动态库：enigo/xcap 的 X11 栈（libxdo / X11 / xkbcommon；容器内无显示面，Computer Use 默认关闭，
 # 但二进制加载即需这些 .so）+ CA 证书与 curl（健康检查）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl libxdo3 libx11-6 libxcb1 libxext6 libxinerama1 libxtst6 libxkbcommon0 \
+      ca-certificates curl git libxdo3 libx11-6 libxcb1 libxext6 libxinerama1 libxtst6 libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
+# 一键更新工具链:docker cli + compose 插件由 compose 从宿主机只读挂载(零构建期下载,版本与宿主引擎一致)
 COPY --from=rust-builder /build/target/release/exm /usr/local/bin/exm
 COPY --from=rust-builder /build/target/release/exmachina /usr/local/bin/exmachina
 COPY --from=rust-builder /build/target/release/exm-gateway /usr/local/bin/exm-gateway
@@ -38,6 +39,9 @@ COPY entities ./entities
 COPY skills ./skills
 ENV EXM_LANG=zh
 ENV RUST_LOG=info
+# git 短哈希:runtime 阶段才注入(进程运行时读取)——若放 builder 阶段,每个 commit 都会作废整条 Rust 编译缓存
+ARG GIT_HASH=dev
+ENV EXM_GIT_HASH=${GIT_HASH}
 EXPOSE 4173
 VOLUME ["/app/.exmachina"]
 CMD ["exm-gateway"]

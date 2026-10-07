@@ -361,6 +361,19 @@ pub struct GroupCapabilities {
 }
 
 /// 智能体组元数据：组是隔离与切换的基本单位（docs/09）
+// ---------------------------------------------------------------- 编成模板
+
+/// 编成模板元数据(entities/templates/<kind>/<id>/template.json):用户与 agent 均可基于模板创建
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// unit = 子个体模板;group = 组模板
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMeta {

@@ -163,6 +163,14 @@ export interface GroupCapabilities {
   embedding?: string;
 }
 
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  /** unit = 子个体模板;group = 组模板 */
+  kind: string;
+}
+
 export interface GroupMeta {
   id: string;
   name: string;
@@ -416,8 +424,25 @@ export const api = {
       }),
     }),
   agents: () => req<AgentDefinition[]>("/agents"),  groups: () => req<{ active: string; groups: GroupMeta[] }>("/groups"),
-  createGroup: (body: { name: string; id?: string; description?: string }) =>
+  createGroup: (body: { name: string; id?: string; description?: string; template?: string }) =>
     req<GroupMeta>("/groups", { method: "POST", body: JSON.stringify(body) }),
+  /** 编成模板清单(unit=子个体模板,group=组模板) */
+  listTemplates: () => req<{ templates: TemplateInfo[] }>("/templates"),
+  /** 本机版本 */
+  versionInfo: () => req<{ version: string; gitHash: string }>("/version"),
+  /** 一键更新(后台执行 git pull → build → up -d,经 /host + docker.sock) */
+  applyUpdate: () => req<{ started: boolean }>("/version/apply", { method: "POST" }),
+  /** 一键更新状态 */
+  updateStatus: () => req<{ running: boolean; log: string }>("/version/apply/status"),
+  /** 更新检查(对比上游 dev):updateAvailable = true/false/null(无法判定) */
+  versionCheck: () =>
+    req<{
+      version: string;
+      gitHash: string;
+      upstream?: { sha: string; short: string; url: string; date: string };
+      updateAvailable?: boolean | null;
+      note?: string;
+    }>("/version/check"),
   switchGroup: (id: string) =>
     req<{ ok: boolean }>("/groups/active", { method: "PUT", body: JSON.stringify({ id }) }),
   /** 设置组主智能体 */
@@ -432,6 +457,7 @@ export const api = {
     tier?: string;
     prompt?: string;
     group?: string;
+    template?: string;
   }) => req<AgentDefinition>("/agents", { method: "POST", body: JSON.stringify(body) }),
   removeAgent: (identifier: string) =>
     req<{ ok: boolean }>(`/agents/${identifier}`, { method: "DELETE" }),

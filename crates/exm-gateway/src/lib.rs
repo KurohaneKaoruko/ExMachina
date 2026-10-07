@@ -152,6 +152,11 @@ pub fn build_router(core: Arc<Core>) -> Router {
         .route("/api/agents/:identifier/model", axum::routing::put(set_agent_model))
         .route("/api/agents/:identifier/persona", get(get_persona).put(put_persona).delete(reset_persona))
         .route("/api/groups", get(list_groups).post(create_group))
+        .route("/api/templates", get(list_templates))
+        .route("/api/version", get(version_info))
+        .route("/api/version/check", get(version_check))
+        .route("/api/version/apply", post(version_apply))
+        .route("/api/version/apply/status", get(version_apply_status))
         .route("/api/groups/active", get(active_group).put(switch_group))
         .route("/api/groups/:id", axum::routing::delete(delete_group))
         .route("/api/groups/:id/activate", post(activate_group))
@@ -1216,6 +1221,9 @@ struct CreateAgentBody {
     /// 目标组；缺省 = 激活组（内置组受保护，写入会被拒绝）
     #[serde(default)]
     group: Option<String>,
+    /// 编成模板 id(entities/templates/unit/<id>):提供后仅 identifier 必填,工具面/能力/提示词由模板提供
+    #[serde(default)]
+    template: Option<String>,
     /// 默认模型（"档案ID" 或 "档案ID/模型名"；缺省 = 跟随所属组/全局生效档案）
     #[serde(default)]
     model: Option<String>,
@@ -1254,6 +1262,29 @@ impl AgentUpdateBody {
 }
 
 async fn create_agent(State(st): State<AppState>, Json(b): Json<CreateAgentBody>) -> impl IntoResponse {
+    // 模板创建:工具面/能力/提示词由模板提供,仅 identifier 必填(name/description 缺省用模板默认)
+    if let Some(tpl) = b.template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let Some(gid) = b.group.clone() else {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "模板创建必须指定目标组 group" }))).into_response();
+        };
+        let meta = st.core.group_meta(&gid);
+        let was_empty = st.core.registry().group_agent_count(&gid) == 0;
+        let result = st
+            .core
+            .registry()
+            .create_agent_from_template(&gid, tpl, &b.identifier, &b.name, &b.description)
+            .map(|saved| {
+                if was_empty {
+                    let _ = st.core.registry().set_primary(&gid, &saved.identifier);
+                }
+                let _ = meta;
+                saved
+            });
+        return match result {
+            Ok(saved) => Json(serde_json::to_value(saved).unwrap_or(Value::Null)).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+        };
+    }
     let def = exm_core::types::AgentDefinition {
         name: b.name,
         identifier: b.identifier,
@@ -1373,9 +1404,143 @@ struct CreateGroupBody {
     id: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    /// 组模板 id(entities/templates/group/<id>):提供后附加模板 SOUL(组人格骨架)
+    #[serde(default)]
+    template: Option<String>,
+}
+
+// ---------------------------------------------------------------- 版本与更新
+
+/// 构建版本:工作区 Cargo 版本 + 编译期注入的 git 短哈希(Dockerfile ARG GIT_HASH → ENV EXM_GIT_HASH)
+fn build_version() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        // 运行时读取(runtime 阶段 ENV 注入)——编译期注入会让 commit 变化作废整条编译缓存
+        "gitHash": std::env::var("EXM_GIT_HASH").unwrap_or_else(|_| "dev".into()),
+    })
+}
+
+/// 本机版本(GET /api/version)
+async fn version_info() -> impl IntoResponse {
+    Json(build_version())
+}
+
+/// 更新检查(GET /api/version/check):对比上游 dev 分支最新提交。
+/// 本地未嵌入 commit(dev 构建)或网络不可达时返回可判定性提示,不臆断。
+async fn version_check() -> impl IntoResponse {
+    let mut out = build_version();
+    // 发布口径:更新检查看上游 main 分支(dev 为开发线,发版时 merge 到 main)
+    let fetched = async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .user_agent("exmachina-gateway")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .get("https://api.github.com/repos/KurohaneKaoruko/ExMachina/commits")
+            .query(&[("sha", "main"), ("per_page", "1")])
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err("main".to_string());
+        }
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    }
+    .await;
+    if fetched == Err("main".to_string()) {
+        out["note"] = serde_json::json!("上游 main 分支尚不存在(尚未发布过版本);发布后此处将显示 main 最新提交");
+        return Json(out);
+    }
+    match fetched {
+        Ok(v) if v.is_array() && !v.as_array().unwrap().is_empty() => {
+            let c = &v.as_array().unwrap()[0];
+            let sha = c["sha"].as_str().unwrap_or_default().to_string();
+            let short = sha.chars().take(7).collect::<String>();
+            let url = c["html_url"].as_str().unwrap_or_default().to_string();
+            let date = c["commit"]["committer"]["date"].as_str().unwrap_or_default().to_string();
+            let local_hash = out["gitHash"].as_str().unwrap_or("dev").to_string();
+            let update_available = if local_hash.is_empty() || local_hash == "dev" {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::Bool(!sha.starts_with(&local_hash))
+            };
+            out["upstream"] = serde_json::json!({ "sha": sha, "short": short, "url": url, "date": date });
+            out["updateAvailable"] = update_available;
+        }
+        Ok(_) => {
+            out["note"] = serde_json::json!("上游返回为空,无法判定");
+        }
+        Err(e) => {
+            out["note"] = serde_json::json!(format!("更新检查不可达:{e}"));
+        }
+    }
+    Json(out)
+}
+
+/// 一键更新任务是否在运行(pgrep 探测;脚本为独立进程组,容器重启后自然消失)
+fn update_job_running() -> bool {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg("pgrep -f apply-update.sh >/dev/null 2>&1")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 一键更新(POST /api/version/apply):后台执行 scripts/apply-update.sh(git pull → build → up -d)。
+/// 前置:compose 挂载仓库根到 /host + docker.sock。返回 202,进度走 /api/version/apply/status。
+async fn version_apply() -> impl IntoResponse {
+    if !std::path::Path::new("/host/docker-compose.yml").is_file() {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "一键更新需要 compose 挂载:仓库根 → /host 与 /var/run/docker.sock(当前部署未挂载,请按设置页指引手动更新)"
+        }))).into_response();
+    }
+    if update_job_running() {
+        return (StatusCode::CONFLICT, Json(json!({ "error": "更新任务已在进行中" }))).into_response();
+    }
+    use std::os::unix::process::CommandExt;
+    // 独立进程组:容器重启(SIGTERM)不会中断 build/up 流程
+    let spawned = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("exec setsid sh /host/scripts/apply-update.sh >/tmp/exm-update.log 2>&1")
+        .process_group(0)
+        .spawn();
+    match spawned {
+        Ok(_) => (StatusCode::ACCEPTED, Json(json!({ "started": true }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("任务启动失败:{e}") }))).into_response(),
+    }
+}
+
+/// 一键更新状态(GET /api/version/apply/status):running + 日志尾部
+async fn version_apply_status() -> impl IntoResponse {
+    let running = update_job_running();
+    let log = std::fs::read_to_string("/tmp/exm-update.log").unwrap_or_default();
+    let tail: String = {
+        let chars: Vec<char> = log.chars().collect();
+        let start = chars.len().saturating_sub(1500);
+        chars[start..].iter().collect()
+    };
+    Json(json!({ "running": running, "log": tail }))
+}
+
+/// 编成模板清单(GET /api/templates):unit = 子个体模板,group = 组模板
+async fn list_templates(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({ "templates": st.core.registry().list_templates() }))
 }
 
 async fn create_group(State(st): State<AppState>, Json(b): Json<CreateGroupBody>) -> impl IntoResponse {
+    // 模板创建:附加模板 SOUL(组人格骨架)
+    if let Some(tpl) = b.template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        return match st
+            .core
+            .registry()
+            .create_group_from_template(tpl, b.id, &b.name, b.description.as_deref().unwrap_or(""))
+        {
+            Ok(meta) => Json(serde_json::to_value(meta).unwrap_or(Value::Null)).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+        };
+    }
     match st.core.create_group(b.id, &b.name, b.description.as_deref().unwrap_or("")) {
         Ok(meta) => Json(serde_json::to_value(meta).unwrap_or(Value::Null)).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),

@@ -6,6 +6,7 @@ services:
     build:
       context: .
       args:
+        GIT_HASH: ${GIT_HASH:-dev}
         EXM_LANG: ${EXM_LANG:-zh}
     image: exmachina:latest
     container_name: exmachina
@@ -25,6 +26,12 @@ services:
       # 编成数据挂载（组/单体/技能/提示词可持久化编辑）
       - ./entities:/app/entities
       - ./skills:/app/skills
+      # 一键更新:仓库根(读写,git pull 用)+ 宿主 docker 引擎
+      - ./:/host
+      - /var/run/docker.sock:/var/run/docker.sock
+      # docker cli / compose 插件:直接用宿主的(免构建期下载,版本与引擎一致;已验证 glibc 兼容)
+      - /usr/bin/docker:/usr/local/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins:/usr/local/lib/docker/cli-plugins:ro
     restart: unless-stopped
 
 volumes:

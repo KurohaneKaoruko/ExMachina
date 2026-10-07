@@ -8,7 +8,7 @@ import {
   ArrowLeftOutlined, DeleteOutlined, EditOutlined, FormOutlined, PlusOutlined,
   SettingOutlined, UndoOutlined, UsergroupDeleteOutlined,
 } from "@ant-design/icons";
-import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile } from "../api";
+import { api, type GroupCapabilities, type GroupMeta, type GroupOverview, type LlmProfile, type TemplateInfo } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import type { AgentDefinition } from "../types";
 import { buildCapabilityOptions, buildModelOptions, groupIdEn } from "../models";
@@ -27,6 +27,7 @@ export function GroupsView(): React.ReactElement {
   const [modelDraft, setModelDraft] = useState<string>("");
   const [groupModal, setGroupModal] = useState(false);
   const [agentModal, setAgentModal] = useState(false);
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [wsDraft, setWsDraft] = useState("");
   const [descDraft, setDescDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -69,12 +70,22 @@ export function GroupsView(): React.ReactElement {
         setEditFormProfiles(p);
       } catch { /* noop */ }
     })();
+    void (async () => {
+      try {
+        setTemplates((await api.listTemplates()).templates);
+      } catch { /* noop */ }
+    })();
   }, []);
 
   const submitGroup = async () => {
     const v = await groupForm.validateFields();
     try {
-      await api.createGroup({ name: v.name, id: v.id || undefined, description: v.description ?? "" });
+      await api.createGroup({
+        name: v.name,
+        id: v.id || undefined,
+        description: v.description ?? "",
+        template: v.template || undefined,
+      });
       message.success(t("groups.created", { name: v.name }));
       setGroupModal(false);
       groupForm.resetFields();
@@ -89,12 +100,13 @@ export function GroupsView(): React.ReactElement {
     const v = await agentForm.validateFields();
     try {
       await api.createAgent({
-        name: v.name,
+        name: v.name || "",
         identifier: v.identifier,
-        description: v.description,
+        description: v.description || "",
         tier: v.tier || undefined,
         prompt: v.prompt || undefined,
         group: meta.id,
+        template: v.template || undefined,
       });
       message.success(t("groups.agentCreated", { id: v.identifier }));
       setAgentModal(false);
@@ -407,6 +419,15 @@ export function GroupsView(): React.ReactElement {
 
         <Modal open={groupModal} title={t("groups.modalNew")} onCancel={() => setGroupModal(false)} onOk={() => void submitGroup()} okText={t("groups.create")}>
           <Form form={groupForm} layout="vertical">
+            <Form.Item name="template" label={t("groups.f.template")} initialValue="">
+              <Select
+                allowClear
+                options={[
+                  { value: "", label: t("groups.f.templateBlank") },
+                  ...templates.filter((x) => x.kind === "group").map((x) => ({ value: x.id, label: x.name })),
+                ]}
+              />
+            </Form.Item>
             <Form.Item name="name" label={t("groups.f.name")} rules={[{ required: true }]}>
               <Input placeholder={t("groups.f.namePh")} />
             </Form.Item>
@@ -422,13 +443,22 @@ export function GroupsView(): React.ReactElement {
 
         <Modal open={agentModal} title={t("groups.modalNewAgent", { name: meta.name })} onCancel={() => setAgentModal(false)} onOk={() => void submitAgent()} okText={t("groups.create")}>
           <Form form={agentForm} layout="vertical">
-            <Form.Item name="name" label={t("groups.f.agentName")} rules={[{ required: true }]}>
+            <Form.Item name="template" label={t("groups.f.template")} initialValue="">
+              <Select
+                allowClear
+                options={[
+                  { value: "", label: t("groups.f.templateBlank") },
+                  ...templates.filter((x) => x.kind === "unit").map((x) => ({ value: x.id, label: x.name })),
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="name" label={t("groups.f.agentName")} rules={[{ required: false }]}>
               <Input placeholder={t("groups.f.agentNamePh")} />
             </Form.Item>
             <Form.Item name="identifier" label={t("groups.f.identifier")} rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{1,48}$/, message: t("groups.idPattern") }]}>
               <Input placeholder={t("groups.f.identifierPh")} />
             </Form.Item>
-            <Form.Item name="description" label={t("groups.duty")} rules={[{ required: true }]}>
+            <Form.Item name="description" label={t("groups.duty")} rules={[{ required: false }]}>
               <Input.TextArea rows={2} placeholder={t("groups.f.dutyPh")} />
             </Form.Item>
             <Form.Item name="prompt" label={t("agents.f.prompt")} extra={t("agents.f.promptExtra")}>

@@ -3,8 +3,8 @@
  * 字段定义来自后端 config_schema()；LLM 接入在「提供商」页维护。
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Input, InputNumber, message, Select, Switch, Card } from "antd";
-import { BgColorsOutlined, CloudServerOutlined, DatabaseOutlined, DesktopOutlined, FieldTimeOutlined, GlobalOutlined, IdcardOutlined, NotificationOutlined, PieChartOutlined, RadarChartOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
+import { Alert, Button, Input, InputNumber, message, Select, Switch, Card, Tag } from "antd";
+import { BgColorsOutlined, CloudServerOutlined, DatabaseOutlined, DesktopOutlined, FieldTimeOutlined, GlobalOutlined, IdcardOutlined, NotificationOutlined, PieChartOutlined, RadarChartOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined, CloudDownloadOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
@@ -30,6 +30,7 @@ const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey:
   notify: { icon: <NotificationOutlined />, titleKey: "sec.notify", descKey: "sec.notify.desc" },
   tools: { icon: <ToolOutlined />, titleKey: "sec.tools", descKey: "sec.tools.desc" },
   ui: { icon: <BgColorsOutlined />, titleKey: "sec.ui", descKey: "sec.ui.desc" },
+  version: { icon: <CloudDownloadOutlined />, titleKey: "sec.version", descKey: "sec.version.desc" },
 };
 
 /**
@@ -248,10 +249,17 @@ export function SettingsView(): React.ReactElement {
             <span className="cfg-nav-icon">{SECTIONS.ui.icon}</span>
             <span>{t("sec.ui")}</span>
           </button>
+          <button className={`cfg-nav-item ${selected === "version" ? "on" : ""}`} onClick={() => setSelected("version")}>
+            <span className="cfg-nav-icon">{SECTIONS.version.icon}</span>
+            <span>{t("sec.version")}</span>
+          </button>
         </nav>
         {/* 右侧面板：仅当前分类 */}
         <section className="cfg-panel">
-        {selected === "ui" ? (
+        {selected === "version" ? (
+          /* —— 版本与更新:本地信息 + 上游检查,不参与「保存设置」 —— */
+          <VersionPanel />
+        ) : selected === "ui" ? (
           /* —— 本地界面偏好：即时生效，不参与「保存设置」 —— */
           <>
             <header className="cfg-panel-head">
@@ -447,5 +455,172 @@ function NotifyPrefsCard(): React.ReactElement {
         </>
       )}
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------- 版本与更新
+
+function VersionPanel() {
+  const t = useT();
+  const [info, setInfo] = useState<{ version: string; gitHash: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.versionCheck>> | null>(null);
+  const [updatePhase, setUpdatePhase] = useState("");
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setInfo(await api.versionInfo());
+      } catch { /* noop */ }
+    })();
+  }, []);
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      setResult(await api.versionCheck());
+    } catch {
+      setResult(null);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** 一键更新:触发 → 轮询脚本日志 → 容器重启失联 → 等恢复并核对 gitHash 变化 */
+  const applyUpdate = async () => {
+    const before = info?.gitHash ?? "";
+    try {
+      await api.applyUpdate();
+    } catch (e) {
+      message.error(String(e));
+      return;
+    }
+    setUpdatingFlag(true);
+    let sawRestart = false;
+    for (let i = 0; i < 240; i++) {
+      await sleep(2500);
+      try {
+        const st = await api.updateStatus();
+        if (st.running) {
+          const lines = st.log.trim().split("\n");
+          setUpdatePhase(lines[lines.length - 1] || t("settings.version.phaseBuilding"));
+          continue;
+        }
+        if (!sawRestart) {
+          // 脚本已退出但容器未重启:可能失败,展示日志尾部
+          const fail = /error|失败|fatal|conflict/i.test(st.log);
+          setUpdatingFlag(false);
+          setUpdatePhase("");
+          if (fail && !/更新完成/.test(st.log)) {
+            message.error(`${t("settings.version.failed")}:${st.log.slice(-300)}`);
+          } else {
+            message.success(t("settings.version.doneNoRestart"));
+          }
+          void refreshInfo();
+          return;
+        }
+      } catch {
+        // 失联 = 容器重启中
+        if (!sawRestart) {
+          sawRestart = true;
+          setUpdatePhase(t("settings.version.phaseRestarting"));
+        }
+      }
+      // 容器恢复后核对 gitHash
+      try {
+        const v = await api.versionInfo();
+        if (before && v.gitHash && v.gitHash !== before) {
+          setUpdatingFlag(false);
+          setUpdatePhase("");
+          setInfo(v);
+          message.success(t("settings.version.success", { hash: v.gitHash }));
+          return;
+        }
+      } catch { /* 仍在重启 */ }
+    }
+    setUpdatingFlag(false);
+    setUpdatePhase("");
+    message.warning(t("settings.version.timeout"));
+  };
+
+  const refreshInfo = async () => {
+    try {
+      setInfo(await api.versionInfo());
+    } catch { /* noop */ }
+  };
+  const [updatingFlag, setUpdatingFlag] = useState(false);
+
+  return (
+    <>
+      <header className="cfg-panel-head">
+        <h3>{t("sec.version")}</h3>
+        <p>{t("sec.version.desc")}。</p>
+      </header>
+      <div className="cfg-list">
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.current")}</div>
+            <div className="cfg2-help">{t("settings.version.currentHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl mono">
+            v{info?.version ?? "…"} · {info?.gitHash ?? "…"}
+          </div>
+        </div>
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.check")}</div>
+            <div className="cfg2-help">{t("settings.version.checkHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl">
+            <Button size="small" loading={checking} onClick={() => void check()}>
+              {t("settings.version.checkBtn")}
+            </Button>
+          </div>
+        </div>
+        <div className="cfg2-row">
+          <div className="cfg2-label">
+            <div className="cfg2-name">{t("settings.version.apply")}</div>
+            <div className="cfg2-help">{t("settings.version.applyHelp")}</div>
+          </div>
+          <div className="cfg2-ctrl">
+            {updatePhase ? (
+              <span className="dim">{updatePhase}</span>
+            ) : (
+              <Button size="small" type="primary" danger loading={updatingFlag} onClick={() => void applyUpdate()}>
+                {t("settings.version.applyBtn")}
+              </Button>
+            )}
+          </div>
+        </div>
+        {result && (
+          <div className="cfg2-row">
+            <div className="cfg2-label">
+              <div className="cfg2-name">
+                {result.updateAvailable === true && <Tag color="warning">{t("settings.version.available")}</Tag>}
+                {result.updateAvailable === false && <Tag color="success">{t("settings.version.uptodate")}</Tag>}
+                {result.updateAvailable == null && <Tag>{t("settings.version.unknown")}</Tag>}
+              </div>
+              <div className="cfg2-help">
+                {result.updateAvailable === true && result.upstream && (
+                  <>
+                    {t("settings.version.latest")}: dev @ {result.upstream.short} · {result.upstream.date} ·{" "}
+                    <a href={result.upstream.url} target="_blank" rel="noreferrer">
+                      {t("settings.version.viewCommit")}
+                    </a>
+                  </>
+                )}
+                {result.updateAvailable === false && t("settings.version.uptodateHelp")}
+                {result.updateAvailable == null && <>{result.note ? `${t("settings.version.unknownHelp")}(${result.note})` : t("settings.version.unknownHelp")}</>}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="cfg2-foot">
+        <span className="dim">{t("settings.version.guide")}</span>
+      </div>
+    </>
   );
 }
