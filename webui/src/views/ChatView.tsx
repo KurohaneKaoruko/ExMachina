@@ -209,8 +209,18 @@ export function ChatView(): React.ReactElement {
     recallIdxRef.current = null;
   }, [sessionId]);
 
+  // 是否已滚离底部（chat-ergonomics：显示「回到底部」按钮）
+  const [showBottomBtn, setShowBottomBtn] = useState(false);
+  useEffect(() => {
+    const el = document.querySelector(".chat-scroll");
+    if (!el) return;
+    const onScroll = () => setShowBottomBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 120);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setShowBottomBtn(false);
   }, [messages, liveOrch, liveUnits, runToolCalls, timeline]);
 
   useEffect(() => {
@@ -622,6 +632,15 @@ export function ChatView(): React.ReactElement {
               )}
               <pre className="live-pre">{liveOrch}</pre>
             </Card>
+          )}
+          {showBottomBtn && (
+            <button
+              className="scroll-bottom-btn"
+              aria-label={t("chat.scrollToBottom")}
+              onClick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+            >
+              ↓
+            </button>
           )}
           <div ref={bottomRef} />
         </div>

@@ -142,6 +142,7 @@ export const zh = {
   "agents.f.promptExtra": "留空使用内置统一智械纪律提示词",
   "chat.usedThinking": "使用了 {n} 字思考",
   "chat.usedTools": "使用了 {n} 项工具与调度",
+  "chat.scrollToBottom": "回到底部",
   "chat.send": "发送",
   "chat.stop": "停止",
   "chat.stopConfirm": "停止当前运行中的轮次？",

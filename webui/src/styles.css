@@ -2145,3 +2145,23 @@ input, textarea { caret-color: var(--accent); }
   .nexus-link-row { flex-wrap: wrap; }
   .nexus-link-row .nexus-endpoint { max-width: 100%; }
 }
+
+/* 视图切换淡入（app-shell） */
+.app-content > * { animation: view-fade 0.18s ease; }
+@keyframes view-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* 回到底部悬浮按钮（对话页） */
+.scroll-bottom-btn {
+  position: absolute;
+  bottom: 12px; right: 14px;
+  z-index: 6;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-panel);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+}
+.scroll-bottom-btn:hover { color: var(--accent); border-color: var(--accent-30); }

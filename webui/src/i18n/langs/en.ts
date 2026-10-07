@@ -144,6 +144,7 @@ export const en: Partial<Dict> = {
   "agents.f.promptExtra": "Leave empty to use the built-in discipline prompt",
   "chat.usedThinking": "Used {n} chars of thinking",
   "chat.usedTools": "Used {n} tool & dispatch steps",
+  "chat.scrollToBottom": "Back to bottom",
   "chat.send": "Send",
   "chat.stop": "Stop",
   "chat.stopConfirm": "Stop the running turn?",
