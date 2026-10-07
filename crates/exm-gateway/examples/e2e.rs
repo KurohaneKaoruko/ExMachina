@@ -33,7 +33,7 @@ impl Checker {
 fn find_root() -> std::path::PathBuf {
     let mut dir = std::env::current_dir().unwrap();
     loop {
-        if dir.join("agents").join("groups").join("default").join("group.json").exists() {
+        if dir.join("agents").join("groups").join("exmachina").join("group.json").exists() {
             return dir;
         }
         if !dir.pop() {
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // 清理上次运行残留（组数据与激活组状态在 agents/ 内持久化）
     let _ = std::fs::remove_dir_all(root.join("agents").join("groups").join("product"));
     let _ = std::fs::remove_dir_all(root.join("agents").join("groups").join("e2e-chan"));
-    let _ = std::fs::write(root.join("agents").join("active_group"), "default");
+    let _ = std::fs::write(root.join("agents").join("active_group"), "exmachina");
     let _ = std::fs::remove_file(root.join("agents").join("active_single"));
     // 清理残留通道（只动 e2e 自己的条目）
     {
@@ -344,7 +344,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- 智能体组：创建 → 切换 → 主智能体直答 → 切回 ----
     let groups0: serde_json::Value = client.get(format!("{base}/groups")).send().await?.json().await?;
-    c.check("默认组存在且激活", groups0["active"] == "default");
+    c.check("默认组存在且激活", groups0["active"] == "exmachina");
 
     let g: serde_json::Value = client
         .post(format!("{base}/groups"))
@@ -369,7 +369,7 @@ async fn main() -> anyhow::Result<()> {
             "speech": "default/tts-x",
             "transcribe": "",
             "visionRelay": "default/vision-x",
-            "embedding": "default"
+            "embedding": "exmachina"
         }))
         .send()
         .await?
@@ -380,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
         caps["ok"] == true
             && caps["capabilities"]["speech"] == "default/tts-x"
             && caps["capabilities"]["visionRelay"] == "default/vision-x"
-            && caps["capabilities"]["embedding"] == "default"
+            && caps["capabilities"]["embedding"] == "exmachina"
             && caps["capabilities"]["transcribe"].is_null(),
     );
     let groups1: serde_json::Value = client.get(format!("{base}/groups")).send().await?.json().await?;
@@ -463,7 +463,7 @@ async fn main() -> anyhow::Result<()> {
     // 切回默认组
     let sw2 = client
         .put(format!("{base}/groups/active"))
-        .json(&serde_json::json!({"id": "default"}))
+        .json(&serde_json::json!({"id": "exmachina"}))
         .send()
         .await?;
     c.check("切回默认组", sw2.status().is_success());
@@ -980,7 +980,7 @@ async fn main() -> anyhow::Result<()> {
     c.check("切换后运行时模型已随档案", cfg_after["llm"]["model"] == "vendor-large");
     let restore: serde_json::Value = client
         .put(format!("{base}/llm/active"))
-        .json(&serde_json::json!({ "id": "default" }))
+        .json(&serde_json::json!({ "id": "exmachina" }))
         .send()
         .await?
         .json()
@@ -1392,7 +1392,7 @@ async fn main() -> anyhow::Result<()> {
 
     let _ = client
         .put(format!("{base}/llm/active"))
-        .json(&serde_json::json!({ "id": "default" }))
+        .json(&serde_json::json!({ "id": "exmachina" }))
         .send()
         .await;
     let _ = client.delete(format!("{base}/llm/profiles/e2e-pool")).send().await;
@@ -1474,7 +1474,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let _ = client
         .put(format!("{base}/llm/active"))
-        .json(&serde_json::json!({ "id": "default" }))
+        .json(&serde_json::json!({ "id": "exmachina" }))
         .send()
         .await;
     let _ = client.delete(format!("{base}/llm/profiles/e2e-token")).send().await;

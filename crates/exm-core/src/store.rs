@@ -45,7 +45,7 @@ impl Store {
             id: new_id(),
             title: title.to_string(),
             status: "active".into(),
-            group_id: if group_id.trim().is_empty() { "default".into() } else { group_id.to_string() },
+            group_id: if group_id.trim().is_empty() { "exmachina".into() } else { group_id.to_string() },
             rolling_summary: None,
             summary_upto: None,
             parent_session: None,

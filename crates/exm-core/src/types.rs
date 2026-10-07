@@ -550,7 +550,7 @@ pub struct Session {
 }
 
 fn default_session_group() -> String {
-    "default".to_string()
+    "exmachina".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

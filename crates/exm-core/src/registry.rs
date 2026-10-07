@@ -91,7 +91,7 @@ impl LocalRegistry {
         let reg = LocalRegistry {
             dir,
             groups: RwLock::new(HashMap::new()),
-            active: RwLock::new("default".to_string()),
+            active: RwLock::new("exmachina".to_string()),
             singles: RwLock::new(HashMap::new()),
             active_single: RwLock::new(None),
         };
@@ -105,14 +105,14 @@ impl LocalRegistry {
         // 组统一放 agents/groups/<gid>/；内置默认组 = groups/default（builtin=true，定义受保护）
         let groups_dir = self.dir.join("groups");
         std::fs::create_dir_all(&groups_dir)?;
-        let default_dir = groups_dir.join("default");
+        let default_dir = groups_dir.join("exmachina");
         let default_meta_path = default_dir.join("group.json");
         let default_meta = if default_meta_path.exists() {
             serde_json::from_str(&std::fs::read_to_string(&default_meta_path)?)
                 .context("解析 groups/default/group.json 失败")?
         } else {
             let meta = GroupMeta {
-                id: "default".into(),
+                id: "exmachina".into(),
                 name: "智能连结".into(),
                 description: "内置默认组（连结体）：指挥体 + 子个体集群（定义受保护）".into(),
                 primary: Some("orchestrator".into()),
@@ -144,7 +144,7 @@ impl LocalRegistry {
                 if !valid_id(&meta.id) {
                     anyhow::bail!("非法组 id: {}", meta.id);
                 }
-                if meta.id == "default" {
+                if meta.id == "exmachina" {
                     continue; // 默认组已在上方装载
                 }
                 groups.insert(meta.id.clone(), self.load_group(meta, gdir)?);
@@ -153,7 +153,7 @@ impl LocalRegistry {
         if groups.is_empty() {
             anyhow::bail!("未装载到任何智能体组");
         }
-        if !groups.contains_key("default") {
+        if !groups.contains_key("exmachina") {
             anyhow::bail!("缺少内置默认组");
         }
 
@@ -192,7 +192,7 @@ impl LocalRegistry {
         let active_file = self.dir.join("active_group");
         let saved = std::fs::read_to_string(&active_file).unwrap_or_default();
         let active = saved.trim().to_string();
-        let active = if groups.contains_key(&active) { active } else { "default".to_string() };
+        let active = if groups.contains_key(&active) { active } else { "exmachina".to_string() };
 
         *self.groups.write() = groups;
         *self.active.write() = active;
@@ -707,12 +707,12 @@ impl LocalRegistry {
 
     // ---------------- 技能包（激活组，docs/10） ----------------
 
-    /// 技能全局目录：`agents/skills/`，全体组共用（技能是动态加载的作业指令，不做组隔离）
+    /// 技能全局目录：`skills/`，全体组共用（技能是动态加载的作业指令，不做组隔离）
     fn skills_dir(&self) -> Option<PathBuf> {
-        Some(self.dir.join("skills"))
+        Some(self.dir.parent().unwrap_or(self.dir.as_path()).join("skills"))
     }
 
-    /// 装载全局技能包（`agents/skills/*.json`，热装载，全体组共用）
+    /// 装载全局技能包（`skills/*.json`，热装载，全体组共用）
     pub fn load_skills(&self) -> anyhow::Result<Vec<crate::types::SkillDef>> {
         let Some(dir) = self.skills_dir() else { return Ok(vec![]) };
         if !dir.exists() {

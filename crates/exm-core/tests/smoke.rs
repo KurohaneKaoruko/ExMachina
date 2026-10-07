@@ -158,7 +158,7 @@ fn 自由建组_自定义集群热切换() {
     );
 
     // 切回默认组后身份与记忆范围随之切换
-    core.switch_group("default").expect("切回失败");
+    core.switch_group("exmachina").expect("切回失败");
     assert_ne!(core.orchestrator_id(), "chief-writer");
     let after_back = core.memory_recall("风格组私有结论", Some(5)).unwrap();
     assert!(
@@ -581,7 +581,7 @@ fn temp_registry(tag: &str) -> exm_core::registry::LocalRegistry {
     let dir = std::env::temp_dir().join(format!("exm-reg-test-{}-{tag}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let meta = GroupMeta {
-        id: "default".into(),
+        id: "exmachina".into(),
         name: "测试组".into(),
         description: String::new(),
         primary: None,
