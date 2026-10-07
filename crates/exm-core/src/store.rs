@@ -185,7 +185,13 @@ impl Store {
         let mut msg = self.add_message(session_id, role, agent_id, statements)?;
         msg.thinking = thinking.filter(|s| !s.trim().is_empty());
         msg.tool_calls = tool_calls;
-        self.db.put("messages", &msg.id, &msg)?;
+        // 消息是 jsonl 追加日志:add_message 已追加无过程数据的行,这里按 id 原位替换。
+        // (此前用 put 写独立文档,read_lines 只读 jsonl——思维链/工具轨迹刷新后即失)
+        let mut all: Vec<ChatMessage> = self.db.read_lines("messages", session_id, 0)?;
+        if let Some(slot) = all.iter_mut().find(|m| m.id == msg.id) {
+            *slot = msg.clone();
+        }
+        self.db.rewrite_lines("messages", session_id, &all)?;
         Ok(msg)
     }
 

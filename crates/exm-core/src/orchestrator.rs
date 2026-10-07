@@ -69,29 +69,6 @@ pub const PLANNING_CONTRACT: &str = "
 - agentIdentifier 只能取自下方可调度子个体清单。
 - 创建/修改组内个体必须由用户明确要求；用户未要求时禁止规划任何个体管理类节点。";
 
-/// 单体模式契约：仅约定输出格式，如何回应（直答 / 分步执行）由模型自主判断
-pub const SINGLE_CONTRACT: &str = r#"""
-
----
-
-## 输出契约（OrchestratorPlan，系统强制校验）
-
-只输出一个 JSON 代码块（```json ... ```），结构：
-{
-  "routeLevel": "L0|L1|L2|L3",
-  "goal": "<用户目标>",
-  "boundary": { "inScope": ["…"], "forbidden": ["…"] },
-  "acceptance": ["可验证的验收口径"],
-  "nodes": [{
-    "id": "T1", "title": "…", "agentIdentifier": "<执行个体 identifier>",
-    "objective": "<该节点要完成什么>", "acceptance": ["…"],
-    "dependsOn": [], "priority": "P0|P1|P2|P3"
-  }],
-  "finalAnswer": [{ "tag": "报告|肯定|…", "text": "…" }]
-}
-- 如何回应由你自主判断：能直接完成的写入 finalAnswer（此时 nodes 为空）；确需分步执行时再规划 nodes。
-- finalAnswer 必填。"#;
-
 pub struct Orchestrator {
     pub registry: Arc<LocalRegistry>,
     pub orch_provider: Arc<dyn LlmProvider>,
@@ -609,7 +586,136 @@ impl Orchestrator {
         );
     }
 
+    /// 单体模式直接执行轮(常见单 agent 应用同款):系统提示 + 会话历史 + 工具循环,
+    /// 自主决策直至产出最终回复。无规划 JSON、无派发语义;过程分轨与留痕对齐既有体验。
+    async fn single_direct_round(self: &Arc<Self>, session_id: &str, text: &str) -> anyhow::Result<()> {
+        let def = self
+            .registry
+            .primary()
+            .ok_or_else(|| anyhow::anyhow!("单体模式未配置交互目标"))?;
+        // 轮次模式消费:direct/full 在单体下无差异(工具循环自主决策),取走避免跨轮残留
+        let _forced = take_session_mode(session_id);
+
+        let mut system_prompt = self
+            .registry
+            .load_prompt(&def.prompt_file)
+            .unwrap_or_else(|_| format!("# {}\n\n你是独立服务于操作者的智能体。", def.name));
+        let soul = self
+            .registry
+            .active_single()
+            .and_then(|id| self.registry.single_persona(&id).ok())
+            .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
+        system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
+
+        // 会话历史窗口:最近 40 条按角色映射(User→user, Orchestrator→assistant);
+        // 本轮输入已由 handle_user_message 落库,天然位于窗口末尾
+        let rows = self.store.list_messages(session_id, 40)?;
+        let mut history: Vec<ChatMessage> = Vec::new();
+        for m in rows {
+            let content = m
+                .statements
+                .iter()
+                .map(|s| s.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if content.trim().is_empty() {
+                continue;
+            }
+            match m.role {
+                MessageRole::User => history.push(ChatMessage::user(content)),
+                MessageRole::Orchestrator => history.push(ChatMessage::assistant(content)),
+                _ => {}
+            }
+        }
+        if history.last().map(|m| m.role != "user").unwrap_or(true) {
+            history.push(ChatMessage::user(text.to_string()));
+        }
+
+        // 多模态输入:图片三态(视觉直附 / 转述模型转写 / 忽略并注记),与规划路径一致
+        let images = crate::image_stash::take(session_id);
+        if !images.is_empty() {
+            let last = history.last_mut();
+            match self.relay_images(&images).await {
+                Some(desc) => {
+                    if let Some(m) = last {
+                        m.content
+                            .push_str(&format!("\n\n## 图片内容（由视觉转述模型转写，原始图片未直接下发）\n{desc}"));
+                    }
+                }
+                None => {
+                    let vision = self
+                        .unit_chain_for(&def)
+                        .candidates
+                        .first()
+                        .and_then(|(pid, _, model)| self.model_pool.capability(pid, model, true));
+                    if vision == Some(false) {
+                        if let Some(m) = last {
+                            m.content.push_str(
+                                "\n\n（用户随本轮附带了图片，但当前模型不支持视觉且未配置视觉转述模型，图片已忽略。）",
+                            );
+                        }
+                    } else if let Some(m) = last {
+                        m.images = images;
+                    }
+                }
+            }
+        }
+
+        // 过程分轨:思考入思维轨与 round_trace,正文可见流式
+        let em = self.clone();
+        let sid = session_id.to_string();
+        let on_delta = move |delta: StreamDelta| match delta {
+            StreamDelta::Thinking(t) => {
+                crate::round_trace::push_thinking(&sid, &t);
+                em.emit(&sid, "orchestrator.thinking", serde_json::json!({ "delta": t }));
+            }
+            StreamDelta::Text(t) => {
+                em.emit(&sid, "orchestrator.token", serde_json::json!({ "delta": t }));
+            }
+        };
+
+        let chain = self.unit_chain_for(&def);
+        let final_text = self
+            .unit_runtime
+            .chat_execute(
+                &def,
+                system_prompt,
+                history,
+                session_id,
+                chain,
+                true,
+                on_delta,
+            )
+            .await?;
+
+        let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+        let statements = vec![Statement::report(final_text)];
+        self.store.add_message_full(
+            session_id,
+            MessageRole::Orchestrator,
+            Some(def.identifier.as_str()),
+            statements.clone(),
+            thinking,
+            tool_calls,
+        )?;
+        self.emit(
+            session_id,
+            "run.finished",
+            serde_json::json!({
+                "routeLevel": "direct",
+                "agentId": def.identifier,
+                "statements": statements,
+                "artifacts": self.store.outbox_drain(session_id).unwrap_or_default(),
+            }),
+        );
+        Ok(())
+    }
+
     async fn run_round(self: &Arc<Self>, session_id: &str, text: &str) -> anyhow::Result<()> {
+        // 单体模式:直接工具循环(常见单 agent 应用同款),不进规划/派发语义
+        if self.registry.single_mode() {
+            return self.single_direct_round(session_id, text).await;
+        }
         let plan = self.plan(session_id, text).await?;
 
         let ledger = self.store.mutate_ledger(session_id, |l| {
@@ -1031,10 +1137,9 @@ impl Orchestrator {
         }
         .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
         system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
-        if self.registry.single_mode() {
-            // 单体模式：追加输出契约(如何回应由模型自主判断)
-            system_prompt.push_str(SINGLE_CONTRACT);
-        } else if !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true) {
+        if !self.registry.single_mode()
+            && !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true)
+        {
             // 自定义组：追加系统级规划契约（内置组提示词已内含）
             system_prompt.push_str(PLANNING_CONTRACT);
         }

@@ -1275,6 +1275,19 @@ impl ToolGateway {
             result.error.clone().unwrap_or_default().chars().take(200).collect()
         };
         let _ = self.store.audit_tool(agent_id, name, args, &summary, started.elapsed().as_millis() as u64);
+        // 轮次过程轨迹：与 execute_mcp 一致,内置/自定义工具执行同样随收束落盘到最终消息
+        crate::round_trace::push_tool(
+            session_id,
+            crate::round_trace::ToolCallRecord {
+                call_id: call_id.clone(),
+                agent_id: agent_id.to_string(),
+                tool: name.to_string(),
+                args: args.clone(),
+                ok: result.ok,
+                duration_ms: started.elapsed().as_millis() as u64,
+                summary,
+            },
+        );
         self.emit_tool_result(session_id, &call_id, agent_id, name, &result, &started);
         result
     }
@@ -3202,6 +3215,7 @@ mod memory_tool_tests {
                 capabilities: vec![],
                 tools: vec![],
                 when_to_call: String::new(),
+                link: None,
                 dependencies: vec![],
                 composable_with: vec![],
                 input_schema: Default::default(),
@@ -3227,6 +3241,7 @@ mod memory_tool_tests {
             tier,
             description: "测试个体".into(),
             capabilities: vec![],
+            link: None,
             tools: tools.to_vec(),
             when_to_call: String::new(),
             dependencies: vec![],
