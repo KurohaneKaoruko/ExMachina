@@ -93,7 +93,7 @@ jobs:
           name: server-${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
-  # ── 桌面端安装包：Tauri v2（Windows nsis / Linux appimage / macOS dmg）─────────
+  # ── 桌面端:纯原生 egui 应用(无 webview)+ 本地网关侧车 + 安装包 ──────────
   desktop:
     needs: version
     if: needs.version.outputs.exists == 'no'
@@ -101,10 +101,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-22.04
+            artifact: exmachina-desktop-linux-x64.tar.gz
           - os: windows-latest
             artifact: exmachina-desktop-windows-x64-setup.exe
-          - os: ubuntu-22.04
-            artifact: exmachina-desktop-linux-x64.AppImage
           - os: macos-14
             artifact: exmachina-desktop-macos-arm64.dmg
     runs-on: ${{ matrix.os }}
@@ -114,39 +114,44 @@ jobs:
       - name: System libs
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxdo-dev
+      - name: Install NSIS (windows installer)
+        if: runner.os == 'Windows'
+        run: choco install nsis -y --no-progress
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 安装 Linux webkit 依赖
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-      - name: Build WebUI
+      - name: Build WebUI (gateway-served advanced console)
         run: npm install && npm run build:webui
-      - name: Build exm-gateway (release，作为桌面端 sidecar)
+      - name: Build gateway sidecar
         run: cargo build --release -p exm-gateway
-      - name: 放置 sidecar
+      - name: Build desktop app (native egui)
+        run: cargo build --release --manifest-path desktop/Cargo.toml
+      - name: Bundle + Package (unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p desktop/src-tauri/binaries
-          cp target/release/exm-gateway desktop/src-tauri/binaries/
-      - name: 放置 sidecar (windows)
+          chmod +x scripts/package-desktop.sh
+          APP_BIN="desktop/target/release/exmachina-desktop"
+          GW_BIN="target/release/exm-gateway"
+          case "${{ matrix.os }}" in
+            macos-14) ART="exmachina-desktop-macos-arm64.dmg" ;;
+            *)        ART="exmachina-desktop-linux-x64.tar.gz" ;;
+          esac
+          scripts/package-desktop.sh bundle "$APP_BIN" "$GW_BIN" "$ART"
+      - name: Bundle + Package (windows NSIS installer)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force desktop/src-tauri/binaries | Out-Null
-          Copy-Item target/release/exm-gateway.exe desktop/src-tauri/binaries/
-      - name: Tauri build
-        run: cd desktop && npm install && npx tauri build
-      - name: 归档安装包
-        shell: bash
-        run: |
-          case "${{ runner.os }}" in
-            Windows) cp desktop/src-tauri/target/release/bundle/nsis/*-setup.exe   "${{ matrix.artifact }}" ;;
-            Linux)   cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "${{ matrix.artifact }}" ;;
-            macOS)   cp desktop/src-tauri/target/release/bundle/dmg/*.dmg           "${{ matrix.artifact }}" ;;
-          esac
+          New-Item -ItemType Directory -Force -Path bundle\bin, bundle\resources\webui, bundle\resources\data-seed | Out-Null
+          Copy-Item desktop\target\release\exmachina-desktop.exe bundle\
+          Copy-Item target\release\exm-gateway.exe bundle\bin\
+          Copy-Item icon.ico bundle\
+          Copy-Item -Recurse -Force webui\dist bundle\resources\webui\dist
+          Copy-Item -Recurse -Force entities bundle\resources\data-seed\entities
+          Copy-Item -Recurse -Force skills bundle\resources\data-seed\skills
+          Copy-Item default-soul.md bundle\resources\data-seed\default-soul.md
+          Copy-Item installer\windows.iss .
+          iscc windows.iss
+          Copy-Item exmachina-desktop-windows-x64-setup.exe exmachina-desktop-windows-x64-setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}
