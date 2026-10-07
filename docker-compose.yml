@@ -23,7 +23,8 @@ services:
     volumes:
       - exmachina-state:/app/.exmachina
       # 编成数据挂载（组/单体/技能/提示词可持久化编辑）
-      - ./agents:/app/agents
+      - ./entities:/app/entities
+      - ./skills:/app/skills
     restart: unless-stopped
 
 volumes:

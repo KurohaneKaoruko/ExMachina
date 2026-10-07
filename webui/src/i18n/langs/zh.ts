@@ -679,7 +679,7 @@ export const zh = {
   "agents.saveHot": "保存并热生效",
   "agents.customPersona": "自定义 SOUL",
   "agents.defaultPersona": "默认智械体风格",
-  "agents.personaHint": "人设影响该智能体的说话风格；保存在 agents/personas/{id}.md，下一次派发热生效。",
+  "agents.personaHint": "人设影响该智能体的说话风格；保存在 entities/personas/{id}.md，下一次派发热生效。",
   "agents.personaPh": "描述该个体的说话风格…",
 
   // ── 自动化页 ──
@@ -754,7 +754,7 @@ export const zh = {
   "singles.descTitle": "编辑描述 · {name}",
   "singles.descSaved": "描述已保存：{name}",
   "singles.soulTitle": "SOUL.MD · {name}",
-  "singles.soulHint": "人设保存于 agents/singles/personas/{id}.md，保存后下次对话生效。",
+  "singles.soulHint": "人设保存于 entities/agents/{id}/SOUL.md，保存后下次对话生效。",
   "singles.soulPh": "定义这个智能体的性格、语气与说话风格…",
   "singles.soulSaved": "SOUL.MD 已保存",
   "singles.deleteConfirm": "确认删除该智能体？",

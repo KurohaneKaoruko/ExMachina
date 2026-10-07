@@ -71,7 +71,7 @@ pub struct LocalRegistry {
     dir: PathBuf,
     groups: RwLock<HashMap<String, GroupData>>,
     active: RwLock<String>,
-    /// 单体智能体（独立于任何组，直接作为交互对象；agents/singles/）
+    /// 单体智能体（独立于任何组，直接作为交互对象；entities/agents/）
     singles: RwLock<HashMap<String, AgentDefinition>>,
     /// 当前交互目标：None = 激活组；Some(id) = 单体智能体
     active_single: RwLock<Option<String>>,
@@ -87,7 +87,7 @@ fn valid_id(s: &str) -> bool {
 impl LocalRegistry {
     pub fn new(agents_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let dir = agents_dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(dir.join("singles"))?;
+        std::fs::create_dir_all(dir.join("agents"))?;
         let reg = LocalRegistry {
             dir,
             groups: RwLock::new(HashMap::new()),
@@ -157,17 +157,17 @@ impl LocalRegistry {
             anyhow::bail!("缺少内置默认组");
         }
 
-        // 单体智能体：agents/singles/*.json（独立交互对象，不属于任何组）
+        // 单体智能体：entities/agents/*.json（独立交互对象，不属于任何组）
         let mut singles = HashMap::new();
-        let singles_dir = self.dir.join("singles");
+        let singles_dir = self.dir.join("agents");
         if singles_dir.exists() {
-            // 目录制：agents/singles/<id>/agent.json
+            // 目录制：entities/agents/<id>/agent.json
             let mut def_files: Vec<PathBuf> = std::fs::read_dir(&singles_dir)?
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.is_dir() && p.join("agent.json").is_file())
                 .map(|p| p.join("agent.json"))
                 .collect();
-            // 兼容旧布局：singles/<id>.json 平铺定义
+            // 兼容旧布局：<id>.json 平铺定义
             if let Ok(entries) = std::fs::read_dir(&singles_dir) {
                 for e in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
                     if e.is_file() && e.extension().map(|x| x == "json").unwrap_or(false) {
@@ -403,7 +403,7 @@ impl LocalRegistry {
             return Some(if stem.contains('/') || stem.contains('\\') {
                 self.singles_dir().join(&file)
             } else {
-                self.dir.join("singles").join("prompts").join(&file)
+                self.dir.join("agents").join("prompts").join(&file)
             });
         }
         let groups = self.groups.read();
@@ -417,19 +417,19 @@ impl LocalRegistry {
     }
 
     fn singles_dir(&self) -> PathBuf {
-        self.dir.join("singles")
+        self.dir.join("agents")
     }
 
     fn singles_prompt_path(&self, prompt_file: &str) -> PathBuf {
         if prompt_file.contains('/') || prompt_file.contains('\\') {
-            // 新约定：单体目录 agents/singles/<id>/PROMPT.md
+            // 新约定：单体目录 entities/agents/<id>/PROMPT.md
             self.singles_dir().join(prompt_file)
         } else {
             self.singles_dir().join("prompts").join(prompt_file)
         }
     }
 
-    /// 单体定义文件：agents/singles/<id>/agent.json
+    /// 单体定义文件：entities/agents/<id>/agent.json
     fn single_def_path(&self, id: &str) -> PathBuf {
         self.singles_dir().join(id).join("agent.json")
     }
@@ -588,7 +588,7 @@ impl LocalRegistry {
         self.groups.read().get(gid).map(|g| g.dir.clone())
     }
 
-    /// 单体目录（singles/，公开供记忆渲染等使用）
+    /// 单体根目录（entities/agents/，公开供记忆渲染等使用）
     pub fn singles_dir_pub(&self) -> PathBuf {
         self.singles_dir()
     }
@@ -1045,7 +1045,7 @@ impl LocalRegistry {
         Ok(())
     }
 
-    /// 个体定义文件：组内 agents/<id>.json（单体 singles/<id>/agent.json）
+    /// 个体定义文件：组内 agents/<id>.json（单体 entities/agents/<id>/agent.json）
     fn def_path_in(g_dir: &Path, identifier: &str) -> PathBuf {
         g_dir.join("agents").join(format!("{identifier}.json"))
     }
@@ -1096,7 +1096,7 @@ impl LocalRegistry {
     /// 本方法与 set_agent_model 同属受限字段编辑，仅放行 AgentPatch 声明的字段，
     /// identifier/tier/prompt_file 与提示词文件恒不可改，落盘回原定义文件。
     pub fn update_agent(&self, identifier: &str, patch: &AgentPatch) -> anyhow::Result<AgentDefinition> {
-        // 1) 单体智能体（agents/singles/<id>.json）
+        // 1) 单体智能体（entities/agents/<id>.json）
         if self.singles.read().contains_key(identifier) {
             let mut d = {
                 let singles = self.singles.read();
@@ -1151,7 +1151,7 @@ impl LocalRegistry {
     }
 
     // ---------------- SOUL（灵魂·人格层）：**仅用户面智能体** ----------------
-    // 组 = 组根 SOUL.md（即主智能体的人格，组对用户的脸面）；单体 = singles/<id>/SOUL.md。
+    // 组 = 组根 SOUL.md（即主智能体的人格，组对用户的脸面）；单体 = entities/agents/<id>/SOUL.md。
     // 子个体无人格层（返回 None）：统一智械纪律已在各自系统提示词内。
 
     /// 组主智能体的 SOUL：组根 SOUL.md。子个体返回 None。
@@ -1223,7 +1223,7 @@ impl LocalRegistry {
         }
     }
 
-    // ---------------- 单体智能体 SOUL（agents/singles/<id>/SOUL.md，同语义） ----------------
+    // ---------------- 单体智能体 SOUL（entities/agents/<id>/SOUL.md，同语义） ----------------
 
     fn single_persona_path(&self, id: &str) -> Option<PathBuf> {
         self.singles
@@ -1246,7 +1246,7 @@ impl LocalRegistry {
     }
 
     pub fn single_set_persona(&self, id: &str, text: &str) -> anyhow::Result<()> {
-        // 写入恒落到单体目录 agents/singles/<id>/SOUL.md
+        // 写入恒落到单体目录 entities/agents/<id>/SOUL.md
         let path = self
             .singles
             .read()

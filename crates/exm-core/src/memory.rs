@@ -786,7 +786,7 @@ impl MemoryStore {
         Ok(pinned.len())
     }
 
-    /// 个体浅层记忆视图：`singles/<id>/MEMORY.md` = 该个体私有记忆 + 群体置顶（浅层，容量有限）。
+    /// 个体浅层记忆视图：`entities/agents/<id>/MEMORY.md` = 该个体私有记忆 + 群体置顶（浅层，容量有限）。
     /// 深层记忆始终在 MemoryStore（数据库检索/衰减/压缩），此处只是人读快照。
     pub fn render_agent_memory_md(
         &self,

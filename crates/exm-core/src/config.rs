@@ -1008,7 +1008,7 @@ impl ExmConfig {
         let file_cap = file.capabilities.clone().unwrap_or_default();
         let agents_dir = std::env::var("EXM_AGENTS_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| root.join("agents"));
+            .unwrap_or_else(|_| root.join("entities"));
         let webui_dist = std::env::var("EXM_WEBUI_DIST")
             .map(PathBuf::from)
             .unwrap_or_else(|_| root.join("webui").join("dist"));

@@ -69,28 +69,28 @@ pub const PLANNING_CONTRACT: &str = "
 - agentIdentifier 只能取自下方可调度子个体清单。
 - 创建/修改组内个体必须由用户明确要求；用户未要求时禁止规划任何个体管理类节点。";
 
-/// 单体模式契约：单体智能体直接完成任务，不派发
+/// 单体模式契约：仅约定输出格式，如何回应（直答 / 分步执行）由模型自主判断
 pub const SINGLE_CONTRACT: &str = r#"""
 
 ---
 
-## 单体契约（系统追加，必须遵守）
+## 输出契约（OrchestratorPlan，系统强制校验）
 
-你是单体智能体：独立直接服务于用户，本范围内没有任何可调度的子个体。
-禁止规划任何派发节点。
-
-## 输出契约（OrchestratorPlan，运行时强制校验）
-
-只输出一个 JSON 代码块（```json ... ```）：
+只输出一个 JSON 代码块（```json ... ```），结构：
 {
-  "routeLevel": "L0",
+  "routeLevel": "L0|L1|L2|L3",
   "goal": "<用户目标>",
   "boundary": { "inScope": ["…"], "forbidden": ["…"] },
-  "acceptance": ["…"],
-  "nodes": [],
+  "acceptance": ["可验证的验收口径"],
+  "nodes": [{
+    "id": "T1", "title": "…", "agentIdentifier": "<执行个体 identifier>",
+    "objective": "<该节点要完成什么>", "acceptance": ["…"],
+    "dependsOn": [], "priority": "P0|P1|P2|P3"
+  }],
   "finalAnswer": [{ "tag": "报告|肯定|…", "text": "…" }]
 }
-- routeLevel 必须为 L0；nodes 必须为空；finalAnswer 必填（完整回答放这里）。"#;
+- 如何回应由你自主判断：能直接完成的写入 finalAnswer（此时 nodes 为空）；确需分步执行时再规划 nodes。
+- finalAnswer 必填。"#;
 
 pub struct Orchestrator {
     pub registry: Arc<LocalRegistry>,
@@ -1021,7 +1021,7 @@ impl Orchestrator {
         let mut system_prompt = self.registry.load_prompt(&primary.prompt_file).unwrap_or_else(|_| {
             format!("# {}\n\n你是本组的主智能体，直接对接用户并调度组内个体。", primary.name)
         });
-        // 主智能体人格（用户面 SOUL）：单体模式读 singles/<id>/SOUL.md，组模式读组根 SOUL.md（热读取）
+        // 主智能体人格（用户面 SOUL）：单体模式读 entities/agents/<id>/SOUL.md，组模式读组根 SOUL.md（热读取）
         let soul = if self.registry.single_mode() {
             self.registry
                 .active_single()
@@ -1032,7 +1032,7 @@ impl Orchestrator {
         .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
         system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
         if self.registry.single_mode() {
-            // 单体模式：单体智能体直接完成，禁止派发
+            // 单体模式：追加输出契约(如何回应由模型自主判断)
             system_prompt.push_str(SINGLE_CONTRACT);
         } else if !self.registry.active_group_meta().map(|m| m.builtin).unwrap_or(true) {
             // 自定义组：追加系统级规划契约（内置组提示词已内含）
@@ -1045,6 +1045,12 @@ impl Orchestrator {
             .map(|d| format!("- {}（{}）：{}", d.identifier, d.name, d.description))
             .collect::<Vec<_>>()
             .join("\n");
+        // 清单为空时不渲染该段（单体模式不宣传派发能力，也不否认——交由模型自主判断）
+        let registry_section = if registry_brief.is_empty() {
+            String::new()
+        } else {
+            format!("## 当前可调度子个体\n{registry_brief}\n\n")
+        };
 
         // 技能包清单（数据驱动）：命中触发词的技能会随派发自动携带
         let skill_brief = match self.registry.load_skills() {
@@ -1176,7 +1182,7 @@ impl Orchestrator {
         }
         let mut messages = vec![
             ChatMessage::system(format!(
-                "{system_prompt}\n\n## 当前可调度子个体\n{registry_brief}\n\n{skill_brief}{playbook_brief}{stats_block}{memory_block}"
+                "{system_prompt}\n\n{registry_section}{skill_brief}{playbook_brief}{stats_block}{memory_block}"
             )),
             user_msg,
         ];
@@ -1216,8 +1222,6 @@ impl Orchestrator {
                     };
                     if mode_violation {
                         last_err = "计划违反本轮模式约束（direct = 仅 L0 直答 / full = 必须派发），请重新规划".into();
-                    } else if self.registry.single_mode() && !plan.nodes.is_empty() {
-                        last_err = "单体模式只支持 L0 直答：nodes 必须为空，回答放进 finalAnswer".into();
                     } else if unknown.is_empty() {
                         return Ok(plan);
                     } else {
@@ -1252,7 +1256,7 @@ impl Orchestrator {
             .registry
             .load_prompt(&primary.prompt_file)
             .unwrap_or_else(|_| format!("# {}\n\n你是本组的主智能体。", primary.name));
-        // 主智能体人格（用户面 SOUL）：单体模式读 singles/<id>/SOUL.md，组模式读组根 SOUL.md
+        // 主智能体人格（用户面 SOUL）：单体模式读 entities/agents/<id>/SOUL.md，组模式读组根 SOUL.md
         let soul = if self.registry.single_mode() {
             self.registry
                 .active_single()
@@ -1262,10 +1266,6 @@ impl Orchestrator {
         }
         .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
         system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
-        if self.registry.single_mode() {
-            // 单体模式：禁止派发（单体直接完成）
-            system_prompt.push_str(SINGLE_CONTRACT);
-        }
         let digest = graph
             .list()
             .iter()

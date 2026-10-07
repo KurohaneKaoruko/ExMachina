@@ -33,7 +33,7 @@ impl Checker {
 fn find_root() -> std::path::PathBuf {
     let mut dir = std::env::current_dir().unwrap();
     loop {
-        if dir.join("agents").join("groups").join("exmachina").join("group.json").exists() {
+        if dir.join("entities").join("groups").join("exmachina").join("group.json").exists() {
             return dir;
         }
         if !dir.pop() {
@@ -46,8 +46,8 @@ fn find_root() -> std::path::PathBuf {
 async fn main() -> anyhow::Result<()> {
     let root = find_root();
     // 清理上次运行残留（组数据与激活组状态在 agents/ 内持久化）
-    let _ = std::fs::remove_dir_all(root.join("agents").join("groups").join("product"));
-    let _ = std::fs::remove_dir_all(root.join("agents").join("groups").join("e2e-chan"));
+    let _ = std::fs::remove_dir_all(root.join("entities").join("groups").join("product"));
+    let _ = std::fs::remove_dir_all(root.join("entities").join("groups").join("e2e-chan"));
     let _ = std::fs::write(root.join("agents").join("active_group"), "exmachina");
     let _ = std::fs::remove_file(root.join("agents").join("active_single"));
     // 清理残留通道（只动 e2e 自己的条目）

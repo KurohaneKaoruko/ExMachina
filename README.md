@@ -169,7 +169,7 @@ EXMACHINA 换了一条路：把"完成一件复杂事"拆成一个**可被审计
 | 编码工作台 | `patch` 统一 diff 工具（任一文件校验失败整体拒绝）、工作区变更视图（git 口径 / 检查点回退）、文件编辑保存、Git 面板（破坏性操作走审批） |
 | 桌面集成 | 系统托盘（关窗驻留可配置）、原生通知（审批 / 定时推送 / 任务完成，类别开关）、全局快捷键（唤起 / 收起可改绑） |
 | 预算硬顶 | 会话 token 预算与终端超时强杀（进程树），失控循环不会拖死节点 |
-| 编成即数据 | 个体 / 链路 / 技能 / 人设 / 组全是 `agents/` 下的可编辑数据，热装载，改完即生效 |
+| 编成即数据 | 个体 / 链路 / 技能 / 人设 / 组全是 `entities/` 下的可编辑数据，热装载，改完即生效 |
 | 可替换实现 | Bus / Registry / Scheduler / 远端执行均为接口或可替换实现，单机先行、分布式不改上层 |
 
 ## 核心概念
@@ -222,7 +222,7 @@ flowchart LR
 ```
 
 - **核心语言**：Rust（并发与长驻进程关键路径）；WebUI 为 TypeScript + React 19 + antd 6。
-- **提示词协议**：`agents/prompts/protocol/` 下 11 部协议（绝对理性 / 证据分级 / 冲突裁决 /
+- **提示词协议**：`entities/groups/exmachina/protocol/` 下协议（绝对理性 / 证据分级 / 冲突裁决 /
   多智能体回流 / 审查 / 调试 / 变更 / 审计 / 发布 / 回滚 / 工作区协作），编织进指挥体与子个体的系统提示。
 - **存储**：文档型 fsdb（`.exmachina/data`），无 C 依赖；repository 接口保留换回 SQLite/redb 的余地。
 
@@ -242,7 +242,7 @@ flowchart LR
 | `group list/create/switch/info/delete/export/import` | 智能体组：组建、切换、导入导出组包 |
 | `agent create/remove/set-primary` | 组内个体管理（首个个体自动成为主智能体） |
 | `agent optimize/adaptation/reset-adaptation` | 经验优化：教训提炼为个体行为改进要点 |
-| `persona get/set/reset` | SOUL（灵魂·人格层）编辑：每个智能体一个 `agents/<id>/SOUL.md`，默认智械人格开箱即用 |
+| `persona get/set/reset` | SOUL（灵魂·人格层）编辑：单体位于 `entities/agents/<id>/SOUL.md`，默认智械人格开箱即用 |
 | `skill list/add/remove` | 技能包（任务目标命中触发词即随派发携带） |
 | `cron list/add/run/enable/disable/remove/runs` | 定时任务（网关常驻时自动调度） |
 | `approval list/approve/deny` | 终端命令审批（高危命令拦截与决定） |

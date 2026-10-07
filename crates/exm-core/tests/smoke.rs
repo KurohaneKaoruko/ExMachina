@@ -9,7 +9,7 @@ use exm_core::Core;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
-/// 测试串行锁：Core 型测试共享仓库工作区（agents/active_group 等运行时文件），并行互踩
+/// 测试串行锁：Core 型测试共享仓库工作区（entities/active_group 等运行时文件），并行互踩
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -19,9 +19,14 @@ fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
 fn test_config() -> ExmConfig {
     let root = std::env::current_dir().unwrap().join("..").join("..");
     let mut cfg = ExmConfig::load(&root);
-    // 编成隔离副本：复制 agents/（跳过运行时残留 groups/active_*），测试互不污染仓库工作区
-    let agents_copy = std::env::temp_dir().join(format!("exm-agents-{}", uuid::Uuid::new_v4()));
-    copy_agents_tree(&root.join("agents"), &agents_copy);
+    // 编成隔离副本：复制 entities/（跳过运行时残留 groups/active_*），测试互不污染仓库工作区
+    // 编成根临时目录:entities/ + skills/ 兄弟布局(skills_dir = 编成根父目录下的 skills/)
+    let base = std::env::temp_dir().join(format!("exm-fleet-{}", uuid::Uuid::new_v4()));
+    let agents_copy = base.join("entities");
+    copy_agents_tree(&root.join("entities"), &agents_copy);
+    if root.join("skills").is_dir() {
+        copy_agents_tree(&root.join("skills"), &base.join("skills"));
+    }
     cfg.agents_dir = agents_copy;
     cfg.data_dir = std::env::temp_dir().join(format!("exm-test-{}", uuid::Uuid::new_v4()));
     cfg.use_mock = true;
@@ -113,7 +118,7 @@ fn 自由建组_自定义集群热切换() {
 
     // 建组演练不依赖默认组编成：残留先清理，保证可重跑
     let root = std::env::current_dir().unwrap().join("..").join("..");
-    let _ = std::fs::remove_dir_all(root.join("agents").join("groups").join("smoke-style"));
+    let _ = std::fs::remove_dir_all(root.join("entities").join("groups").join("smoke-style"));
 
     let g = core
         .create_group(Some("smoke-style".into()), "风格实验组", "验证自由建组与热切换")
@@ -424,10 +429,10 @@ async fn 执行审批_等待批准_结果回灌与拒绝短路() {
 async fn single_agent_target_switch_and_l0_direct() {
     let cfg = test_config();
     // 残留清理（只清演练个体与目标状态；不得动 agents/singles 全目录——默认智能体种子在此）
-    let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("agents");
+    let agents_root = std::env::current_dir().unwrap().join("..").join("..").join("entities");
     let _ = std::fs::remove_file(agents_root.join("active_single"));
-    let _ = std::fs::remove_file(agents_root.join("singles").join("lone-writer.json")); // 旧布局残留
-    let _ = std::fs::remove_dir_all(agents_root.join("singles").join("lone-writer"));
+    let _ = std::fs::remove_file(agents_root.join("agents").join("lone-writer.json")); // 旧布局残留
+    let _ = std::fs::remove_dir_all(agents_root.join("agents").join("lone-writer"));
     let core = Core::with_config(cfg).expect("创建 Core 失败");
     assert!(!core.registry().single_mode(), "默认为组模式");
     let group_agents = core.registry().list().len();

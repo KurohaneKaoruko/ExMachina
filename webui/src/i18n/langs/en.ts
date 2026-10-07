@@ -680,7 +680,7 @@ export const en: Partial<Dict> = {
   "agents.saveHot": "Save & hot-apply",
   "agents.customPersona": "Custom persona",
   "agents.defaultPersona": "Default agent style",
-  "agents.personaHint": "Persona shapes this agent's speaking style; saved at agents/personas/{id}.md, hot-applies on next dispatch.",
+  "agents.personaHint": "Persona shapes this agent's speaking style; saved at entities/personas/{id}.md, hot-applies on next dispatch.",
   "agents.personaPh": "Describe this unit's speaking style…",
 
   // ── Automations ──
@@ -755,7 +755,7 @@ export const en: Partial<Dict> = {
   "singles.descTitle": "Edit description · {name}",
   "singles.descSaved": "Description saved: {name}",
   "singles.soulTitle": "SOUL.MD · {name}",
-  "singles.soulHint": "The persona is saved to agents/singles/personas/{id}.md and takes effect on the next conversation.",
+  "singles.soulHint": "The persona is saved to entities/agents/{id}/SOUL.md and takes effect on the next conversation.",
   "singles.soulPh": "Define this agent's character, tone and speaking style…",
   "singles.soulSaved": "SOUL.MD saved",
   "singles.deleteConfirm": "Delete this agent?",
