@@ -80,6 +80,8 @@ export interface Session {
   ledger: SessionLedger;
   createdAt: string;
   updatedAt: string;
+  lastMessagePreview?: string;
+  lastActiveAt?: string;
 }
 
 export type TaskStatus =

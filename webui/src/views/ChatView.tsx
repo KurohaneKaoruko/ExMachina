@@ -12,7 +12,9 @@ import { StatementList } from "../components/Statements";
 import { Markdown } from "../components/Markdown";
 import { AsciiMeter } from "../components/Ascii";
 import { ToolCallList } from "../components/ToolCall";
+import { copyText } from "../components/Markdown";
 import { UsageBar } from "../components/UsageBar";
+import { SkeletonList } from "../components/SkeletonList";
 import { TurnOps } from "../components/HistoryOps";
 import type { ChatMessage } from "../types";
 
@@ -27,6 +29,20 @@ function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: num
       <div className="msg-head">
         {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
         {turn != null && <span className="msg-turn mono">#{turn}</span>}
+        {!isUser && (
+          <button
+            className="msg-copy"
+            title="复制"
+            onClick={async () => {
+              const text = m.statements.map((st) => st.text).join("\n\n");
+              if (await copyText(text)) {
+                message.success("已复制");
+              }
+            }}
+          >
+            ⧉
+          </button>
+        )}
         {ops && <span className="msg-ops">{ops}</span>}
       </div>
       {(hasThinking || hasTools) && (
@@ -53,14 +69,31 @@ function tUsage(tb: (k: string, v?: Record<string, string>) => string, chars: nu
   return tb("chat.usedThinking", { n: String(chars) });
 }
 
+/** 相对时间（chat-ergonomics）：刚刚 / N 分钟前 / N 小时前 / 昨天 / N 天前 / 日期 */
+export function relativeTime(iso?: string): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const diff = Date.now() - t;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return `${min} 分钟前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour} 小时前`;
+  const day = Math.floor(hour / 24);
+  if (day === 1) return "昨天";
+  if (day < 7) return `${day} 天前`;
+  return iso.slice(0, 10);
+}
+
 export function ChatView(): React.ReactElement {
   const t = useT();
-  const {
-    messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
+  const {     messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
     timeline, running, send, wsConnected, decideApproval,
     sessions, sessionId, selectSession, newSession,
     groups, activeGroup, setTarget,
     refreshAgents,
+    sessionsLoaded,
   } = useExm();
   const [target, setTargetInfo] = useState<TargetInfo>({ mode: "group", id: activeGroup });
   const [singles, setSinglesList] = useState<{ identifier: string; name: string }[]>([]);
@@ -101,6 +134,8 @@ export function ChatView(): React.ReactElement {
     measured?: boolean;
   } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  /** 上箭头召回的游标（null = 未处于召回态） */
+  const recallIdxRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const chunksRef = useRef<Blob[]>([]);
@@ -166,6 +201,13 @@ export function ChatView(): React.ReactElement {
       setImages([]);
     }
   };
+
+  // 切会话恢复草稿（chat-ergonomics）
+  useEffect(() => {
+    if (!sessionId) return;
+    setText(useExm.getState().drafts[sessionId] ?? "");
+    recallIdxRef.current = null;
+  }, [sessionId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -378,6 +420,7 @@ export function ChatView(): React.ReactElement {
             ]}
           />
           <div className="session-list">
+            {sessions.length === 0 && !sessionsLoaded && <SkeletonList rows={6} />}
             {sessions
               .filter((s) => (sessionKind === "all" ? true : sessionKind === "channel" ? s.title.startsWith("channel:") : !s.title.startsWith("channel:")))
               .filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase()))
@@ -387,8 +430,12 @@ export function ChatView(): React.ReactElement {
                 className={`session-row ${s.id === sessionId ? "active" : ""}`}
                 onClick={() => void selectSession(s.id)}
               >
-                {s.title.startsWith("channel:") ? <CloudUploadOutlined className="session-row-icon" /> : <MessageOutlined className="session-row-icon" />}
-                <span className="session-title">{s.title.replace(/^channel:[^:]+:/, "↗ ")}</span>
+                <div className="session-row-top">
+                  {s.title.startsWith("channel:") ? <CloudUploadOutlined className="session-row-icon" /> : <MessageOutlined className="session-row-icon" />}
+                  <span className="session-title">{s.title.replace(/^channel:[^:]+:/, "↗ ")}</span>
+                  <span className="session-time">{relativeTime(s.lastActiveAt ?? s.createdAt)}</span>
+                </div>
+                {s.lastMessagePreview && <div className="session-preview">{s.lastMessagePreview}</div>}
                 {s.id === sessionId && running && <span className="session-live-dot" />}
                 <span className="session-ops" onClick={(e) => e.stopPropagation()}>
                   <Button
@@ -459,7 +506,7 @@ export function ChatView(): React.ReactElement {
           )}
           <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
         </div>
-        {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert" />}
+        {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert app-banner" />}
         {/* 内联审批：命令被拦截时在消息流中直接裁决——批准后输出回灌，模型继续干活 */}
         {approvals.map((a) => (
           <Card key={a.approvalId} size="small" className="approval-card">
@@ -598,7 +645,10 @@ export function ChatView(): React.ReactElement {
           )}
           <Input.TextArea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (sessionId) useExm.getState().setDraft(sessionId, e.target.value);
+            }}
             placeholder={`> ${t("chat.inputPlaceholder")}`}
             autoSize={{ minRows: 1, maxRows: 6 }}
             onPressEnter={(e) => {
@@ -608,6 +658,29 @@ export function ChatView(): React.ReactElement {
                   doSend();
                 }
               }
+            }}
+            onKeyDown={(e) => {
+              // 上/下箭头召回历史用户消息（chat-ergonomics）：仅在空输入时接管
+              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+              if (text.trim()) return;
+              const userMsgs = messages.filter((m) => m.role === "user");
+              if (userMsgs.length === 0) return;
+              e.preventDefault();
+              let idx = recallIdxRef.current;
+              if (e.key === "ArrowUp") {
+                idx = idx === null ? userMsgs.length - 1 : Math.max(0, idx - 1);
+              } else {
+                if (idx === null) return;
+                idx = idx + 1;
+                if (idx >= userMsgs.length) {
+                  recallIdxRef.current = null;
+                  setText("");
+                  return;
+                }
+              }
+              recallIdxRef.current = idx;
+              const recalled = userMsgs[idx]?.statements.map((st) => st.text).join("\n") ?? "";
+              setText(recalled);
             }}
           />
           <Button

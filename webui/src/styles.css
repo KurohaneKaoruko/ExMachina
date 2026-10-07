@@ -482,9 +482,10 @@ body {
 .session-list { flex: 1; overflow: auto; }
 .session-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 7px 10px;
   border: 1px solid transparent;
   border-left: 2px solid transparent;
   cursor: pointer;
@@ -2029,3 +2030,69 @@ input, textarea { caret-color: var(--accent); }
 .nav-menu .ant-menu-item { text-align: left; }
 .nav-menu .nav-exp-tag { display: inline-block; margin: 0 0 0 4px; vertical-align: 1px; }
 .nav-menu .ant-menu-item { white-space: nowrap; }
+
+/* 会话行两行布局辅助（chat-ergonomics）：标题行 + 预览行 */
+.session-row .session-row-top { display: flex; align-items: center; gap: 6px; }
+.session-row .session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-row .session-time { margin-left: auto; font-size: 10px; color: var(--muted); flex: none; }
+.session-row .session-preview { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 代码块复制按钮（chat-ergonomics） */
+.code-block-wrap { position: relative; }
+.code-block-wrap .code-copy-btn {
+  position: absolute;
+  top: 4px; right: 6px;
+  z-index: 2;
+  font-size: 11px;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--bg-panel);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.code-block-wrap:hover .code-copy-btn { opacity: 1; }
+.code-block-wrap .code-copy-btn:hover { color: var(--accent); border-color: var(--accent-30); }
+
+/* 消息复制小按钮 */
+.msg-copy {
+  border: none; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 12px; padding: 0 4px;
+}
+.msg-copy:hover { color: var(--accent); }
+.msg-head { display: flex; align-items: center; gap: 6px; }
+.msg-head .msg-copy { margin-left: 2px; opacity: 0; transition: opacity 0.15s ease; }
+.msg-bubble:hover .msg-copy { opacity: 1; }
+
+/* 骨架屏（visual-polish）：shimmer 纯 CSS */
+@keyframes skeleton-shimmer { 0% { background-position: -200px 0; } 100% { background-position: 200px 0; } }
+.skeleton-list, .skeleton-card { display: flex; flex-direction: column; gap: 8px; }
+.skeleton-card { border: 1px solid var(--line); background: var(--bg-panel); padding: 12px; border-radius: 2px; }
+.skeleton-line {
+  height: 12px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--line) 25%, var(--line-strong) 50%, var(--line) 75%);
+  background-size: 400px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+.skeleton-line-title { height: 14px; width: 40%; }
+.skeleton-row {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-panel);
+}
+
+/* 横幅统一（app-banner）：断连/实验声明/错误提示同一规格 */
+.app-banner.ant-alert {
+  border-radius: 2px;
+  border: 1px solid var(--line-strong);
+  padding: 8px 12px;
+}
+.app-banner.ant-alert-warning { border-left: 3px solid var(--accent); }
+.app-banner.ant-alert-error { border-left: 3px solid var(--red); }

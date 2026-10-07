@@ -50,6 +50,8 @@ impl Store {
             summary_upto: None,
             parent_session: None,
             parent_upto: None,
+                last_message_preview: None,
+                last_active_at: None,
             ledger: SessionLedger::default(),
             created_at: now.clone(),
             updated_at: now,
@@ -67,6 +69,23 @@ impl Store {
         list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         list.truncate(200);
         Ok(list)
+    }
+
+    /// 会话最后一条消息的纯文本预览（末行 JSONL 直接取，避免整文件反序列化）
+    pub fn last_message_preview(&self, session_id: &str, max_chars: usize) -> Option<String> {
+        let path = self.db.root().join("messages").join(format!("{session_id}.jsonl"));
+        let content = std::fs::read_to_string(path).ok()?;
+        let last_line = content.lines().rev().find(|l| !l.trim().is_empty())?;
+        let v: serde_json::Value = serde_json::from_str(last_line).ok()?;
+        let text = v
+            .get("statements")
+            .and_then(|s| s.as_array())
+            .and_then(|a| a.first())
+            .and_then(|s| s.get("text"))
+            .and_then(|t| t.as_str())?
+            .trim()
+            .to_string();
+        Some(text.chars().take(max_chars).collect())
     }
 
     pub fn update_ledger(&self, session_id: &str, ledger: &SessionLedger) -> Result<()> {
@@ -146,6 +165,8 @@ impl Store {
             token_usage: None,
             thinking: None,
             tool_calls: Vec::new(),
+            last_message_preview: None,
+            last_active_at: None,
         };
         self.db.append_line("messages", session_id, &msg)?;
         Ok(msg)

@@ -80,7 +80,7 @@ export function NexusView(): React.ReactElement {
       <Alert
         type="warning"
         showIcon
-        className="nexus-exp-alert"
+        className="nexus-exp-alert app-banner"
         message={t("nexus.expTitle")}
         description={t("nexus.expDesc")}
         style={{ marginBottom: 12 }}

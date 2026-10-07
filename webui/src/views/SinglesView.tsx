@@ -4,6 +4,7 @@ import { Button, Card, Dropdown, Empty, Form, Input, Modal, Popconfirm, Select, 
 import { MoreOutlined, PlusOutlined, ReloadOutlined, UndoOutlined, UserOutlined } from "@ant-design/icons";
 import { api, type LlmProfile, type PersonaInfo } from "../api";
 import { PageHeader } from "../components/PageHeader";
+import { SkeletonList } from "../components/SkeletonList";
 import { buildModelOptions, modelLabel } from "../models";
 import { useT } from "../i18n/core";
 
@@ -233,36 +234,42 @@ export function SinglesView(): React.ReactElement {
       />
 
       <Spin spinning={loading}>
-        <div className="skill-grid">
-          {singles.map((s) => (
-            <Card
-              key={s.identifier}
-              size="small"
-              className="hud model-card"
-              title={
-                <Space>
-                  <UserOutlined />
-                  <span>{s.name}</span>
-                  <span className="mono dim">{s.identifier}</span>
-                  {activeSingle === s.identifier && <Tag color="processing">{t("singles.activeTag")}</Tag>}
-                </Space>
-              }
-              extra={
-                <Dropdown menu={{ items: cardMenu(s) }} trigger={["click"]} placement="bottomRight">
-                  <Button size="small" icon={<MoreOutlined />} aria-label={t("singles.cardMenu")} />
-                </Dropdown>
-              }
-            >
-              <div className="dim">{s.description}</div>
-              <div className="skill-line">{t("singles.domain", { domain: s.domain || t("singles.solo") })}</div>
-              <div className="skill-line">
-                {t("singles.model")}<Tag color="geekblue">{modelLabel(s.modelHint, profiles)}</Tag>
-              </div>
-            </Card>
-          ))}
-        </div>
-        {!loading && singles.length === 0 && (
-          <Empty description={t("singles.empty")} className="graph-empty" />
+        {loading && singles.length === 0 ? (
+          <SkeletonList rows={4} variant="card" />
+        ) : (
+          <>
+            <div className="skill-grid">
+              {singles.map((s) => (
+                <Card
+                  key={s.identifier}
+                  size="small"
+                  className="hud model-card"
+                  title={
+                    <Space>
+                      <UserOutlined />
+                      <span>{s.name}</span>
+                      <span className="mono dim">{s.identifier}</span>
+                      {activeSingle === s.identifier && <Tag color="processing">{t("singles.activeTag")}</Tag>}
+                    </Space>
+                  }
+                  extra={
+                    <Dropdown menu={{ items: cardMenu(s) }} trigger={["click"]} placement="bottomRight">
+                      <Button size="small" icon={<MoreOutlined />} aria-label={t("singles.cardMenu")} />
+                    </Dropdown>
+                  }
+                >
+                  <div className="dim">{s.description}</div>
+                  <div className="skill-line">{t("singles.domain", { domain: s.domain || t("singles.solo") })}</div>
+                  <div className="skill-line">
+                    {t("singles.model")}<Tag color="geekblue">{modelLabel(s.modelHint, profiles)}</Tag>
+                  </div>
+                </Card>
+              ))}
+            </div>
+            {!loading && singles.length === 0 && (
+              <Empty description={t("singles.empty")} className="graph-empty" />
+            )}
+          </>
         )}
       </Spin>
 

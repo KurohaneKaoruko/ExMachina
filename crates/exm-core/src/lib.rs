@@ -589,6 +589,8 @@ impl Core {
             summary_upto: None,
             parent_session: Some(src.id.clone()),
             parent_upto: Some(upto_turn),
+                last_message_preview: None,
+                last_active_at: None,
             ledger: src.ledger.clone(),
             created_at: now.clone(),
             updated_at: now,
@@ -857,7 +859,13 @@ impl Core {
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
-        self.store.list_sessions()
+        let mut list = self.store.list_sessions()?;
+        // 末条消息预览（chat-ergonomics）：会话量级 ≤200，末行微读成本可控
+        for s in list.iter_mut() {
+            s.last_message_preview = self.store.last_message_preview(&s.id, 80);
+            s.last_active_at = Some(s.updated_at.clone());
+        }
+        Ok(list)
     }
 
     pub fn agents(&self) -> Vec<AgentDefinition> {

@@ -3,13 +3,14 @@
  * 字段定义来自后端 config_schema()；LLM 接入在「提供商」页维护。
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Input, InputNumber, message, Select, Switch, Card } from "antd";
+import { Alert, Button, Input, InputNumber, message, Select, Switch, Card } from "antd";
 import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, GlobalOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
 import { PageHeader } from "../components/PageHeader";
 import { api, limitsStats, type ConfigSchema, type ConfigSchemaField, type GatewayConfig, type LimitsStats } from "../api";
+import { loadNotifyPrefs, saveNotifyPrefs, type NotifyPrefs } from "../store";
 
 /** 分组元数据。ui 是本地偏好分区，不属于后端 config schema */
 const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey: TKey }> = {
@@ -265,6 +266,7 @@ export function SettingsView(): React.ReactElement {
             <div className="cfg2-foot">
               <span className="dim">{t("settings.localTip")}</span>
             </div>
+            <NotifyPrefsCard />
           </>
         ) : current && meta ? (
           <>
@@ -372,6 +374,71 @@ function LimitsStatsCard(): React.ReactElement {
         </>
       ) : (
         <div className="dim">{t("cfg.limitsDisabled")}</div>
+      )}
+    </Card>
+  );
+}
+
+/** 浏览器通知偏好卡（web-notifications）：授权 + 类别开关，本地持久化 */
+function NotifyPrefsCard(): React.ReactElement {
+  const t = useT();
+  const [prefs, setPrefs] = useState<NotifyPrefs>(() => loadNotifyPrefs());
+  const [denied, setDenied] = useState(false);
+
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "denied") setDenied(true);
+  }, []);
+
+  const setEnabled = async (v: boolean) => {
+    if (v && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setDenied(true);
+        return;
+      }
+    }
+    setDenied(typeof Notification !== "undefined" && Notification.permission === "denied");
+    const next = { ...prefs, enabled: v };
+    setPrefs(next);
+    saveNotifyPrefs(next);
+  };
+
+  const setCat = (key: "approval" | "roundDone" | "cronDone", v: boolean) => {
+    const next = { ...prefs, [key]: v };
+    setPrefs(next);
+    saveNotifyPrefs(next);
+  };
+
+  const unsupported = typeof Notification === "undefined";
+
+  return (
+    <Card size="small" className="hud" style={{ marginBottom: 12 }}>
+      <div className="dim" style={{ marginBottom: 8 }}>{t("notify.desc")}</div>
+      {unsupported ? (
+        <div className="dim">{t("notify.unsupported")}</div>
+      ) : (
+        <>
+          {denied && <Alert type="warning" showIcon message={t("notify.blocked")} style={{ marginBottom: 8 }} />}
+          <div className="cfg2-row">
+            <div className="cfg2-label">
+              <div className="cfg2-name">{t("notify.enabled")}</div>
+              <div className="cfg2-help">{t("notify.enabledHelp")}</div>
+            </div>
+            <Switch checked={prefs.enabled} onChange={(v) => void setEnabled(v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catApproval")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.approval} onChange={(v) => setCat("approval", v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catRound")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.roundDone} onChange={(v) => setCat("roundDone", v)} />
+          </div>
+          <div className="cfg2-row">
+            <div className="cfg2-name">{t("notify.catCron")}</div>
+            <Switch size="small" disabled={!prefs.enabled} checked={prefs.cronDone} onChange={(v) => setCat("cronDone", v)} />
+          </div>
+        </>
       )}
     </Card>
   );

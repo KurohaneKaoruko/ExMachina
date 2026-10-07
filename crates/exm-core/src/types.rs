@@ -539,6 +539,11 @@ pub struct Session {
     pub parent_session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_upto: Option<usize>,
+    /// 末条消息预览与活跃时间（list_sessions 动态附加，不入存储）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<String>,
     pub ledger: SessionLedger,
     pub created_at: String,
     pub updated_at: String,
@@ -563,6 +568,11 @@ pub struct ChatMessage {
     /// 本轮思维链（收束时由服务端留存，过程收起栏数据源）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// 末条消息预览与活跃时间（会话列表扫描用，不入存储——list_sessions 动态附加）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<String>,
     /// 本轮工具调用轨迹（收束时由服务端留存）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<crate::round_trace::ToolCallRecord>,

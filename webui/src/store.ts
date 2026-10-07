@@ -15,7 +15,7 @@ import { api, serverBase, type GatewayConfig, type GroupMeta, type RecallHit } f
 import { tr } from "./i18n/core";
 
 export interface TimelineItem {
-  kind: "dispatch" | "sync" | "arbitration" | "memory" | "error";
+  kind: "dispatch" | "sync" | "arbitration" | "memory" | "error" | "cron";
   agentId?: string;
   nodeId?: string;
   text: string;
@@ -62,6 +62,13 @@ interface ExmState {
   selectSession: (id: string) => Promise<void>;
   newSession: () => Promise<void>;
   send: (text: string, images?: string[], mode?: string | null) => Promise<void>;
+  /** 会话列表已完成首次加载（骨架屏判定） */
+  sessionsLoaded: boolean;
+  /** 会话输入草稿（内存态；sessionStorage 镜像持久化） */
+  drafts: Record<string, string>;
+  setDraft: (sessionId: string, text: string) => void;
+  /** 新消息落会话列表时刷新该会话的末条预览（chat-ergonomics） */
+  updateSessionPreview: (sessionId: string, preview: string) => void;
   saveConfig: (body: Record<string, unknown>) => Promise<void>;
   decideApproval: (id: string, approve: boolean) => Promise<void>;
   handleEvent: (evt: WsEvent) => void;
@@ -70,6 +77,59 @@ interface ExmState {
   /** 跨视图导航请求（审批→会话跳转等）：App 订阅消费 */
   navRequest: { view: string; sessionId?: string; nonce: number } | null;
   requestNav: (view: string, sessionId?: string) => void;
+  markSessionsLoaded: () => void;
+}
+
+/** 会话输入草稿（chat-ergonomics）：内存 + sessionStorage 双写；发送成功即清除 */
+const draftKey = (id: string) => `exm.draft.${id}`;
+
+/** 浏览器通知偏好（web-notifications）：localStorage 持久化 */
+export interface NotifyPrefs {
+  enabled: boolean;
+  approval: boolean;
+  roundDone: boolean;
+  cronDone: boolean;
+}
+
+export function loadNotifyPrefs(): NotifyPrefs {
+  const def: NotifyPrefs = { enabled: false, approval: true, roundDone: false, cronDone: true };
+  try {
+    const raw = localStorage.getItem("exm.notify");
+    return raw ? { ...def, ...JSON.parse(raw) } : def;
+  } catch {
+    return def;
+  }
+}
+
+export function saveNotifyPrefs(prefs: NotifyPrefs): void {
+  try { localStorage.setItem("exm.notify", JSON.stringify(prefs)); } catch { /* 忽略 */ }
+}
+
+/** 触发系统通知（授权 + 偏好由调用方判断），点击聚焦并跳转会话 */
+function fireNotification(title: string, body: string, sessionId?: string): void {
+  try {
+    const n = new Notification(title, { body: body.slice(0, 200), tag: sessionId ?? title });
+    n.onclick = () => {
+      window.focus();
+      if (sessionId) useExm.getState().requestNav("chat", sessionId);
+    };
+  } catch { /* 通知不可用时静默 */ }
+}
+
+/** 是否允许对某会话弹通知：已授权 + 页面隐藏 或 事件非当前会话 */
+function fireNotificationLocal(title: string, body: string, sessionId?: string): void {
+  try {
+    const n = new Notification(title, { body: body.slice(0, 200), tag: sessionId ?? title });
+    n.onclick = () => {
+      window.focus();
+      if (sessionId) useExm.getState().requestNav("chat", sessionId);
+    };
+  } catch { /* 忽略 */ }
+}
+
+function shouldNotifySession(sessionId?: string): boolean {
+  if (document.visibilityState !== "hidden" && sessionId && sessionId === useExm.getState().sessionId) return false;
+  return true;
 }
 
 let ws: WebSocket | null = null;
@@ -166,6 +226,7 @@ if (typeof window !== "undefined") {
 
 export const useExm = create<ExmState>((set, get) => ({
   sessions: [],
+  sessionsLoaded: false,
   sessionId: null,
   messages: [],
   graph: null,
@@ -193,6 +254,7 @@ export const useExm = create<ExmState>((set, get) => ({
       api.getConfig(),
     ]);
     set({ sessions, agents, config });
+    get().markSessionsLoaded();
     await get().loadGroups();
     if (sessions.length > 0) {
       await get().selectSession(sessions[0].id);
@@ -319,7 +381,16 @@ export const useExm = create<ExmState>((set, get) => ({
         },
       ],
     });
-    await api.chat(id, text, images, sendMode ?? undefined);
+    try {
+      await api.chat(id, text, images, sendMode ?? undefined);
+    } finally {
+      // 草稿已发出：清除（chat-ergonomics）
+      try {
+        sessionStorage.removeItem(draftKey(id));
+      } catch { /* 隐私模式忽略 */ }
+      set((s) => ({ drafts: { ...s.drafts, [id]: "" } }));
+    }
+    get().updateSessionPreview(id, label);
   },
 
   saveConfig: async (body) => {
@@ -342,6 +413,18 @@ export const useExm = create<ExmState>((set, get) => ({
 
   navRequest: null,
   requestNav: (view, sessionId) => set({ navRequest: { view, sessionId, nonce: Date.now() } }),
+  markSessionsLoaded: () => set({ sessionsLoaded: true }),
+
+  drafts: (() => {
+    try { return JSON.parse(sessionStorage.getItem("exm.drafts") ?? "{}"); } catch { return {}; }
+  })(),
+  setDraft: (sessionId, text) => {
+    set((s) => ({ drafts: { ...s.drafts, [sessionId]: text } }));
+    try { sessionStorage.setItem("exm.drafts", JSON.stringify({ ...useExm.getState().drafts, [sessionId]: text })); } catch { /* 隐私模式忽略 */ }
+  },
+  updateSessionPreview: (sessionId, preview) => {
+    set((s) => ({ sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, lastMessagePreview: preview, lastActiveAt: new Date().toISOString() } : x)) }));
+  },
 
   handleEvent: (evt) => {
     if (evt.sessionId !== get().sessionId) return;
@@ -391,7 +474,15 @@ export const useExm = create<ExmState>((set, get) => ({
         });
         break;
       }
-      case "approval.required":
+      case "approval.required": {
+        const prefs = loadNotifyPrefs();
+        if (prefs.enabled && prefs.approval && document.visibilityState === "hidden" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          fireNotification(
+            "审批请求待处理",
+            String(p.command ?? p.agentId ?? ""),
+            evt.sessionId || undefined,
+          );
+        }
         set({
           approvals: [
             ...get().approvals.filter((a) => a.approvalId !== String(p.approvalId)),
@@ -403,6 +494,7 @@ export const useExm = create<ExmState>((set, get) => ({
           ],
         });
         break;
+      }
       case "approval.resolved":
         set({ approvals: get().approvals.filter((a) => a.approvalId !== String(p.approvalId)) });
         break;
@@ -489,6 +581,14 @@ export const useExm = create<ExmState>((set, get) => ({
         set({ ledger: p as unknown as SessionLedger });
         break;
       case "run.finished": {
+        // 浏览器通知（web-notifications）：非当前会话或页面隐藏时提醒
+        {
+          const prefs = loadNotifyPrefs();
+          if (prefs.enabled && prefs.roundDone && typeof Notification !== "undefined" && Notification.permission === "granted" && shouldNotifySession(evt.sessionId)) {
+            const first = ((p.statements ?? []) as Array<{ text?: string }>)[0];
+            fireNotificationLocal("轮次完成", String(first?.text ?? "已完成"), evt.sessionId);
+          }
+        }
         const statements = (p.statements ?? []) as Statement[];
         const id = get().sessionId!;
         // 工具轨迹与思维链随最终消息留存（收起栏可随时展开回看，不再「突然消失」）
@@ -515,6 +615,18 @@ export const useExm = create<ExmState>((set, get) => ({
             },
           ],
         });
+        const finText = statements.map((st) => st.text).join(" ");
+        if (finText.trim()) get().updateSessionPreview(id, finText);
+        break;
+      }
+      case "cron.finished": {
+        const prefs = loadNotifyPrefs();
+        if (prefs.enabled && prefs.cronDone && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const name = String(p.jobName ?? "");
+          const status = String(p.status ?? "");
+          fireNotificationLocal(`定时任务${status === "done" ? "完成" : "失败"}：${name}`, String(p.summary ?? status), undefined);
+        }
+        set({ timeline: [...get().timeline, { kind: "cron", text: tr("store.tl.cron", { name: String(p.jobName ?? ""), status: String(p.status ?? "") }) }] });
         break;
       }
       case "run.error":
