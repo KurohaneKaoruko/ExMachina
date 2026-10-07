@@ -1204,6 +1204,11 @@ body {
   line-height: 1.1;
   white-space: nowrap;
 }
+/* 窄屏：品牌字缩小以完整显示（不再截断） */
+@media (max-width: 640px) {
+  .login-title { font-size: clamp(22px, 8vw, 44px); letter-spacing: clamp(2px, 1.2vw, 6px); }
+  .login-sub { font-size: 12px; }
+}
 .title-accent { color: var(--accent); text-shadow: 0 0 26px rgba(var(--accent-rgb), 0.55); }
 .title-dash { color: var(--muted); }
 .title-main { color: var(--text-hi); text-shadow: 0 0 30px rgba(var(--accent-rgb), 0.35); }

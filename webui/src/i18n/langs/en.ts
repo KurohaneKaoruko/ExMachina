@@ -93,7 +93,7 @@ export const en: Partial<Dict> = {
   "login.keyPlaceholder": "Enter access key",
   "login.unlock": "Unlock",
   "login.badKey": "Invalid key",
-  "login.foot": "DEUS EX MACHINA · All links commanded and ready",
+  "login.foot": "DEUS EX MACHINA · Orchestrator ready",
 
   // ── 对话页 ──
   "session.new": "New Session",
