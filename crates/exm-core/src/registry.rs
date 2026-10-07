@@ -298,7 +298,7 @@ impl LocalRegistry {
 
     /// 删除自定义组（内置组与激活组不可删）
     pub fn delete_group(&self, gid: &str) -> anyhow::Result<()> {
-        if gid == "default" || self.group_meta(gid).map(|m| m.builtin).unwrap_or(false) {
+        if gid == "exmachina" || self.group_meta(gid).map(|m| m.builtin).unwrap_or(false) {
             anyhow::bail!("内置组不可删除");
         }
         if self.active_group() == gid {
