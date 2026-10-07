@@ -8,6 +8,7 @@ name: release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -154,6 +155,7 @@ jobs:
   # ── 发布：打 tag + 汇总全平台产物发 GitHub Release ─────────────────────────────
   publish:
     needs: [version, server, desktop]
+    if: github.ref == 'refs/heads/main' && needs.version.outputs.exists == 'no'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
