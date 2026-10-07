@@ -32,14 +32,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git libxdo3 libx11-6 libxcb1 libxext6 libxinerama1 libxtst6 libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
-# 一键更新工具链:docker cli + compose 插件(静态二进制,经挂载的 docker.sock 操作宿主引擎)。
-# 用 RUN curl 而非 ADD <url>:后者每次构建都要联网校验缓存键,网络抖动即构建失败
-RUN mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL --retry 3 --retry-delay 2 -o /tmp/docker.tgz https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
-    && tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker \
-    && rm /tmp/docker.tgz \
-    && curl -fsSL --retry 3 --retry-delay 2 -o /usr/local/lib/docker/cli-plugins/docker-compose https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64 \
-    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+# 一键更新工具链:docker cli + compose 插件由 compose 从宿主机只读挂载(零构建期下载,版本与宿主引擎一致)
 COPY --from=rust-builder /build/target/release/exm /usr/local/bin/exm
 COPY --from=rust-builder /build/target/release/exmachina /usr/local/bin/exmachina
 COPY --from=rust-builder /build/target/release/exm-gateway /usr/local/bin/exm-gateway
