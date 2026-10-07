@@ -2170,3 +2170,8 @@ input, textarea { caret-color: var(--accent); }
   box-shadow: 0 2px 10px rgba(0,0,0,0.4);
 }
 .scroll-bottom-btn:hover { color: var(--accent); border-color: var(--accent-30); }
+
+/* 组成员表：紧凑列宽，消除大块空白 */
+.plain-table { table-layout: fixed; width: 100%; }
+.plain-table th, .plain-table td { padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+.plain-table .member-cell .member-id { display: block; margin-top: 1px; }

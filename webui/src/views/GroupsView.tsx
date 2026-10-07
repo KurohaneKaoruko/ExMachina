@@ -361,13 +361,13 @@ export function GroupsView(): React.ReactElement {
                     title: t("agents.colTools"),
                     dataIndex: "tools",
                     key: "tools",
-                    width: 180,
+                    width: 140,
                     render: (tools: string[]) => (tools ?? []).map((tl) => <Tag key={tl}>{tl}</Tag>),
                   },
                   {
                     title: t("agents.colState"),
                     key: "state",
-                    width: 84,
+                    width: 72,
                     render: (_, a: AgentDefinition) =>
                       busyAgents.has(a.identifier) ? <Tag color="processing">{t("agents.busy")}</Tag> : <Tag>{t("agents.idle")}</Tag>,
                   },
