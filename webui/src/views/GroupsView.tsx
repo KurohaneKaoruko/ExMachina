@@ -337,6 +337,7 @@ export function GroupsView(): React.ReactElement {
                 size="small"
                 rowKey="identifier"
                 pagination={false}
+                tableLayout="fixed"
                 dataSource={[...members].sort((a, b) => {
                   const pa = meta.primary === a.identifier ? 0 : 1;
                   const pb = meta.primary === b.identifier ? 0 : 1;
@@ -346,6 +347,7 @@ export function GroupsView(): React.ReactElement {
                   {
                     title: t("agents.colUnit"),
                     key: "name",
+                    width: 220,
                     render: (_, a: AgentDefinition) => (
                       <span className="member-cell">
                         <span className="member-line1">
