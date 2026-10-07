@@ -91,7 +91,7 @@ export const zh = {
   "login.keyPlaceholder": "输入访问密钥",
   "login.unlock": "解锁进入",
   "login.badKey": "密钥错误",
-  "login.foot": "DEUS EX MACHINA · 指挥体就绪",
+  "login.foot": "EX MACHINA · 指挥体就绪",
 
   // ── 对话页 ──
   "session.new": "新会话",
