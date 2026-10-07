@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Input, InputNumber, message, Select, Switch, Card } from "antd";
-import { BgColorsOutlined, DatabaseOutlined, FieldTimeOutlined, GlobalOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
+import { BgColorsOutlined, CloudServerOutlined, DatabaseOutlined, DesktopOutlined, FieldTimeOutlined, GlobalOutlined, IdcardOutlined, NotificationOutlined, PieChartOutlined, RadarChartOutlined, RobotOutlined, SafetyCertificateOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, ToolOutlined } from "@ant-design/icons";
 import { useExm } from "../store";
 import { useTheme } from "../theme";
 import { useT, type TKey } from "../i18n/core";
@@ -22,6 +22,12 @@ const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey:
   sandbox: { icon: <SafetyOutlined />, titleKey: "sec.sandbox", descKey: "sec.sandbox.desc" },
   browser: { icon: <RobotOutlined />, titleKey: "sec.browser", descKey: "sec.browser.desc" },
   hooks: { icon: <ThunderboltOutlined />, titleKey: "sec.hooks", descKey: "sec.hooks.desc" },
+  computer: { icon: <DesktopOutlined />, titleKey: "sec.computer", descKey: "sec.computer.desc" },
+  identity: { icon: <IdcardOutlined />, titleKey: "sec.identity", descKey: "sec.identity.desc" },
+  limits: { icon: <PieChartOutlined />, titleKey: "sec.limits", descKey: "sec.limits.desc" },
+  triggers: { icon: <RadarChartOutlined />, titleKey: "sec.triggers", descKey: "sec.triggers.desc" },
+  mcpServe: { icon: <CloudServerOutlined />, titleKey: "sec.mcpServe", descKey: "sec.mcpServe.desc" },
+  notify: { icon: <NotificationOutlined />, titleKey: "sec.notify", descKey: "sec.notify.desc" },
   tools: { icon: <ToolOutlined />, titleKey: "sec.tools", descKey: "sec.tools.desc" },
   ui: { icon: <BgColorsOutlined />, titleKey: "sec.ui", descKey: "sec.ui.desc" },
 };
