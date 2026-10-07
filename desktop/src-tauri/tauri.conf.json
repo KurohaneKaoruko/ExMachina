@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EXMACHINA",
+  "version": "1.0.0",
+  "identifier": "io.exmachina.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "appimage", "dmg"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": {
+      "binaries/": "binaries/"
+    }
+  }
+}

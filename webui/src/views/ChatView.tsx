@@ -1,0 +1,795 @@
+/** 对话视图（整合控制台）：左栏 = 组切换 + 会话列表；右侧 = 消息流 + 实时流 + 输入 */
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { AudioOutlined, CheckOutlined, CloudUploadOutlined, CloseOutlined, EditOutlined, ExportOutlined, MessageOutlined, PaperClipOutlined, PauseCircleOutlined, PlusOutlined, RobotOutlined, SendOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { api } from "../api";
+import { agentIdEn } from "../models";
+import { useExm } from "../store";
+import { useT } from "../i18n/core";
+
+interface TargetInfo { mode: "group" | "single"; id: string; name?: string }
+import { StatementList } from "../components/Statements";
+import { Markdown } from "../components/Markdown";
+import { AsciiMeter } from "../components/Ascii";
+import { ToolCallList } from "../components/ToolCall";
+import { copyText } from "../components/Markdown";
+import { UsageBar } from "../components/UsageBar";
+import { SkeletonList } from "../components/SkeletonList";
+import { TurnOps } from "../components/HistoryOps";
+import type { ChatMessage } from "../types";
+
+function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: number; ops?: React.ReactNode; orchLabel?: string }): React.ReactElement {
+  const tb = useT();
+  const isUser = m.role === "user";
+  const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? (orchLabel ?? tb("chat.role.orchestrator")) : (m.agentId ?? tb("chat.role.system"));
+  const hasThinking = Boolean(m.thinking && m.thinking.trim());
+  const hasTools = Boolean(m.toolCalls && m.toolCalls.length > 0);
+  return (
+    <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
+      <div className="msg-head">
+        {isUser ? <UserOutlined /> : <RobotOutlined />} <b>{title}</b>
+        {turn != null && <span className="msg-turn mono">#{turn}</span>}
+        {!isUser && (
+          <button
+            className="msg-copy"
+            title="复制"
+            onClick={async () => {
+              const text = m.statements.map((st) => st.text).join("\n\n");
+              if (await copyText(text)) {
+                message.success("已复制");
+              }
+            }}
+          >
+            ⧉
+          </button>
+        )}
+        {ops && <span className="msg-ops">{ops}</span>}
+      </div>
+      {(hasThinking || hasTools) && (
+        <div className="msg-process">
+          {hasThinking && (
+            <UsageBar label={tUsage(tb, m.thinking!.length)}>
+              <pre className="usage-think">{m.thinking}</pre>
+            </UsageBar>
+          )}
+          {hasTools && (
+            <UsageBar label={tb("chat.usedTools", { n: m.toolCalls!.length })}>
+              <ToolCallList calls={m.toolCalls!} />
+            </UsageBar>
+          )}
+        </div>
+      )}
+      <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
+    </Card>
+  );
+}
+
+/** 思考栏摘要文案（OpenCode 口径：使用了 N 个思考；本地思维流以字数计量） */
+function tUsage(tb: (k: string, v?: Record<string, string>) => string, chars: number): string {
+  return tb("chat.usedThinking", { n: String(chars) });
+}
+
+/** 相对时间（chat-ergonomics）：刚刚 / N 分钟前 / N 小时前 / 昨天 / N 天前 / 日期 */
+export function relativeTime(iso?: string): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const diff = Date.now() - t;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return `${min} 分钟前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour} 小时前`;
+  const day = Math.floor(hour / 24);
+  if (day === 1) return "昨天";
+  if (day < 7) return `${day} 天前`;
+  return iso.slice(0, 10);
+}
+
+export function ChatView(): React.ReactElement {
+  const t = useT();
+  const {     messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
+    timeline, running, send, wsConnected, decideApproval,
+    sessions, sessionId, selectSession, newSession,
+    groups, activeGroup, setTarget,
+    refreshAgents,
+    sessionsLoaded,
+  } = useExm();
+  const [target, setTargetInfo] = useState<TargetInfo>({ mode: "group", id: activeGroup });
+  const [singles, setSinglesList] = useState<{ identifier: string; name: string }[]>([]);
+
+  const loadTarget = useCallback(async () => {
+    try {
+      const t = await api.getTarget();
+      setTargetInfo({ mode: t.mode, id: t.id, name: t.name });
+      const s = await api.listSingles();
+      setSinglesList(s.singles.map((x) => ({ identifier: x.identifier, name: x.name })));
+    } catch {
+      // 目标接口不可用时退回组模式展示
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTarget();
+  }, [loadTarget, activeGroup]);
+
+  const changeTarget = async (value: string) => {
+    const [mode, id] = value.startsWith("single:") ? (["single", value.slice(7)] as const) : (["group", value.slice(6)] as const);
+    await setTarget(mode, id);
+    message.success(mode === "single" ? t("chat.switchedSingle", { id }) : t("chat.switchedGroup", { id }));
+    await loadTarget();
+  };
+  const [text, setText] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const [sessionFilter, setSessionFilter] = useState("");
+  /** 会话类型过滤（2.2）：all / normal / channel */
+  const [sessionKind, setSessionKind] = useState("all");
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [usage, setUsage] = useState<{
+    estimate: number;
+    budget: number;
+    unlimited: boolean;
+    /** provider 上报的真实用量可用（否则为字符估算） */
+    measured?: boolean;
+  } | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  /** 上箭头召回的游标（null = 未处于召回态） */
+  const recallIdxRef = useRef<number | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  const chunksRef = useRef<Blob[]>([]);
+
+  // 语音输入：MediaRecorder → 网关转写 → 文本入输入框
+  const toggleRecord = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      rec.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        chunksRef.current = [];
+        if (blob.size === 0) return;
+        try {
+          const tr = await api.transcribe(blob);
+          if (tr) setText((prev) => (prev ? `${prev} ${tr}` : tr));
+          message.success(t("chat.transcribed"));
+        } catch (e) {
+          message.error(t("chat.transcribeFailed", { err: String(e) }));
+        }
+      };
+      chunksRef.current = [];
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+    } catch {
+      message.error(t("chat.micDenied"));
+    }
+  };
+
+  // 附件压缩：Canvas 缩到 ≤1280px、JPEG 82%（控制多模态请求体尺寸）
+  const addImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 1280 / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+        setImages((prev) => [...prev, dataUrl].slice(0, 4));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const doSend = () => {
+    if (text.trim()) {
+      void send(text, images);
+      setText("");
+      setImages([]);
+    }
+  };
+
+  // 切会话恢复草稿（chat-ergonomics）
+  useEffect(() => {
+    if (!sessionId) return;
+    setText(useExm.getState().drafts[sessionId] ?? "");
+    recallIdxRef.current = null;
+  }, [sessionId]);
+
+  // 是否已滚离底部（chat-ergonomics：显示「回到底部」按钮）
+  const [showBottomBtn, setShowBottomBtn] = useState(false);
+  useEffect(() => {
+    const el = document.querySelector(".chat-scroll");
+    if (!el) return;
+    const onScroll = () => setShowBottomBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 120);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setShowBottomBtn(false);
+  }, [messages, liveOrch, liveUnits, runToolCalls, timeline]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void (async () => {
+      try {
+        setUsage(await api.sessionTokens(sessionId));
+      } catch {
+        // 用量接口不可用时静默
+      }
+    })();
+  }, [sessionId, messages.length, running]);
+
+  const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
+  const activeMeta = groups.find((g) => g.id === activeGroup);
+  // 指挥体显示名（10）：单体模式显示该智能体名；组模式显示「指挥体 [组名]」
+  const orchLabel = target.mode === "single"
+    ? (singles.find((x) => x.identifier === target.id)?.name ?? target.id)
+    : t("chat.orchGroup", { group: activeMeta?.name ?? target.id });
+
+  const removeSession = async (id: string) => {
+    try {
+      await api.deleteSession(id);
+      // 从最新状态构建列表（不用渲染闭包的旧快照），无论删的是否为当前会话都先落列表
+      const rest = useExm.getState().sessions.filter((s) => s.id !== id);
+      useExm.setState({ sessions: rest });
+      if (id === sessionId) {
+        useExm.setState({ sessionId: undefined, messages: [], graph: null });
+        if (rest.length > 0) {
+          await selectSession(rest[0].id);
+        } else {
+          await newSession();
+        }
+      }
+    } catch {
+      // 删除失败静默：会话可能在运行中被网关拒绝
+    }
+  };
+
+  // ---- 会话导出 Markdown（2.3）：角色前缀正文 + 工具摘要 + 思维链折叠引用 ----
+  const exportSession = async (id: string, title: string) => {
+    try {
+      const msgs = await api.messages(id);
+      const lines: string[] = [`# ${title}`, "", `> 导出时间：${new Date().toLocaleString()}`, ""];
+      for (const m of msgs) {
+        const role = m.role === "user" ? "👤 用户" : m.role === "orchestrator" ? (m.agentId ? `🤖 ${m.agentId}` : "🤖 指挥体") : "⚙️ 系统";
+        lines.push(`## ${role} · ${m.createdAt}`, "");
+        if (m.thinking) {
+          lines.push("<details><summary>思维过程</summary>", "", "```", m.thinking, "```", "", "</details>", "");
+        }
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          lines.push("<details><summary>工具调用</summary>", "");
+          for (const tc of m.toolCalls) {
+            lines.push(`- \`${tc.tool}\` ${tc.status === "ok" ? "✅" : tc.status === "error" ? "❌" : "⏳"} ${tc.summary || ""}`);
+          }
+          lines.push("", "</details>", "");
+        }
+        lines.push(m.statements.map((st) => st.text).join("\n\n"), "");
+      }
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title.replace(/[\\/:*?"<>|]/g, "_") || "session"}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success(t("chat.exportDone"));
+    } catch (e) {
+      message.error(t("chat.exportFailed", { err: String(e).slice(0, 120) }));
+    }
+  };
+
+  // ---- 会话历史管控（组 9.5）：撤销 / 编辑重发 / 分叉 ----
+  const [editing, setEditing] = useState<{ turn: number; text: string } | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+
+  const refreshSession = async () => {
+    if (sessionId) await selectSession(sessionId);
+  };
+
+  const doUndo = async (turn: number) => {
+    if (!sessionId) return;
+    setHistoryBusy(true);
+    try {
+      const info = await api.undoSession(sessionId, turn - 1, true);
+      message.success(t("chat.turn.undoDone", { n: String(info.archived) }));
+      await refreshSession();
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const openEdit = (turn: number) => {
+    // 原文 = 该轮的用户消息文本（本轮内第一条 user 陈述拼接）
+    let n = 0;
+    const msg = messages.find((m) => {
+      if (m.role === "user") n += 1;
+      return n === turn;
+    });
+    setEditing({ turn, text: msg ? msg.statements.map((s) => s.text).join("\n") : "" });
+  };
+
+  const doEdit = async () => {
+    if (!sessionId || !editing) return;
+    setHistoryBusy(true);
+    try {
+      await api.editSession(sessionId, editing.turn, editing.text);
+      message.success(t("chat.turn.resent"));
+      setEditing(null);
+      await refreshSession();
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const doFork = async (turn: number) => {
+    if (!sessionId) return;
+    setHistoryBusy(true);
+    try {
+      const fork = await api.forkSession(sessionId, turn);
+      useExm.setState({ sessions: [{ id: fork.id, title: fork.title } as never, ...useExm.getState().sessions] });
+      message.success(t("chat.turn.forkDone"));
+      await selectSession(fork.id);
+    } catch (e) {
+      message.error(t("chat.turn.failed", { err: String(e) }));
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  // 消息 → 轮次映射：用户消息序号即轮次（1 起）
+  let userTurn = 0;
+  const renderMessages = messages.map((m) => {
+    if (m.role !== "user") return { m, turn: undefined as number | undefined };
+    userTurn += 1;
+    return { m, turn: userTurn };
+  });
+
+  return (
+    <div className="chat-shell">
+      {/* 左栏：目标切换 + 会话列表 */}
+      <aside className="chat-rail">
+        <div className="rail-section">
+          <div className="rail-label">
+            <span className="rail-no">01</span> {t("chat.target")} [TARGET]
+          </div>
+          <Select
+            value={target.mode === "single" ? `single:${target.id}` : `group:${target.id}`}
+            style={{ width: "100%" }}
+            onChange={(v) => void changeTarget(v)}
+            options={[
+              {
+                label: t("chat.groupLabel"),
+                options: groups.map((g) => ({
+                  value: `group:${g.id}`,
+                  label: `${g.name}（${g.id}${g.builtin ? ` · ${t("chat.builtin")}` : ""}）`,
+                })),
+              },
+              {
+                label: t("chat.singlesLabel"),
+                options: singles.map((s) => ({ value: `single:${s.identifier}`, label: s.name })),
+              },
+            ]}
+          />
+          {target.mode === "single" ? (
+            <div className="rail-hint">{t("chat.soloMode")} · <span className="mono">{agentIdEn(target.id)}</span></div>
+          ) : (
+            activeMeta && (
+              <div className="rail-hint">{t("chat.primary")}：<span className="mono">{activeMeta.primary ? agentIdEn(activeMeta.primary) : t("chat.unset")}</span></div>
+            )
+          )}
+        </div>
+        <div className="rail-section grow">
+          <div className="rail-label">
+            <span className="rail-no">02</span> {t("chat.sessions")} [SESSIONS]
+          </div>
+          <Button
+            block
+            icon={<PlusOutlined />}
+            className="new-session-btn"
+            onClick={() => void newSession()}
+          >
+            {t("session.new")}
+          </Button>
+          <Input
+            size="small"
+            allowClear
+            placeholder={t("chat.searchSessions")}
+            className="session-search"
+            value={sessionFilter}
+            onChange={(e) => setSessionFilter(e.target.value)}
+          />
+          {/* 会话类型过滤（2.2）：全部 / 普通 / 通道 */}
+          <Select
+            size="small"
+            value={sessionKind}
+            onChange={setSessionKind}
+            className="session-kind"
+            options={[
+              { value: "all", label: t("chat.kind.all") },
+              { value: "normal", label: t("chat.kind.normal") },
+              { value: "channel", label: t("chat.kind.channel") },
+            ]}
+          />
+          <div className="session-list">
+            {sessions.length === 0 && !sessionsLoaded && <SkeletonList rows={6} />}
+            {sessions
+              .filter((s) => (sessionKind === "all" ? true : sessionKind === "channel" ? s.title.startsWith("channel:") : !s.title.startsWith("channel:")))
+              .filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase()))
+              .map((s) => (
+              <div
+                key={s.id}
+                className={`session-row ${s.id === sessionId ? "active" : ""}`}
+                onClick={() => void selectSession(s.id)}
+              >
+                <div className="session-row-top">
+                  {s.title.startsWith("channel:") ? <CloudUploadOutlined className="session-row-icon" /> : <MessageOutlined className="session-row-icon" />}
+                  <span className="session-title">{s.title.replace(/^channel:[^:]+:/, "↗ ")}</span>
+                  <span className="session-time">{relativeTime(s.lastActiveAt ?? s.createdAt)}</span>
+                </div>
+                {s.lastMessagePreview && <div className="session-preview">{s.lastMessagePreview}</div>}
+                {s.id === sessionId && running && <span className="session-live-dot" />}
+                <span className="session-ops" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="small"
+                    type="text"
+                    className="session-edit"
+                    icon={<ExportOutlined />}
+                    title={t("chat.export")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void exportSession(s.id, s.title);
+                    }}
+                  />
+                  <Button
+                    size="small"
+                    type="text"
+                    className="session-edit"
+                    icon={<EditOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRenaming({ id: s.id, title: s.title });
+                    }}
+                  />
+                  <Popconfirm
+                    title={t("chat.deleteConfirm")}
+                    onConfirm={(e) => {
+                      e?.stopPropagation();
+                      void removeSession(s.id);
+                    }}
+                    onCancel={(e) => e?.stopPropagation()}
+                  >
+                    <Button
+                      size="small"
+                      type="text"
+                      className="session-del"
+                      icon={<CloseOutlined />}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </Popconfirm>
+                </span>
+              </div>
+            ))}
+            {sessions.filter((s) => !sessionFilter || s.title.toLowerCase().includes(sessionFilter.toLowerCase())).length === 0 && (
+              <div className="dim" style={{ padding: "12px 8px", fontSize: 12 }}>
+                {sessionFilter ? t("chat.noMatch") : t("chat.noSessions")}
+              </div>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* 右侧：消息流 + 输入 */}
+      <div className="chat-wrap">
+        <div className="console-bar">
+          <span className="console-title">{t("nav.chat")}</span>
+          <span className="page-en">CHAT</span>
+          <span className="console-sep" />
+          <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
+          <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
+
+          {usage && (
+            <span className="readout console-usage">
+              <span className="k">TOKENS</span>
+              {/* 字符进度条：比数字更直观地表达「还剩多少预算」；实测用量不带 ~ 前缀 */}
+              <AsciiMeter value={usage.estimate} total={usage.unlimited ? 0 : usage.budget} cells={14} />
+              <span className="v">{usage.measured ? usage.estimate : `~${usage.estimate}`}</span>
+            </span>
+          )}
+          <span className={`status-led ${wsConnected ? "ok" : "bad"}`} style={{ marginLeft: "auto" }} />
+        </div>
+        {!wsConnected && <Alert type="warning" message={t("chat.wsDown")} showIcon className="ws-alert app-banner" />}
+        {/* 内联审批：命令被拦截时在消息流中直接裁决——批准后输出回灌，模型继续干活 */}
+        {approvals.map((a) => (
+          <Card key={a.approvalId} size="small" className="approval-card">
+            <div className="approval-head">
+              <span className="approval-title">⏸ {t("chat.approvalTitle")}</span>
+              <span className="approval-agent mono">{a.agentId}</span>
+            </div>
+            <pre className="approval-cmd">{a.command}</pre>
+            <div className="approval-ops">
+              <Button
+                type="primary"
+                size="small"
+                icon={<CheckOutlined />}
+                onClick={() => void decideApproval(a.approvalId, true)}
+              >
+                {t("chat.approvalApprove")}
+              </Button>
+              <Button size="small" danger onClick={() => void decideApproval(a.approvalId, false)}>
+                {t("chat.approvalDeny")}
+              </Button>
+              <span className="approval-hint">{t("chat.approvalHint")}</span>
+            </div>
+          </Card>
+        ))}
+        <div className="chat-scroll">
+          {renderMessages.map(({ m, turn }) => (
+            <MessageBubble
+              key={m.id}
+              m={m}
+              turn={turn}
+              orchLabel={orchLabel}
+              ops={
+                turn != null && !running ? (
+                  <TurnOps turn={turn} onEdit={openEdit} onUndo={doUndo} onFork={doFork} />
+                ) : undefined
+              }
+            />
+          ))}
+
+          {/* 等待首个输出：加载卡（一旦有流式输出/子个体产出即让位，避免与输出卡并存） */}
+          {running && !liveOrch && liveUnitEntries.length === 0 && (
+            <Card size="small" className="msg-bubble msg-agent">
+              <Space direction="vertical" className="full-width">
+                <div>
+                  <Spin size="small" /> <b>{`${orchLabel} …`}</b>
+                </div>
+                {(liveThinking.trim() || timeline.length > 0 || runToolCalls.length > 0) && (
+                  <div className="msg-process">
+                    {liveThinking.trim() && (
+                      <UsageBar label={t("chat.usedThinking", { n: String(liveThinking.length) })} live>
+                        <pre className="usage-think">{liveThinking}</pre>
+                      </UsageBar>
+                    )}
+                    {(timeline.length > 0 || runToolCalls.length > 0) && (
+                      <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
+                        {timeline.map((tl, i) => (
+                          <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+                            <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                              {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                            </Tag>
+                            <span className="tl-text">{tl.text}</span>
+                          </div>
+                        ))}
+                        {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
+                      </UsageBar>
+                    )}
+                  </div>
+                )}
+              </Space>
+            </Card>
+          )}
+
+          {liveUnitEntries.map(([agent, content]) => (
+            <Card key={agent} size="small" className="msg-bubble msg-agent live-card">
+              <div className="msg-head">
+                <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
+              </div>
+              {(liveUnitThinking[agent] ?? "").trim() && (
+                <UsageBar label={t("chat.usedThinking", { n: String((liveUnitThinking[agent] ?? "").length) })} live>
+                  <pre className="usage-think">{liveUnitThinking[agent]}</pre>
+                </UsageBar>
+              )}
+              <pre className="live-pre">{content}</pre>
+            </Card>
+          ))}
+
+          {liveOrch && (
+            <Card size="small" className="msg-bubble msg-agent live-card">
+              <div className="msg-head">
+                <RobotOutlined /> <b>{orchLabel}</b> <Tag color="processing">{t("chat.streaming")}</Tag>
+              </div>
+              {(liveThinking.trim() || timeline.length > 0 || runToolCalls.length > 0) && (
+                <div className="msg-process">
+                  {liveThinking.trim() && (
+                    <UsageBar label={t("chat.usedThinking", { n: String(liveThinking.length) })} live>
+                      <pre className="usage-think">{liveThinking}</pre>
+                    </UsageBar>
+                  )}
+                  {(timeline.length > 0 || runToolCalls.length > 0) && (
+                    <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
+                      {timeline.map((tl, i) => (
+                        <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+                          <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
+                            {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
+                          </Tag>
+                          <span className="tl-text">{tl.text}</span>
+                        </div>
+                      ))}
+                      {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
+                    </UsageBar>
+                  )}
+                </div>
+              )}
+              <pre className="live-pre">{liveOrch}</pre>
+            </Card>
+          )}
+          {showBottomBtn && (
+            <button
+              className="scroll-bottom-btn"
+              aria-label={t("chat.scrollToBottom")}
+              onClick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+            >
+              ↓
+            </button>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        <div className="chat-input">
+          {images.length > 0 && (
+            <div className="attach-row">
+              {images.map((src, i) => (
+                <span key={i} className="attach-thumb">
+                  <img src={src} alt={`附件${i + 1}`} />
+                  <Button
+                    size="small"
+                    type="text"
+                    className="attach-del"
+                    icon={<CloseOutlined />}
+                    onClick={() => setImages(images.filter((_, j) => j !== i))}
+                  />
+                </span>
+              ))}
+            </div>
+          )}
+          <Input.TextArea
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (sessionId) useExm.getState().setDraft(sessionId, e.target.value);
+            }}
+            placeholder={`> ${t("chat.inputPlaceholder")}`}
+            autoSize={{ minRows: 1, maxRows: 6 }}
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                if (text.trim() && !running) {
+                  doSend();
+                }
+              }
+            }}
+            onKeyDown={(e) => {
+              // 上/下箭头召回历史用户消息（chat-ergonomics）：仅在空输入时接管
+              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+              if (text.trim()) return;
+              const userMsgs = messages.filter((m) => m.role === "user");
+              if (userMsgs.length === 0) return;
+              e.preventDefault();
+              let idx = recallIdxRef.current;
+              if (e.key === "ArrowUp") {
+                idx = idx === null ? userMsgs.length - 1 : Math.max(0, idx - 1);
+              } else {
+                if (idx === null) return;
+                idx = idx + 1;
+                if (idx >= userMsgs.length) {
+                  recallIdxRef.current = null;
+                  setText("");
+                  return;
+                }
+              }
+              recallIdxRef.current = idx;
+              const recalled = userMsgs[idx]?.statements.map((st) => st.text).join("\n") ?? "";
+              setText(recalled);
+            }}
+          />
+          <Button
+            size="small"
+            type={recording ? "primary" : "text"}
+            className="mic-btn"
+            danger={recording}
+            title={recording ? t("chat.stopRecord") : t("chat.startRecord")}
+            icon={recording ? <PauseCircleOutlined /> : <AudioOutlined />}
+            onClick={() => void toggleRecord()}
+          />
+          <label className="attach-btn" title={t("chat.attachTip")}>
+            <PaperClipOutlined />
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                Array.from(e.target.files ?? []).slice(0, 4).forEach(addImage);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            loading={running}
+            onClick={doSend}
+          >
+            {t("chat.send")}
+          </Button>
+          {running && sessionId && (
+            <Popconfirm
+              title={t("chat.stopConfirm")}
+              onConfirm={() => {
+                if (!sessionId) return;
+                api.stopSession(sessionId)
+                  .then((r) => message.success(t("chat.stopDone", { n: String(r.toolsExecuted) })))
+                  .catch((e) => message.error(t("chat.stopFail", { err: String(e).slice(0, 120) })));
+              }}
+            >
+              <Button danger icon={<PauseCircleOutlined />}>{t("chat.stop")}</Button>
+            </Popconfirm>
+          )}
+          {renaming && (
+            <Modal
+              open
+              title={t("chat.renameTitle")}
+              onCancel={() => setRenaming(null)}
+              onOk={async () => {
+                if (!renaming.title.trim()) return;
+                await api.renameSession(renaming.id, renaming.title);
+                const store = useExm.getState();
+                useExm.setState({ sessions: store.sessions.map((s) => s.id === renaming.id ? { ...s, title: renaming.title } : s) });
+                setRenaming(null);
+              }}
+              okText={t("common.rename")}
+            >
+              <Input
+                value={renaming.title}
+                onChange={(e) => setRenaming({ ...renaming, title: e.target.value })}
+                placeholder={t("chat.newTitle")}
+              />
+            </Modal>
+          )}
+          {editing && (
+            <Modal
+              open
+              title={t("chat.turn.editTitle", { turn: String(editing.turn) })}
+              onCancel={() => setEditing(null)}
+              onOk={() => void doEdit()}
+              okText={t("chat.turn.resend")}
+              confirmLoading={historyBusy}
+            >
+              <Alert
+                type="warning"
+                showIcon
+                message={t("chat.turn.editWarn")}
+                className="edit-warn"
+              />
+              <Input.TextArea
+                value={editing.text}
+                onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+                autoSize={{ minRows: 3, maxRows: 10 }}
+              />
+            </Modal>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

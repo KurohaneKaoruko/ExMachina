@@ -1,0 +1,45 @@
+[package]
+name = "exm-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EXMACHINA Gateway：HTTP REST + WebSocket 接入层（附加界面与第三方渠道共用）"
+
+[lib]
+name = "exm_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "exm-gateway"
+path = "src/main.rs"
+
+[dependencies]
+exm-core = { path = "../exm-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+# webhook 通道出站回调
+reqwest.workspace = true
+# 平台适配器 WS 客户端（napcat 正向 WS / qqbot 官方网关 wss）
+tokio-tungstenite.workspace = true
+async-trait.workspace = true
+parking_lot = "0.12"
+# NapCat 媒体段 base64:// 数据（远程部署免文件系统共享）
+base64 = "0.22"
+# 事件触发器（7.1）：工作区文件监听；glob 模式匹配复用 globset（ignore 同源实现）
+notify = "8"
+globset = "0.4"
+# 事件 webhook（7.2）：HMAC-SHA256 签名校验
+hmac = "0.12"
+sha2 = "0.10"
+
+[dev-dependencies]
+# 端到端验收示例（crates/exm-gateway/examples/e2e.rs）用
+uuid.workspace = true
+# MCP HTTP 挂载接口测试（tests/mcp_http.rs）：直接调 Service::call
+tower = "0.5"

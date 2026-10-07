@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>EXMACHINA</title>
+    <style>
+      body { background: #0a0e13; color: #37e0ff; font-family: Consolas, monospace;
+             display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+      p { opacity: 0.7; font-size: 13px; }
+    </style>
+    <script>
+      // 正常路径下窗口直接加载网关 URL（本地拉起或 --remote）；本页仅为 Tauri frontendDist 占位，
+      // 万一被直接打开时给出引导。
+      if (location.protocol === "tauri:") {
+        document.addEventListener("DOMContentLoaded", () => {
+          document.body.innerHTML = "<p>未连接网关。请用 exmachina-desktop 启动，或 --remote 指定网关地址。</p>";
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <p>EX·MACHINA — 等待网关接入…</p>
+  </body>
+</html>

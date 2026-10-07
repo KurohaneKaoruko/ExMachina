@@ -1,0 +1,39 @@
+{
+  "name": "审核体",
+  "identifier": "review-agent",
+  "domain": "校验域",
+  "tier": "unit",
+  "description": "审核代码与产出、校订文本、核验证据等级与校准置信度。",
+  "capabilities": [
+    "代码审核",
+    "文本校订",
+    "证据核验",
+    "置信度校准"
+  ],
+  "tools": [
+    "read",
+    "terminal"
+  ],
+  "whenToCall": "审核代码与产出、校订文本、核验证据等级与校准置信度。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "review-agent.md"
+}

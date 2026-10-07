@@ -1,0 +1,38 @@
+# EXMACHINA 部署编排
+#   部署语言：EXM_LANG=zh（默认）| en —— en 时默认智能体提示词装载英文变体
+#   模型接入：首次启动后访问 http://localhost:4173 提供商 [PROVIDERS] 页配置（或挂载已有 .exmachina/config.json）
+services:
+  exmachina:
+    build:
+      context: .
+      args:
+        GIT_HASH: ${GIT_HASH:-dev}
+        EXM_LANG: ${EXM_LANG:-zh}
+    image: exmachina:latest
+    container_name: exmachina
+    ports:
+      - "4173:4173"
+    environment:
+      - EXM_LANG=${EXM_LANG:-zh}
+      # 可选：环境变量优先级最高，直接注入厂商密钥
+      - EXM_LLM_BASE_URL=${EXM_LLM_BASE_URL:-}
+      - EXM_LLM_API_KEY=${EXM_LLM_API_KEY:-}
+      - EXM_LLM_MODEL_ORCH=${EXM_LLM_MODEL_ORCH:-}
+      - EXM_LLM_MODEL_UNIT=${EXM_LLM_MODEL_UNIT:-}
+      # 后台访问密钥（.env 注入，不入库）：非空时 WebUI 出登录门、全部 /api 需 X-Auth-Key
+      - EXM_AUTH_KEY=${EXM_AUTH_KEY:-}
+    volumes:
+      - exmachina-state:/app/.exmachina
+      # 编成数据挂载（组/单体/技能/提示词可持久化编辑）
+      - ./entities:/app/entities
+      - ./skills:/app/skills
+      # 一键更新:仓库根(读写,git pull 用)+ 宿主 docker 引擎
+      - ./:/host
+      - /var/run/docker.sock:/var/run/docker.sock
+      # docker cli / compose 插件:直接用宿主的(免构建期下载,版本与引擎一致;已验证 glibc 兼容)
+      - /usr/bin/docker:/usr/local/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins:/usr/local/lib/docker/cli-plugins:ro
+    restart: unless-stopped
+
+volumes:
+  exmachina-state:

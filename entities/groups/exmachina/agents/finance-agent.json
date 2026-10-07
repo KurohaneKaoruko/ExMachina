@@ -1,0 +1,38 @@
+{
+  "name": "财务体",
+  "identifier": "finance-agent",
+  "domain": "财务域",
+  "tier": "unit",
+  "description": "财务与成本分析：预算编制、成本核算、报表口径与盈亏测算。",
+  "capabilities": [
+    "预算编制",
+    "成本核算",
+    "报表分析"
+  ],
+  "tools": [
+    "read",
+    "terminal"
+  ],
+  "whenToCall": "财务与成本分析：预算编制、成本核算、报表口径与盈亏测算。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "finance-agent.md"
+}

@@ -1,0 +1,43 @@
+{
+  "id": "market",
+  "name": "调研链",
+  "triggerSignals": [
+    "市场",
+    "竞品",
+    "调研",
+    "行业",
+    "定价"
+  ],
+  "description": "市场与竞品调研：扫描、对比与汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "market-agent",
+      "title": "市场扫描",
+      "objectiveTemplate": "完成行业与竞品信息扫描并标注来源与时效：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "compare-agent",
+      "title": "竞品对比",
+      "objectiveTemplate": "基于扫描结果产出对比矩阵与机会/风险清单：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总调研结论、置信度与信息缺口：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

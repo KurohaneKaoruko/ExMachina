@@ -1,0 +1,45 @@
+{
+  "id": "environment",
+  "name": "环境链",
+  "triggerSignals": [
+    "环境变量",
+    "依赖安装",
+    "软件安装",
+    "环境报错",
+    "版本冲突",
+    "环境配置",
+    "路径问题"
+  ],
+  "description": "依赖与环境问题的诊断、处置与验证",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "env-agent",
+      "title": "环境诊断与处置",
+      "objectiveTemplate": "诊断依赖与环境问题并实施最小可回退的修复：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "test-agent",
+      "title": "环境验证",
+      "objectiveTemplate": "执行验证命令确认环境修复后目标流程可用：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总环境变更清单、验证结果与回退方式：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}
