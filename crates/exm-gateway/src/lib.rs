@@ -1428,19 +1428,29 @@ async fn version_info() -> impl IntoResponse {
 /// 本地未嵌入 commit(dev 构建)或网络不可达时返回可判定性提示,不臆断。
 async fn version_check() -> impl IntoResponse {
     let mut out = build_version();
+    // 发布口径:更新检查看上游 main 分支(dev 为开发线,发版时 merge 到 main)
     let fetched = async {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(6))
             .user_agent("exmachina-gateway")
-            .build()?;
+            .build()
+            .map_err(|e| e.to_string())?;
         let resp = client
             .get("https://api.github.com/repos/KurohaneKaoruko/ExMachina/commits")
-            .query(&[("sha", "dev"), ("per_page", "1")])
+            .query(&[("sha", "main"), ("per_page", "1")])
             .send()
-            .await?;
-        resp.json::<serde_json::Value>().await
+            .await
+            .map_err(|e| e.to_string())?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err("main".to_string());
+        }
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
     }
     .await;
+    if fetched == Err("main".to_string()) {
+        out["note"] = serde_json::json!("上游 main 分支尚不存在(尚未发布过版本);发布后此处将显示 main 最新提交");
+        return Json(out);
+    }
     match fetched {
         Ok(v) if v.is_array() && !v.as_array().unwrap().is_empty() => {
             let c = &v.as_array().unwrap()[0];

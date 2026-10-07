@@ -315,7 +315,7 @@ export const en: Partial<Dict> = {
   "settings.version.current": "Current version",
   "settings.version.currentHelp": "Version and commit hash baked in at build time",
   "settings.version.check": "Check for updates",
-  "settings.version.checkHelp": "Compare against the upstream dev branch head",
+  "settings.version.checkHelp": "Compare against the upstream main branch head (dev is the dev line; releases merge to main)",
   "settings.version.checkBtn": "Check now",
   "settings.version.available": "Update available",
   "settings.version.uptodate": "Up to date",

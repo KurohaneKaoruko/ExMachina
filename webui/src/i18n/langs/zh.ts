@@ -314,7 +314,7 @@ export const zh = {
   "settings.version.current": "当前版本",
   "settings.version.currentHelp": "构建时注入的版本号与提交哈希",
   "settings.version.check": "检查更新",
-  "settings.version.checkHelp": "对比上游 dev 分支最新提交",
+  "settings.version.checkHelp": "对比上游 main 分支最新提交(dev 为开发线,发版时合并到 main)",
   "settings.version.checkBtn": "立即检查",
   "settings.version.available": "发现新版本",
   "settings.version.uptodate": "已是最新",
