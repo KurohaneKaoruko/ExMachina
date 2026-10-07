@@ -1,0 +1,44 @@
+{
+  "id": "mobile",
+  "name": "移动链",
+  "triggerSignals": [
+    "移动端",
+    "App",
+    "iOS",
+    "Android",
+    "跨端",
+    "真机"
+  ],
+  "description": "移动端应用实现与真机回归",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "mobile-agent",
+      "title": "移动端实现",
+      "objectiveTemplate": "实现界面与导航并处理机型与系统差异：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "test-agent",
+      "title": "真机回归",
+      "objectiveTemplate": "执行真机验证清单并记录机型差异：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总实现范围、构建产物与验证结果：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

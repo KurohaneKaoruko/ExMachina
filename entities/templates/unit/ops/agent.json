@@ -1,0 +1,21 @@
+{
+  "name": "{{name}}",
+  "identifier": "{{identifier}}",
+  "domain": "运维域",
+  "tier": "unit",
+  "description": "{{description}}",
+  "capabilities": [
+    "部署发布",
+    "巡检排查",
+    "故障恢复"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal",
+    "web_fetch"
+  ],
+  "whenToCall": "{{description}}",
+  "dependencies": [],
+  "composableWith": []
+}

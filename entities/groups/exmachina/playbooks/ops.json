@@ -1,0 +1,63 @@
+{
+  "id": "ops",
+  "name": "运维链",
+  "triggerSignals": [
+    "观测",
+    "告警",
+    "回滚",
+    "演练",
+    "应急响应"
+  ],
+  "description": "观测告警回滚演练、业务连续性保障",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "ops-agent",
+      "title": "观测设计",
+      "objectiveTemplate": "定义观测指标、日志和追踪点位：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "ops-agent",
+      "title": "告警配置",
+      "objectiveTemplate": "定义告警阈值、触发条件、严重级别和升级路径：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "ops-agent",
+      "title": "回滚设计",
+      "objectiveTemplate": "设计回滚方案、触发条件和影响面说明：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "ops-agent",
+      "title": "演练计划",
+      "objectiveTemplate": "设计演练步骤和验证清单：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S5",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总运维方案、告警回滚口径、演练清单：{goal}",
+      "dependsOn": [
+        "S4"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

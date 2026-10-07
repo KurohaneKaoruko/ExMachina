@@ -1,0 +1,28 @@
+[package]
+name = "exm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EXMACHINA CLI：`exm` 与 `exmachina` 双命令（同一实现、同一行为）"
+
+[lib]
+name = "exm_cli"
+path = "src/lib.rs"
+
+# 双命令：同一二进制实现，两个入口名（规范见 docs/07 §2）
+[[bin]]
+name = "exm"
+path = "src/bin/exm.rs"
+
+[[bin]]
+name = "exmachina"
+path = "src/bin/exmachina.rs"
+
+[dependencies]
+exm-core = { path = "../exm-core" }
+exm-gateway = { path = "../exm-gateway" }
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+owo-colors.workspace = true
+serde_json.workspace = true

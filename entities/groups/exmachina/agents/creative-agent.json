@@ -1,0 +1,39 @@
+{
+  "name": "生成体",
+  "identifier": "creative-agent",
+  "domain": "生成域",
+  "tier": "unit",
+  "description": "生成式创作工作流：图像/音频/视频生成管线、提示词工程与产物评估筛选。",
+  "capabilities": [
+    "生成管线",
+    "提示词工程",
+    "产物评估"
+  ],
+  "tools": [
+    "read",
+    "terminal",
+    "web_search"
+  ],
+  "whenToCall": "生成式创作工作流：图像/音频/视频生成管线、提示词工程与产物评估筛选。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "creative-agent.md"
+}

@@ -1,0 +1,62 @@
+{
+  "id": "verify",
+  "name": "验证链",
+  "triggerSignals": [
+    "问题验证",
+    "回归",
+    "复现",
+    "缺陷确认"
+  ],
+  "description": "问题验证、回归测试",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "test-agent",
+      "title": "现状复现",
+      "objectiveTemplate": "确认基线行为、问题现状或目标起点：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "test-agent",
+      "title": "断言定义",
+      "objectiveTemplate": "把目标转成可验证、可失败、可追踪的断言：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "test-agent",
+      "title": "回归执行",
+      "objectiveTemplate": "执行聚焦回归，确认关键路径未退化：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "review-agent",
+      "title": "证据沉淀",
+      "objectiveTemplate": "沉淀可复核证据（测试结果、日志、命令输出）：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S5",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总验证结论、证据、残余风险：{goal}",
+      "dependsOn": [
+        "S4"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

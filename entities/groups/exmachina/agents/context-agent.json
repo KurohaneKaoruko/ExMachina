@@ -1,0 +1,39 @@
+{
+  "name": "上下文体",
+  "identifier": "context-agent",
+  "domain": "研究域",
+  "tier": "unit",
+  "description": "补齐背景、依赖、约束与边界；含溯源与术语澄清。是大多数工作流的起点。",
+  "capabilities": [
+    "背景补齐",
+    "依赖定位",
+    "溯源分析",
+    "术语澄清"
+  ],
+  "tools": [
+    "read",
+    "web_search"
+  ],
+  "whenToCall": "补齐背景、依赖、约束与边界；含溯源与术语澄清。是大多数工作流的起点。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "context-agent.md"
+}

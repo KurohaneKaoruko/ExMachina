@@ -1,0 +1,23 @@
+{
+  "name": "{{name}}",
+  "identifier": "{{identifier}}",
+  "domain": "调研域",
+  "tier": "unit",
+  "description": "{{description}}",
+  "capabilities": [
+    "资料检索",
+    "方案对比",
+    "可行性分析"
+  ],
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "filesystem",
+    "web_search",
+    "web_fetch"
+  ],
+  "whenToCall": "{{description}}",
+  "dependencies": [],
+  "composableWith": []
+}

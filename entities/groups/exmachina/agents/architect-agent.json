@@ -1,0 +1,39 @@
+{
+  "name": "架构体",
+  "identifier": "architect-agent",
+  "domain": "架构域",
+  "tier": "unit",
+  "description": "架构与结构设计、接口约定、任务拆解、约束与边界划定、路线规划。",
+  "capabilities": [
+    "架构设计",
+    "接口约定",
+    "任务拆解",
+    "边界约束",
+    "路线规划"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "架构与结构设计、接口约定、任务拆解、约束与边界划定、路线规划。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "architect-agent.md"
+}
