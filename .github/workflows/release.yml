@@ -151,7 +151,7 @@ jobs:
           Copy-Item -Recurse -Force webui\dist bundle\resources\webui\dist
           Copy-Item -Recurse -Force entities bundle\resources\data-seed\entities
           Copy-Item -Recurse -Force skills bundle\resources\data-seed\skills
-          Copy-Item default-soul.md bundle\resources\data-seed\default-soul.md
+          Copy-Item entities\default-soul.md bundle\resources\data-seed\default-soul.md
           Copy-Item installer\windows.iss .
           iscc windows.iss
           Copy-Item exmachina-desktop-windows-x64-setup.exe exmachina-desktop-windows-x64-setup.exe
