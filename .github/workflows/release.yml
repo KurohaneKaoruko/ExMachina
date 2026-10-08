@@ -147,7 +147,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path bundle\bin, bundle\resources\webui, bundle\resources\data-seed | Out-Null
           Copy-Item desktop\target\release\exmachina-desktop.exe bundle\
           Copy-Item target\release\exm-gateway.exe bundle\bin\
-          Copy-Item icon.ico bundle\
+          Copy-Item desktop\icons\icon.ico bundle\
           Copy-Item -Recurse -Force webui\dist bundle\resources\webui\dist
           Copy-Item -Recurse -Force entities bundle\resources\data-seed\entities
           Copy-Item -Recurse -Force skills bundle\resources\data-seed\skills
