@@ -211,6 +211,126 @@ impl AgentRuntime {
         ))
     }
 
+    /// 直接对话执行(常见单 agent 应用同款):系统提示 + 会话历史 + 工具循环,
+    /// 无派发概念、无 SyncReport 契约——模型产出不含工具调用的文本即为终点。
+    /// 供单体模式使用;工具面 = 个体 allowlist + 可见自定义工具 + MCP。
+    pub async fn chat_execute<F>(
+        &self,
+        def: &AgentDefinition,
+        system_prompt: String,
+        history: Vec<ChatMessage>,
+        session_id: &str,
+        chain: crate::provider::ModelChain,
+        attach_images: bool,
+        mut on_delta: F,
+    ) -> anyhow::Result<String>
+    where
+        F: FnMut(StreamDelta),
+    {
+        let agent_hint = Some(def.identifier.clone());
+        let mut messages = vec![ChatMessage::system(system_prompt)];
+        messages.extend(history);
+
+        let max_steps = 24usize;
+        let mut usage_prompt: u64 = 0;
+        let mut usage_completion: u64 = 0;
+        let mut last_model = String::new();
+
+        let mut specs = crate::tools::ToolGateway::tool_specs(
+            &def.tools,
+            self.tools.search_ready(),
+            self.tools.browser_ready(),
+            self.tools.computer_ready(),
+        );
+        specs.extend(self.tools.custom_specs_for(&def.identifier));
+        specs.extend(self.tools.mcp().tool_snapshot_for(&def.identifier));
+
+        for _step in 0..max_steps {
+            // 停止检查点:会话被请求停止时终止本循环
+            if crate::round_trace::is_cancelled(session_id) {
+                anyhow::bail!("本轮已被用户停止");
+            }
+            let (text, calls, usage) = self
+                .call_llm(&messages, &agent_hint, &chain, &specs, &mut on_delta)
+                .await?;
+            usage_prompt += usage.0;
+            usage_completion += usage.1;
+            if let Some((_, _, m)) = chain.candidates.first() {
+                last_model = m.clone();
+            }
+
+            // 原生 function calling:只读并发 / 写串行,结果回灌后继续
+            if !calls.is_empty() {
+                let mut assistant = ChatMessage::assistant(text.clone());
+                assistant.tool_calls = calls.clone();
+                messages.push(assistant);
+                let feedbacks = self
+                    .run_tool_calls(
+                        &def.identifier,
+                        session_id,
+                        &def.tools,
+                        &calls,
+                        attach_images,
+                    )
+                    .await;
+                for (c, (feedback, images)) in calls.iter().zip(feedbacks) {
+                    let mut msg = ChatMessage::tool_result(&c.id, feedback);
+                    msg.name = Some(c.name.clone());
+                    messages.push(msg);
+                    if let Some((note, data_urls)) = images {
+                        let mut um = ChatMessage::user(note);
+                        um.images = data_urls;
+                        messages.push(um);
+                    }
+                }
+                continue;
+            }
+
+            // 文本协议兜底(Mock / 不支持原生调用的端点)
+            if let Some(raw) = parse::extract_json(&text) {
+                if let Some((tool, args)) = parse::as_tool_call(&raw) {
+                    let result = self
+                        .tools
+                        .execute(&def.identifier, session_id, &def.tools, tool, &args)
+                        .await;
+                    messages.push(ChatMessage::assistant(text));
+                    let feedback = if result.ok {
+                        format!("【报告】工具 {} 执行结果：\n{}", tool.key(), result.output)
+                    } else {
+                        format!(
+                            "【警告】工具 {} 执行失败：{}",
+                            tool.key(),
+                            result.error.unwrap_or_default()
+                        )
+                    };
+                    messages.push(ChatMessage::user(feedback));
+                    if attach_images {
+                        if let Some((note, data_urls)) =
+                            self.image_note(&tool.key().to_string(), &result.images)
+                        {
+                            let mut um = ChatMessage::user(note);
+                            um.images = data_urls;
+                            messages.push(um);
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // 无工具调用 = 最终回复
+            self.tools
+                .record_usage(session_id, usage_prompt, usage_completion, &last_model);
+            return Ok(text);
+        }
+
+        self.tools
+            .record_usage(session_id, usage_prompt, usage_completion, &last_model);
+        anyhow::bail!(
+            "个体 {} 超过最大步数 {max_steps} 仍未产出最终回复",
+            def.identifier
+        )
+    }
+
     /// 同轮工具调用：只读工具并发（join_all），写工具与 MCP 按原顺序串行。
     /// 返回与 `calls` 同序的（回填文本, 截图回灌材料）——保证与 tool_call_id 配对。
     async fn run_tool_calls(

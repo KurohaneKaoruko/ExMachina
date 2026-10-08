@@ -22,6 +22,7 @@ pub mod patch;
 pub mod provider;
 pub mod nexus;
 pub mod registry;
+pub mod store_sqlite;
 pub mod remote;
 pub mod round_trace;
 pub mod runtime;
@@ -1271,6 +1272,7 @@ mod history_tests {
             capabilities: vec![],
             tools: vec![],
             when_to_call: String::new(),
+            link: None,
             dependencies: vec![],
             composable_with: vec![],
             input_schema: Default::default(),

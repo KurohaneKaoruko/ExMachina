@@ -434,12 +434,13 @@ export const api = {
   applyUpdate: () => req<{ started: boolean }>("/version/apply", { method: "POST" }),
   /** 一键更新状态 */
   updateStatus: () => req<{ running: boolean; log: string }>("/version/apply/status"),
-  /** 更新检查(对比上游 dev):updateAvailable = true/false/null(无法判定) */
+  /** 更新检查(分支感知:本地在什么分支就对比该分支的上游);updateAvailable = true/false/null(无法判定) */
   versionCheck: () =>
     req<{
       version: string;
       gitHash: string;
-      upstream?: { sha: string; short: string; url: string; date: string };
+      branch?: string;
+      upstream?: { ref: string; sha: string; short: string; url: string; date: string };
       updateAvailable?: boolean | null;
       note?: string;
     }>("/version/check"),

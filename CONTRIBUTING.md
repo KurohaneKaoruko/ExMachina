@@ -17,7 +17,8 @@ All tests passing means you're ready to develop. | 全部测试通过即可开�
 
 - **Rust**: Standard rustfmt defaults; comments in Chinese | 标准 rustfmt 默认配置；注释用中文
 - **TypeScript**: React function components + Hooks; state via zustand | React 函数组件 + Hooks；状态用 zustand
-- **Commit messages**: `type: description` format (feat / fix / docs / refactor / test / chore) | 用英文写 `类型: 描述` 格式
+- **Commit messages**: `type: 中文描述——动机` format (feat / fix / perf / refactor / docs / test / chore / ui / copy / rename / build / ci / revert) | 用「`类型: 中文描述——动机`」格式，type 用英文小写
+- **Workflow**: Branch model, release process, CI policy → [docs/开发规范.md](./docs/开发规范.md) | 分支模型、发版流程与工作流纪律见开发规范
 
 ## Architecture Principles | 架构原则
 
@@ -43,7 +44,7 @@ scripts/              # Install / quickstart scripts | 安装/启动脚本
 1. Fork this repository | Fork 本仓库
 2. Create a feature branch: `git checkout -b feat/your-feature` | 创建特性分支
 3. Ensure tests pass: `cargo test --workspace && npm run build:webui` | 确保测试通过
-4. Submit a PR with a clear description | 提交 PR 并描述改动
+4. Submit a PR targeting `dev` with a clear description | 提交 PR 并描述改动，**目标分支为 `dev`**
 
 ### PR Checklist | PR 检查清单
 
