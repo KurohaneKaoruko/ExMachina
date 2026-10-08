@@ -34,7 +34,7 @@ jobs:
       - name: 检查该版本是否已发布(自动追加后缀)
         id: check
         run: |
-          TAG="${{ steps.check.outputs.tag }}"
+          TAG="${{ steps.ver.outputs.tag }}"
           SUFFIX=0
           FINAL="$TAG"
           while git ls-remote --tags origin "refs/tags/$FINAL" | grep -q .; do
@@ -42,6 +42,7 @@ jobs:
             FINAL="$TAG.$SUFFIX"
           done
           echo "tag=$FINAL" >> "$GITHUB_OUTPUT"
+          echo "exists=$([ -z "$(git ls-remote --tags origin "refs/tags/$FINAL")" ] && echo no || echo yes)" >> "$GITHUB_OUTPUT"
           echo "▸ 发版 tag: $FINAL"
 
   # ── 服务端预编译包：exm-gateway / exm / exmachina + webui-dist + 文档 ──────────
