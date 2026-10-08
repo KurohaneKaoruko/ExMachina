@@ -1,0 +1,54 @@
+{
+  "id": "content",
+  "name": "内容链",
+  "triggerSignals": [
+    "文案",
+    "文章",
+    "写作",
+    "内容创作",
+    "润色",
+    "脚本撰写"
+  ],
+  "description": "内容创作：背景定位、成稿、校订与汇报",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "context-agent",
+      "title": "受众与背景定位",
+      "objectiveTemplate": "锁定受众、体裁、篇幅与事实基线：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "writing-agent",
+      "title": "内容成稿",
+      "objectiveTemplate": "按受众与体裁完成结构大纲与成稿：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "review-agent",
+      "title": "校订",
+      "objectiveTemplate": "校订事实性、逻辑与文字质量并标注修订依据：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总成稿、修订说明与待定项：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

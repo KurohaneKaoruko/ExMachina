@@ -1,0 +1,38 @@
+{
+  "name": "安全体",
+  "identifier": "security-agent",
+  "domain": "安全域",
+  "tier": "unit",
+  "description": "威胁建模、安全审计、合规检查与加固建议。",
+  "capabilities": [
+    "威胁建模",
+    "安全审计",
+    "合规检查",
+    "加固建议"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "威胁建模、安全审计、合规检查与加固建议。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "security-agent.md"
+}

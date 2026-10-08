@@ -1,0 +1,41 @@
+{
+  "name": "环境体",
+  "identifier": "env-agent",
+  "domain": "环境域",
+  "tier": "unit",
+  "description": "依赖与环境治理：环境变量、依赖安装升级、软件安装、版本/路径/权限冲突与跨平台差异排障。",
+  "capabilities": [
+    "环境变量管理",
+    "依赖安装",
+    "软件安装",
+    "版本冲突排障"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal",
+    "web_search"
+  ],
+  "whenToCall": "依赖与环境治理：环境变量、依赖安装升级、软件安装、版本/路径/权限冲突与跨平台差异排障。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "env-agent.md"
+}

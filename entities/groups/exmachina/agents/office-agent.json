@@ -1,0 +1,39 @@
+{
+  "name": "办公体",
+  "identifier": "office-agent",
+  "domain": "办公域",
+  "tier": "unit",
+  "description": "办公文档自动化：Word/Excel/PPT/PDF 的生成、解析、模板填充与批量转换。",
+  "capabilities": [
+    "文档生成",
+    "表格处理",
+    "批量转换"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal"
+  ],
+  "whenToCall": "办公文档自动化：Word/Excel/PPT/PDF 的生成、解析、模板填充与批量转换。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "office-agent.md"
+}

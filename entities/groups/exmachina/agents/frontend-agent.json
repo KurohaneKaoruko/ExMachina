@@ -1,0 +1,40 @@
+{
+  "name": "前端体",
+  "identifier": "frontend-agent",
+  "domain": "前端域",
+  "tier": "unit",
+  "description": "Web 界面实现：组件结构、样式与响应式布局、浏览器兼容与可访问性核查。",
+  "capabilities": [
+    "组件实现",
+    "样式与响应式",
+    "浏览器兼容",
+    "可访问性核查"
+  ],
+  "tools": [
+    "read",
+    "filesystem",
+    "terminal"
+  ],
+  "whenToCall": "Web 界面实现：组件结构、样式与响应式布局、浏览器兼容与可访问性核查。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "frontend-agent.md"
+}

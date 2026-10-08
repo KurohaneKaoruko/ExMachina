@@ -1,0 +1,52 @@
+{
+  "id": "security",
+  "name": "安全链",
+  "triggerSignals": [
+    "安全审计",
+    "漏洞",
+    "威胁",
+    "加固"
+  ],
+  "description": "安全审计、漏洞修复；必要时可借用证据体或裁决体",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "security-agent",
+      "title": "威胁识别",
+      "objectiveTemplate": "识别攻击面、威胁路径和关键资产暴露点：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "security-agent",
+      "title": "边界审计",
+      "objectiveTemplate": "审计权限边界、敏感配置、密钥和输入校验：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "security-agent",
+      "title": "加固建议",
+      "objectiveTemplate": "提出修复、隔离、最小权限和默认安全配置建议：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S4",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总安全结论、加固清单、残余风险：{goal}",
+      "dependsOn": [
+        "S3"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

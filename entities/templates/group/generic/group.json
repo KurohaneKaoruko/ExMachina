@@ -1,0 +1,7 @@
+{
+  "id": "{{identifier}}",
+  "name": "{{name}}",
+  "description": "{{description}}",
+  "primary": null,
+  "builtin": false
+}

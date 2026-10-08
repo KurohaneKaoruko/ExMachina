@@ -1,0 +1,37 @@
+{
+  "name": "决策体",
+  "identifier": "decision-agent",
+  "domain": "理性域",
+  "tier": "unit",
+  "description": "方案决策、冲突裁决与风险把控；输出取舍理由与回退路径。",
+  "capabilities": [
+    "方案决策",
+    "冲突裁决",
+    "风险把控"
+  ],
+  "tools": [
+    "read"
+  ],
+  "whenToCall": "方案决策、冲突裁决与风险把控；输出取舍理由与回退路径。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "decision-agent.md"
+}

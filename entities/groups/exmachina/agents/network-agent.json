@@ -1,0 +1,39 @@
+{
+  "name": "网络体",
+  "identifier": "network-agent",
+  "domain": "网络域",
+  "tier": "unit",
+  "description": "网络连通与传输排障：DNS、代理、防火墙、端口、证书与抓包定位。",
+  "capabilities": [
+    "连通性诊断",
+    "DNS 代理排查",
+    "端口核查",
+    "抓包定位"
+  ],
+  "tools": [
+    "read",
+    "terminal"
+  ],
+  "whenToCall": "网络连通与传输排障：DNS、代理、防火墙、端口、证书与抓包定位。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "network-agent.md"
+}

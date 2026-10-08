@@ -1,0 +1,44 @@
+{
+  "id": "interaction",
+  "name": "交互链",
+  "triggerSignals": [
+    "网页操作",
+    "界面自动化",
+    "表单填写",
+    "可视化页面",
+    "端到端操作",
+    "上传下载"
+  ],
+  "description": "网页与应用可视化页面的界面交互执行与核验",
+  "steps": [
+    {
+      "key": "S1",
+      "agentIdentifier": "interaction-agent",
+      "title": "界面操作执行",
+      "objectiveTemplate": "按操作序列执行界面交互并逐步留证（截图/定位依据）：{goal}",
+      "dependsOn": [],
+      "parallel": false
+    },
+    {
+      "key": "S2",
+      "agentIdentifier": "test-agent",
+      "title": "操作回归核验",
+      "objectiveTemplate": "复核操作结果与页面状态是否符合预期：{goal}",
+      "dependsOn": [
+        "S1"
+      ],
+      "parallel": false
+    },
+    {
+      "key": "S3",
+      "agentIdentifier": "report-agent",
+      "title": "汇报收束",
+      "objectiveTemplate": "汇总操作步骤、核验结果与异常处置：{goal}",
+      "dependsOn": [
+        "S2"
+      ],
+      "parallel": false
+    }
+  ],
+  "terminal": "report-agent"
+}

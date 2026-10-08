@@ -1,0 +1,6 @@
+# 项目使用 rustup 自带的 stable 通道，由 rustup 按当前宿主平台自动选择
+# 对应的 target triple（Linux 上即为 stable-x86_64-unknown-linux-gnu，
+# macOS 为 aarch64/apple-darwin，Windows 由宿主导向 GNU/MSVC）。
+# 这样跨平台构建无需改动本文件。
+[toolchain]
+channel = "stable"

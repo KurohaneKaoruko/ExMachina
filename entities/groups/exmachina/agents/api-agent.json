@@ -1,0 +1,40 @@
+{
+  "name": "联调体",
+  "identifier": "api-agent",
+  "domain": "集成域",
+  "tier": "unit",
+  "description": "外部服务接入与接口联调：认证流程、契约核对、错误码映射与降级策略。",
+  "capabilities": [
+    "接口联调",
+    "认证接入",
+    "契约核对",
+    "错误处理设计"
+  ],
+  "tools": [
+    "read",
+    "terminal",
+    "web_search"
+  ],
+  "whenToCall": "外部服务接入与接口联调：认证流程、契约核对、错误码映射与降级策略。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "api-agent.md"
+}

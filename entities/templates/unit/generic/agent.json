@@ -1,0 +1,24 @@
+{
+  "name": "{{name}}",
+  "identifier": "{{identifier}}",
+  "domain": "通用域",
+  "tier": "unit",
+  "description": "{{description}}",
+  "capabilities": [
+    "通用作业",
+    "信息查证",
+    "文件处理"
+  ],
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "filesystem",
+    "terminal",
+    "web_search",
+    "web_fetch"
+  ],
+  "whenToCall": "{{description}}",
+  "dependencies": [],
+  "composableWith": []
+}

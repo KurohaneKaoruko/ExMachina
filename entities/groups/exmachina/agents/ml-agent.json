@@ -1,0 +1,40 @@
+{
+  "name": "模型体",
+  "identifier": "ml-agent",
+  "domain": "算法域",
+  "tier": "unit",
+  "description": "机器学习工程：特征工程、训练与评估、调参与基线对比、数据泄漏检查。",
+  "capabilities": [
+    "特征工程",
+    "训练评估",
+    "调参对比",
+    "泄漏检查"
+  ],
+  "tools": [
+    "read",
+    "terminal",
+    "filesystem"
+  ],
+  "whenToCall": "机器学习工程：特征工程、训练与评估、调参与基线对比、数据泄漏检查。",
+  "dependencies": [],
+  "composableWith": [],
+  "inputSchema": {
+    "required": [
+      "任务描述"
+    ],
+    "optional": [
+      "已知约束",
+      "相关文件"
+    ]
+  },
+  "outputSchema": {
+    "required": [
+      "阶段产出",
+      "证据等级"
+    ],
+    "optional": [
+      "建议下一步"
+    ]
+  },
+  "promptFile": "ml-agent.md"
+}

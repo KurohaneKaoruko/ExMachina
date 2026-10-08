@@ -1,0 +1,41 @@
+[package]
+name = "exm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EXMACHINA 核心运行时：多智能体编排、任务 DAG 调度、协议契约、持久化"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+rusqlite = { workspace = true }
+reqwest.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+parking_lot = "0.12"
+tokio-tungstenite.workspace = true
+# 仓库检索工具（grep/glob）：ignore 尊重 .gitignore，regex 提供正则匹配
+ignore = "0.4"
+regex = "1"
+# Computer Use（computer 工具）：enigo 键鼠控制 + xcap 截屏；image 仅 PNG 编解码与缩放
+# xcap vendored：dbus 静态编译（容器 / 精简环境免装 libdbus 开发包，构建自包含）
+enigo = "0.3"
+xcap = { version = "0.4", features = ["vendored"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+# MCP http 传输冒烟：测试内起最小 JSON-RPC 服务器
+axum.workspace = true
+
+# Windows 沙箱加固：作业对象（内存/进程数上限 + KILL_ON_JOB_CLOSE 整树终止）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+] }
