@@ -22,6 +22,7 @@ pub mod patch;
 pub mod provider;
 pub mod nexus;
 pub mod registry;
+pub mod store_sqlite;
 pub mod remote;
 pub mod round_trace;
 pub mod runtime;
