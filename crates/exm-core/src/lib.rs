@@ -26,6 +26,7 @@ pub mod remote;
 pub mod round_trace;
 pub mod runtime;
 pub mod store;
+mod store_sqlite;
 pub mod task;
 pub mod tools;
 pub mod types;
