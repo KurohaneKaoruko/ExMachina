@@ -22,7 +22,7 @@ fi
 chmod +x "$BUNDLE/exmachina-desktop" "$BUNDLE/bin/"* 2>/dev/null || true
 
 # 图标 + WebUI(高级控制台)+ 数据播种源
-cp icon.ico icon.png "$BUNDLE/" 2>/dev/null || true
+cp desktop/icons/icon.ico desktop/icons/icon.png "$BUNDLE/" 2>/dev/null || true
 cp -r webui/dist "$BUNDLE/resources/webui/dist"
 cp -r entities "$BUNDLE/resources/data-seed/entities"
 cp -r skills "$BUNDLE/resources/data-seed/skills"
@@ -60,7 +60,7 @@ case "$ARTIFACT" in
 </dict>
 </plist>
 EOPL
-    cp icon.png "$APP/Contents/Resources/icon.png"
+    cp desktop/icons/icon.png "$APP/Contents/Resources/icon.png"
     hdiutil create -volname "EXMACHINA" -srcfolder "$APP" -ov -format UDZO "$ARTIFACT"
     ;;
   *)
