@@ -487,6 +487,52 @@ async fn single_agent_target_switch_and_l0_direct() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn 单体直接循环_工具回灌与过程留痕() {
+    let _serial = serial_guard();
+    let cfg = test_config();
+    let core = Core::with_config(cfg).expect("创建 Core 失败");
+
+    // 单体:带 terminal 工具(直接循环的工具面来源)
+    let def: AgentDefinition = serde_json::from_value(serde_json::json!({
+        "name": "工具执行体", "identifier": "tool-runner", "domain": "单体",
+        "tier": "orchestrator", "description": "工具循环演练", "capabilities": ["工具执行"],
+        "tools": ["read", "terminal"]
+    }))
+    .expect("定义构造失败");
+    core.registry().upsert_single(def, None).expect("创建单体失败");
+    core.registry().set_active_single(Some("tool-runner")).expect("切换目标失败");
+    assert!(core.registry().single_mode());
+
+    // 触发直接工具循环:Mock 第一步产出文本协议工具调用,回灌后第二步收敛
+    let session = core.create_session("单体工具循环").expect("建会话失败");
+    let orch = core.orchestrator();
+    orch.handle_user_message(&session.id, "触发工具循环").await.expect("直接循环失败");
+
+    // 无任务图(不进规划/派发)
+    assert!(core.store.latest_graph(&session.id).unwrap().is_none(), "直接循环不应有派发任务图");
+
+    // 最终消息归属单体;工具调用轨迹留痕;收敛文本在场
+    let messages = core.store.list_messages(&session.id, 50).unwrap();
+    let final_msg = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Orchestrator && m.agent_id.as_deref() == Some("tool-runner"))
+        .expect("应有单体最终回复");
+    assert!(!final_msg.tool_calls.is_empty(), "工具调用轨迹应留痕");
+    assert!(
+        final_msg.tool_calls.iter().any(|c| c.tool == "terminal" && c.ok),
+        "应记录 terminal 工具调用且执行成功"
+    );
+    assert!(
+        final_msg.statements.iter().any(|s| s.text.contains("任务完成")),
+        "应有工具回灌后收敛的最终文本"
+    );
+
+    core.registry().set_active_single(None).expect("切回失败");
+    assert!(core.registry().remove_single("tool-runner").unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn 经验优化_合成_版本与重置() {
     let _serial = serial_guard();
     let cfg = test_config();
@@ -716,8 +762,7 @@ async fn 上下文压缩与collect_多轮会话语义() {
     let cfg = test_config();
     let core = Core::with_config(cfg).expect("创建 Core 失败");
 
-    // 单体会话：L0 直答路径
-    core.registry().set_active_single(Some("machina")).expect("切单体失败");
+    // 组模式会话:压缩与 collect 语义由规划路径承载(单体走直接工具循环,压缩不适用)
     let s = core.create_session("压缩演练").expect("建会话失败");
 
     // 灌入 25 条消息（> TRIGGER=20）：12 条 user 旧消息 + 12 条 system 回复 + 1 条新 user

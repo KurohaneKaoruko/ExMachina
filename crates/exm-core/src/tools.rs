@@ -1275,6 +1275,19 @@ impl ToolGateway {
             result.error.clone().unwrap_or_default().chars().take(200).collect()
         };
         let _ = self.store.audit_tool(agent_id, name, args, &summary, started.elapsed().as_millis() as u64);
+        // 轮次过程轨迹：与 execute_mcp 一致,内置/自定义工具执行同样随收束落盘到最终消息
+        crate::round_trace::push_tool(
+            session_id,
+            crate::round_trace::ToolCallRecord {
+                call_id: call_id.clone(),
+                agent_id: agent_id.to_string(),
+                tool: name.to_string(),
+                args: args.clone(),
+                ok: result.ok,
+                duration_ms: started.elapsed().as_millis() as u64,
+                summary,
+            },
+        );
         self.emit_tool_result(session_id, &call_id, agent_id, name, &result, &started);
         result
     }
@@ -3202,6 +3215,7 @@ mod memory_tool_tests {
                 capabilities: vec![],
                 tools: vec![],
                 when_to_call: String::new(),
+                link: None,
                 dependencies: vec![],
                 composable_with: vec![],
                 input_schema: Default::default(),
@@ -3227,6 +3241,7 @@ mod memory_tool_tests {
             tier,
             description: "测试个体".into(),
             capabilities: vec![],
+            link: None,
             tools: tools.to_vec(),
             when_to_call: String::new(),
             dependencies: vec![],
@@ -3240,7 +3255,7 @@ mod memory_tool_tests {
 
     fn group_meta(primary: &str, builtin: bool) -> GroupMeta {
         GroupMeta {
-            id: "default".into(),
+            id: "exmachina".into(),
             name: "测试组".into(),
             description: String::new(),
             primary: Some(primary.into()),
@@ -3360,7 +3375,7 @@ mod memory_tool_tests {
         // 写入归属切换后的组：不串组
         let w2 = r.gw.tool_memory_write("orch-1", &serde_json::json!({ "kind": "fact", "title": "他组约定", "body": "other 组的约定" }));
         assert!(w2.ok);
-        r.gw.registry.set_active_group("default").unwrap();
+        r.gw.registry.set_active_group("exmachina").unwrap();
         let back = r.gw.tool_memory_read("orch-1", &serde_json::json!({ "query": "他组约定" }));
         assert!(back.output.contains("无命中"), "other 组条目不得泄漏进 default 视图：{}", back.output);
         let _ = std::fs::remove_dir_all(&r.dir);
@@ -3402,7 +3417,7 @@ mod memory_tool_tests {
         assert!(r.gw.registry.create_group(Some("elsewhere".into()), "他组", "").is_ok());
         r.gw.registry.set_active_group("elsewhere").unwrap();
         let c = r.gw.tool_memory_write("orch-1", &mk("他组条目", "other 组的决策"));
-        r.gw.registry.set_active_group("default").unwrap();
+        r.gw.registry.set_active_group("exmachina").unwrap();
         assert!(c.ok);
         let id_c = id_of(&c);
         let denied = r.gw.tool_memory_link("orch-1", &serde_json::json!({ "op": "link", "from": id_a, "to": id_c, "relation": "related" }));

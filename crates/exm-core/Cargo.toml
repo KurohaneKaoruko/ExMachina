@@ -13,6 +13,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
+rusqlite = { workspace = true }
 reqwest.workspace = true
 uuid.workspace = true
 chrono.workspace = true
