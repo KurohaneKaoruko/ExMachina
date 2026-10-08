@@ -26,7 +26,7 @@ cp icon.ico icon.png "$BUNDLE/" 2>/dev/null || true
 cp -r webui/dist "$BUNDLE/resources/webui/dist"
 cp -r entities "$BUNDLE/resources/data-seed/entities"
 cp -r skills "$BUNDLE/resources/data-seed/skills"
-cp default-soul.md "$BUNDLE/resources/data-seed/default-soul.md"
+cp entities/default-soul.md "$BUNDLE/resources/data-seed/default-soul.md"
 
 # 启动脚本:以 bundle 为工作目录运行(数据/资源相对定位)
 cat > "$BUNDLE/start.sh" << 'EOS'
