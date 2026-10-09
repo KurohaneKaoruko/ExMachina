@@ -760,7 +760,7 @@ function renderRight() {
 // 桌面端不依赖任何 webui：模型与提供商 / 组与个体 / 通道 / 定时任务 / 安全 全部壳内直管。
 // 一切核心功能在 exm-core，桌面端与 webui、channel 一样只是连结核心的客户端。
 
-const SETTINGS_TABS = [["model", "模型"], ["group", "组与个体"], ["channel", "通道"], ["cron", "定时任务"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"]];
+const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single", "智能体"], ["channel", "通道"], ["cron", "定时任务"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"]];
 
 function showView(v) {
   S.view = v;
@@ -799,7 +799,7 @@ function renderSettings() {
   // 内容区
   const body = $("sp-body");
   body.innerHTML = "";
-  ({ model: renderSetModel, group: renderSetGroup, channel: renderSetChannel, cron: renderSetCron, memory: renderSetMemory, skills: renderSetSkills, audit: renderSetAudit, config: renderSetConfig }[S.settingsTab] ?? renderSetModel)(body);
+  ({ model: renderSetModel, group: renderSetGroup, single: renderSetSingles, channel: renderSetChannel, cron: renderSetCron, memory: renderSetMemory, skills: renderSetSkills, audit: renderSetAudit, config: renderSetConfig }[S.settingsTab] ?? renderSetModel)(body);
 }
 
 // —— 表单小件 ——
@@ -937,6 +937,10 @@ function renderSetModel(body) {
 
 // —— 组与个体 ——
 function renderSetGroup(body) {
+  // 编成模板（建组/添个体可选）
+  let templates = [];
+  req("/templates").then((r) => { templates = r.templates ?? []; }).catch(() => {});
+
   const list = setCard("智能体组（项目协作单元）");
   for (const g of S.groups) {
     const row = document.createElement("div");
@@ -944,28 +948,29 @@ function renderSetGroup(body) {
     const active = S.target?.mode === "group" && (S.target.id ?? "default") === g.id;
     row.innerHTML = `<div class="set-row-main"><b>${esc(g.name)}</b>${active ? '<span class="tag-ok">✓ 当前</span>' : g.builtin ? '<span class="tag-dim">内置</span>' : ""}
       <div class="set-sub">${esc(g.description || "")}</div>
-      <div class="set-sub">${esc(g.workspace || "未设工作目录")} · 主智能体 ${esc(g.primary || "未指定")}</div>
+      <div class="set-sub set-overview" data-gid="${esc(g.id)}">统计加载中…</div>
+      <div class="set-sub">主智能体 ${esc(g.primary || "未指定")} · ${esc(g.workspace || "未设工作目录")}</div>
       <div class="set-agents" data-gid="${esc(g.id)}"></div></div>`;
     const ops = document.createElement("div");
     ops.className = "set-ops";
     if (!active) ops.appendChild(mkBtn("设为当前", async () => {
       if (await settingsSave(req("/groups/active", { method: "PUT", body: JSON.stringify({ id: g.id }) }), "已切换")) await refreshContext(), renderSettings();
     }, "set-btn"));
-    ops.appendChild(mkBtn("工作目录", () => {
-      const input = mkInput(g.workspace || "", { placeholder: "/path/to/project" });
-      row.querySelector(".set-row-main").appendChild(mkField("工作目录", input));
-      input.after(mkBtn("保存目录", async () => {
-        if (await settingsSave(api.setGroupWorkspace(g.id, input.value.trim()), "工作目录已保存")) renderSettings();
-      }, "set-btn"));
-      input.focus();
-    }, "set-btn"));
+    ops.appendChild(mkBtn("组设置", () => groupSettingsCard(row, g, templates), "set-btn"));
     if (!g.builtin) ops.appendChild(mkBtn("删除", async () => {
       if (!confirm(`删除组「${g.name}」？`)) return;
       if (await settingsSave(req(`/groups/${g.id}`, { method: "DELETE" }), "已删除")) await refreshContext(), renderSettings();
     }, "set-btn danger"));
     row.appendChild(ops);
     list.appendChild(row);
-    // 组内个体：行式（设主 / 人格 / 系统提示词 / 移除）
+
+    // overview 统计（个体/编成/会话/记忆）
+    req(`/groups/${g.id}/overview`).then((ov) => {
+      row.querySelector(".set-overview").textContent =
+        `个体 ${ov.agents} · 编成 ${ov.playbooks} · 会话 ${ov.sessions} · 记忆 组 ${ov.memory.group} / 共享 ${ov.memory.shared}`;
+    }).catch(() => { const e = row.querySelector(".set-overview"); if (e) e.textContent = ""; });
+
+    // 组内个体：行式管理（设主 / 人格 / 提示词 / 移除）
     req(`/groups/${g.id}/agents`).then((agents) => {
       const box = row.querySelector(".set-agents");
       box.innerHTML = "";
@@ -993,74 +998,162 @@ function renderSetGroup(body) {
         });
         box.appendChild(ar);
       }
-      // 组内新增个体
+      // 组内新增个体（可选编成模板）；内置组编成受保护（服务端拒绝），仅自定义组开放
+      if (g.builtin) {
+        box.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "内置组编成受保护——新建自定义组后即可添加个体。" }));
+        return;
+      }
       const add = document.createElement("div");
       add.className = "agent-add";
       const nameI = mkInput("", { placeholder: "名称" });
       const idI = mkInput("", { placeholder: "标识（如 coder-1）" });
       const domI = mkInput("", { placeholder: "负责域（可选）" });
-      add.appendChild(nameI); add.appendChild(idI); add.appendChild(domI);
+      const tpl = mkSelect([["", "模板（可选）"], ...templates.filter((t) => t.kind === "unit").map((t) => [t.id, t.name])], "");
+      add.appendChild(nameI); add.appendChild(idI); add.appendChild(domI); add.appendChild(tpl);
       add.appendChild(mkBtn("添加个体", async () => {
         if (!nameI.value.trim() || !idI.value.trim()) return toast("名称与标识必填", false);
-        if (await settingsSave(req("/agents", { method: "POST", body: JSON.stringify({ name: nameI.value.trim(), identifier: idI.value.trim(), description: nameI.value.trim(), domain: domI.value.trim(), group: g.id }) }), "个体已添加")) renderSettings();
+        const payload = { name: nameI.value.trim(), identifier: idI.value.trim(), description: nameI.value.trim(), domain: domI.value.trim(), group: g.id };
+        if (tpl.value) payload.template = tpl.value;
+        if (await settingsSave(req("/agents", { method: "POST", body: JSON.stringify(payload) }), "个体已添加")) renderSettings();
       }, "set-btn"));
       box.appendChild(add);
     }).catch(() => {});
   }
   body.appendChild(list);
+
+  // 组设置卡：模型 + 能力槽位（组级覆盖）
+  function groupSettingsCard(row, g, templates) {
+    const main = row.querySelector(".set-row-main");
+    const old = main.querySelector(".group-settings");
+    if (old) { old.remove(); return; }
+    const card = document.createElement("div");
+    card.className = "group-settings";
+    const modelI = mkInput(g.model ?? "", { placeholder: "档案ID 或 档案ID/模型名（空 = 跟随全局）" });
+    card.appendChild(mkField("组默认模型", modelI));
+    req("/llm/capabilities").then(async (gc) => {
+      const cap = g.capabilities ?? {};
+      const s1 = mkInput(cap.speech ?? gc.speech ?? "", { placeholder: "档案ID 或 档案ID/模型名" });
+      const s2 = mkInput(cap.transcribe ?? gc.transcribe ?? "", { placeholder: "同上" });
+      const s3 = mkInput(cap.visionRelay ?? gc.visionRelay ?? "", { placeholder: "同上" });
+      const s4 = mkInput(cap.embedding ?? gc.embedding ?? "", { placeholder: "同上" });
+      card.appendChild(mkField("语音合成", s1));
+      card.appendChild(mkField("语音转写", s2));
+      card.appendChild(mkField("视觉转述", s3));
+      card.appendChild(mkField("语义嵌入", s4));
+      card.appendChild(mkBtn("保存组设置", async () => {
+        const caps = {};
+        if (s1.value.trim()) caps.speech = s1.value.trim();
+        if (s2.value.trim()) caps.transcribe = s2.value.trim();
+        if (s3.value.trim()) caps.visionRelay = s3.value.trim();
+        if (s4.value.trim()) caps.embedding = s4.value.trim();
+        const ok1 = await settingsSave(req(`/groups/${g.id}/model`, { method: "PUT", body: JSON.stringify({ model: modelI.value.trim() }) }), "组模型已保存");
+        const ok2 = await settingsSave(req(`/groups/${g.id}/capabilities`, { method: "PUT", body: JSON.stringify(caps) }), "组能力已保存");
+        if (ok1 && ok2) { await refreshContext(); renderSettings(); }
+      }));
+    }).catch(() => {});
+    main.appendChild(card);
+  }
+
+  // 新建组（可选编成模板）
   const create = setCard("新建智能体组");
   const name = mkInput("", { placeholder: "组名称，如 前端小组" });
   const desc = mkInput("", { placeholder: "一句话描述（可选）" });
+  const gtpl = mkSelect([["", "编成模板（可选）"], ...templates.map((t) => [t.id, `${t.name}（${t.kind === "group" ? "组" : "个体"}）`])], "");
   create.appendChild(mkField("名称", name));
   create.appendChild(mkField("描述", desc));
+  create.appendChild(mkField("模板", gtpl));
   create.appendChild(mkBtn("创建", async () => {
     if (!name.value.trim()) return toast("组名称不能为空", false);
     const payload = { name: name.value.trim() };
     if (desc.value.trim()) payload.description = desc.value.trim();
+    if (gtpl.value) payload.template = gtpl.value;
     if (await settingsSave(req("/groups", { method: "POST", body: JSON.stringify(payload) }), "组已创建")) { await refreshContext(); renderSettings(); }
   }));
   body.appendChild(create);
+}
 
-  // —— 智能体（单体）：独立于组的个体，可直接作为对话目标 ——
-  const singles = setCard("智能体（单体）");
-  const singlesBox = document.createElement("div");
-  singles.appendChild(singlesBox);
-  req("/singles").then(({ singles: list2 }) => {
+// —— 智能体（单体）：对齐 SinglesView——档案卡 + 模型/描述/人格/提示词/删除/设为对话目标 ——
+function renderSetSingles(body) {
+  const list = setCard("智能体（单体，可直接作为对话目标）");
+  const box = document.createElement("div");
+  list.appendChild(box);
+  const render = async () => {
+    const [{ singles: list2 }, profiles] = await Promise.all([req("/singles"), req("/llm/profiles").catch(() => ({ profiles: [] }))]);
+    box.innerHTML = "";
+    const modelLabel = (hint) => {
+      if (!hint) return "跟随全局";
+      if (hint.includes("/")) return hint.split("/").pop();
+      const p = profiles.profiles.find((x) => x.id === hint);
+      return p ? (p.model || p.name) : hint;
+    };
+    if (!list2.length) list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "暂无智能体——下方新建后可设为对话目标。" }));
     for (const s of list2) {
       const active = S.target?.mode === "single" && S.target.id === s.identifier;
-      const ar = document.createElement("div");
-      ar.className = "agent-row";
-      ar.innerHTML = `<span class="agent-name">@${esc(s.identifier)}</span><span class="agent-desc">${esc(s.name || "")} · ${esc(s.domain || "")}</span>
-        <span class="agent-ops">
-          ${active ? '<i class="pri">对话中</i>' : `<button class="set-btn" data-op="talk">对话</button>`}
-          <button class="set-btn" data-op="persona">人格</button>
-          <button class="set-btn" data-op="prompt">提示词</button>
-          <button class="set-btn danger" data-op="rm">删除</button>
-        </span>`;
-      ar.querySelector('[data-op="talk"]').addEventListener("click", async () => {
+      const card = document.createElement("div");
+      card.className = "set-card";
+      card.style.marginBottom = "10px";
+      card.innerHTML = `<div class="set-card-title">@${esc(s.identifier)} ${active ? '<span class="tag-ok">✓ 对话中</span>' : ""}</div>
+        <div class="set-sub">${esc(s.name || "")} · ${esc(s.domain || "")} · 模型 <b>${esc(modelLabel(s.modelHint))}</b></div>
+        <div class="set-sub">${esc(s.description || "")}</div>`;
+      const ops = document.createElement("div");
+      ops.className = "set-ops";
+      ops.style.marginTop = "8px";
+      if (!active) ops.appendChild(mkBtn("设为对话目标", async () => {
         if (await settingsSave(req("/target", { method: "PUT", body: JSON.stringify({ mode: "single", id: s.identifier }) }), `对话目标 → @${s.identifier}`)) { await refreshContext(); renderSettings(); }
-      });
-      ar.querySelector('[data-op="persona"]').addEventListener("click", () => personaCard(singlesBox, s.identifier, { kind: "single" }));
-      ar.querySelector('[data-op="prompt"]').addEventListener("click", () => promptCard(singlesBox, { kind: "single", identifier: s.identifier }));
-      ar.querySelector('[data-op="rm"]').addEventListener("click", async () => {
+      }, "set-btn"));
+      ops.appendChild(mkBtn("切换模型", () => {
+        const old = card.querySelector(".model-edit");
+        if (old) { old.remove(); return; }
+        const e = document.createElement("div");
+        e.className = "model-edit";
+        const mi = mkInput(s.modelHint ?? "", { placeholder: "档案ID 或 档案ID/模型名（空 = 跟随全局）" });
+        e.appendChild(mkField("模型", mi));
+        e.appendChild(mkBtn("保存", async () => {
+          if (await settingsSave(req(`/singles/${s.identifier}`, { method: "PUT", body: JSON.stringify({ modelHint: mi.value.trim() || null }) }), "模型已切换")) renderSettings();
+        }, "set-btn"));
+        card.appendChild(e);
+      }, "set-btn"));
+      ops.appendChild(mkBtn("编辑描述", () => {
+        const old = card.querySelector(".desc-edit");
+        if (old) { old.remove(); return; }
+        const e = document.createElement("div");
+        e.className = "desc-edit";
+        const di = mkInput(s.description ?? "", { placeholder: "一句话描述" });
+        e.appendChild(mkField("描述", di));
+        e.appendChild(mkBtn("保存", async () => {
+          if (await settingsSave(req(`/singles/${s.identifier}`, { method: "PUT", body: JSON.stringify({ description: di.value.trim() }) }), "描述已更新")) renderSettings();
+        }, "set-btn"));
+        card.appendChild(e);
+      }, "set-btn"));
+      ops.appendChild(mkBtn("人格", () => personaCard(card, s.identifier, { kind: "single" }), "set-btn"));
+      ops.appendChild(mkBtn("提示词", () => promptCard(card, { kind: "single", identifier: s.identifier }), "set-btn"));
+      ops.appendChild(mkBtn("删除", async () => {
         if (!confirm(`删除智能体 @${s.identifier}？`)) return;
         if (await settingsSave(req(`/singles/${s.identifier}`, { method: "DELETE" }), "已删除")) renderSettings();
-      });
-      singlesBox.appendChild(ar);
+      }, "set-btn danger"));
+      card.appendChild(ops);
+      box.appendChild(card);
     }
-    const add = document.createElement("div");
-    add.className = "agent-add";
-    const nameI = mkInput("", { placeholder: "名称" });
-    const idI = mkInput("", { placeholder: "标识（如 writer）" });
-    const domI = mkInput("", { placeholder: "负责域（可选）" });
-    add.appendChild(nameI); add.appendChild(idI); add.appendChild(domI);
-    add.appendChild(mkBtn("新建智能体", async () => {
-      if (!nameI.value.trim() || !idI.value.trim()) return toast("名称与标识必填", false);
-      if (await settingsSave(req("/singles", { method: "POST", body: JSON.stringify({ name: nameI.value.trim(), identifier: idI.value.trim(), description: nameI.value.trim(), domain: domI.value.trim() }) }), "智能体已创建")) renderSettings();
-    }, "set-btn"));
-    singlesBox.appendChild(add);
-  }).catch(() => {});
-  body.appendChild(singles);
+  };
+  render().catch((e) => box.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `加载失败：${e}` })));
+  body.appendChild(list);
+
+  const create = setCard("新建智能体");
+  const name = mkInput("", { placeholder: "名称，如 写作助手" });
+  const id = mkInput("", { placeholder: "标识（如 writer）" });
+  const dom = mkInput("", { placeholder: "负责域（可选，如 文案" });
+  const desc = mkInput("", { placeholder: "一句话描述（可选）" });
+  create.appendChild(mkField("名称", name));
+  create.appendChild(mkField("标识", id));
+  create.appendChild(mkField("负责域", dom));
+  create.appendChild(mkField("描述", desc));
+  create.appendChild(mkBtn("创建", async () => {
+    if (!name.value.trim() || !id.value.trim()) return toast("名称与标识必填", false);
+    const payload = { name: name.value.trim(), identifier: id.value.trim(), description: desc.value.trim() };
+    if (dom.value.trim()) payload.domain = dom.value.trim();
+    if (await settingsSave(req("/singles", { method: "POST", body: JSON.stringify(payload) }), "智能体已创建")) renderSettings();
+  }));
+  body.appendChild(create);
 }
 
 // 人格（SOUL）编辑卡：组内个体走组作用域，单体走 singles 作用域
