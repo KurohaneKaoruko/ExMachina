@@ -150,12 +150,6 @@ button { font-family: inherit; cursor: pointer; }
 
 /* 欢迎屏（空会话） */
 .welcome { text-align: center; padding: 9vh 0 0; }
-.welcome .logo {
-  width: 64px; height: 64px; margin: 0 auto 18px; border-radius: 0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 22px; font-weight: 800; color: #0b1020; letter-spacing: 0.02em;
-  background: linear-gradient(135deg, var(--accent-2), var(--accent));
-}
 .welcome h1 { font-size: 20px; margin: 0 0 8px; font-weight: 600; }
 .welcome p { color: var(--text-dim); font-size: 13px; margin: 0 0 26px; }
 .suggest { display: flex; flex-direction: column; gap: 10px; max-width: 520px; margin: 0 auto; }

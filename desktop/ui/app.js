@@ -529,7 +529,6 @@ function welcomeEl() {
   const el = document.createElement("div");
   el.className = "welcome";
   el.innerHTML = `
-    <div class="logo">EX</div>
     <h1>有什么可以帮你？</h1>
     <p>对话交由当前对象（智能体或智能体组）协作完成；控制台可管理个体、模型与通道</p>
     <div class="suggest">
