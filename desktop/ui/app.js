@@ -38,7 +38,7 @@ const api = {
   createSession: (title) => req("/sessions", { method: "POST", body: JSON.stringify({ title }) }),
   deleteSession: (id) => req(`/sessions/${id}`, { method: "DELETE" }),
   messages: (id) => req(`/sessions/${id}/messages`),
-  chat: (id, text, images, mode) => req(`/sessions/${id}/chat`, { method: "POST", body: JSON.stringify({ text, ...(images?.length ? { images } : {}), ...(mode ? { mode } : {}) }) }),
+  chat: (id, text, images, agent) => req(`/sessions/${id}/chat`, { method: "POST", body: JSON.stringify({ text, ...(images?.length ? { images } : {}), ...(agent ? { agent } : {}) }) }),
   stop: (id) => req(`/sessions/${id}/stop`, { method: "POST", body: JSON.stringify({}) }),
   graph: (id) => req(`/sessions/${id}/graph`),
   decideApproval: (id, approve) => req(`/approvals/${id}/${approve ? "approve" : "deny"}`, { method: "POST", body: JSON.stringify({}) }),
@@ -67,6 +67,8 @@ const S = {
   sessionId: null,
   messages: [],        // 已收束消息 {id, role, agentId?, statements[{tag,text}], toolCalls?, thinking?, createdAt}
   running: false,
+  unitView: null,      // 当前子代理会话视图（null = 指挥体主会话）
+  activeProfileId: null, // 生效模型档案 id
   connected: false,
   target: null,        // {mode, id, name?, primary?}
   config: null,
@@ -158,11 +160,13 @@ function handleEvent(evt) {
       scheduleLive();
       break;
     case "unit.token":
-      live.units[String(p.agentId ?? "")] = (live.units[String(p.agentId ?? "")] ?? "") + String(p.delta ?? "");
+      S.live.units[String(p.agentId ?? "")] = (S.live.units[String(p.agentId ?? "")] ?? "") + String(p.delta ?? "");
+      if (S.unitView && S.unitView === String(p.agentId ?? "")) scheduleUnitStream();
       scheduleRight();
       break;
     case "unit.thinking":
-      live.unitThinking[String(p.agentId ?? "")] = (live.unitThinking[String(p.agentId ?? "")] ?? "") + String(p.delta ?? "");
+      S.live.unitThinking[String(p.agentId ?? "")] = (S.live.unitThinking[String(p.agentId ?? "")] ?? "") + String(p.delta ?? "");
+      if (S.unitView && S.unitView === String(p.agentId ?? "")) scheduleUnitStream();
       break;
     case "tool.call":
       live.toolCalls = live.toolCalls.filter((c) => c.callId !== String(p.callId));
@@ -184,6 +188,19 @@ function handleEvent(evt) {
       live.approvals = live.approvals.filter((a) => a.approvalId !== String(p.approvalId));
       renderApprovals();
       break;
+    case "unit.finished": {
+      // 子代理直聊收束：实时流转为消息（子代理会话视图即时可见）
+      const aid2 = String(p.agentId ?? "");
+      delete S.live.units[aid2];
+      delete S.live.unitThinking[aid2];
+      S.messages = [...S.messages, {
+        id: `unit-${Date.now()}`, role: "unit", agentId: aid2,
+        statements: p.statements ?? [], createdAt: new Date().toISOString(),
+      }];
+      scheduleRight();
+      renderStream(true);
+      break;
+    }
     case "graph.updated":
       S.graph = p ?? null;
       scheduleRight();
@@ -238,6 +255,44 @@ function handleEvent(evt) {
 function resetLive() {
   S.live = { orch: "", thinking: "", units: {}, unitThinking: {}, toolCalls: [], activity: [], approvals: liveApprovalsKeep() };
   // S.reports 有意保留：回执是本轮执行痕迹，右栏继续展示，切会话时才清
+}
+
+// 子代理会话实时流：rAF 合帧（token 高频到达）
+let unitStreamPending = false;
+function scheduleUnitStream() {
+  if (unitStreamPending) return;
+  unitStreamPending = true;
+  requestAnimationFrame(() => {
+    unitStreamPending = false;
+    if (!S.unitView) return;
+    renderStream(false);
+    if (nearBottom()) scrollBottom();
+  });
+}
+
+// 进入 / 退出子代理会话（与指挥体主会话同款界面）
+function openUnitView(agent) {
+  S.unitView = agent;
+  if (!S.dispatches.some((d) => d.to === agent)) {
+    api.sessionEvents(S.sessionId).then((evs) => {
+      S.dispatches = (evs ?? []).filter((e) => e.type === "dispatch" && e.to);
+      if (S.unitView === agent) renderStream(false);
+    }).catch(() => {});
+  }
+  updateTopbar();
+  renderStream(true);
+}
+
+function exitUnitView() {
+  S.unitView = null;
+  updateTopbar();
+  renderStream(true);
+}
+
+function updateTopbar() {
+  const back = $("btn-back");
+  back.classList.toggle("hidden", !S.unitView);
+  back.textContent = `‹ @${S.unitView ?? ""}`;
 }
 
 function liveApprovalsKeep() { return S.live.approvals; }
@@ -421,6 +476,8 @@ function msgHtml(msg) {
 }
 
 function renderStream(scroll) {
+  // 子代理会话视图：与主会话同款界面（流 + 输入区共用），内容过滤为该个体的对话
+  if (S.unitView) { renderUnitStream(scroll); return; }
   // 已收束消息
   streamEl.innerHTML = "";
   if (!S.messages.length && !S.running) streamEl.appendChild(welcomeEl());
@@ -430,6 +487,40 @@ function renderStream(scroll) {
   liveEl.style.display = S.running ? "" : "none";
   if (scroll !== false) scrollBottom();
   scheduleLive(true);
+}
+
+// 子代理会话（与指挥体主会话同款界面）：派发单 + 用户/该个体的全部往来 + 实时流
+function renderUnitStream(scroll) {
+  const agent = S.unitView;
+  streamEl.innerHTML = "";
+  // 派发单契约卡（指挥体传给它的任务）
+  const dp = S.dispatches.find((d) => d.to === agent)?.payload;
+  const node = (S.graph?.nodes ?? []).find((n) => n.agentIdentifier === agent);
+  if (dp || node) {
+    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="avatar">EX</div>
+      <div class="msg-body"><div class="msg-meta">指挥体派发的任务</div><div class="msg-bubble">
+        <div class="stmt"><span class="stmt-tag">任务</span><span class="stmt-text md">${esc(node?.objective || dp?.goal || "")}</span></div>
+        ${(dp?.acceptance ?? []).length ? `<div class="stmt"><span class="stmt-tag">验收</span><span class="stmt-text md">${esc(dp.acceptance.join("；"))}</span></div>` : ""}
+      </div></div></div>`);
+  }
+  // 对话历史：用户消息 + 该个体的回传
+  const msgs = S.messages.filter((m) => m.role === "user" || (m.role === "unit" && m.agentId === agent));
+  if (!msgs.length && !S.live.units[agent]) {
+    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="avatar">EX</div>
+      <div class="msg-body"><div class="msg-bubble" style="color:var(--text-dim)">还没有与 @${esc(agent)} 的直接对话——发消息即可单独与这个子个体交流，它会带着上面的任务上下文回答。</div></div></div>`);
+  }
+  for (const m of msgs) streamEl.insertAdjacentHTML("beforeend", msgHtml(m));
+  // 实时流（直聊进行中）
+  const liveText = S.live.units[agent];
+  const liveThink = S.live.unitThinking[agent];
+  if (liveText || liveThink) {
+    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="unit-live"><div class="avatar">EX</div>
+      <div class="msg-body"><div class="msg-meta">@${esc(agent)} · 正在输入</div>
+        ${liveThink ? `<div class="trace" style="margin:0 0 6px"><details open><summary>思考中</summary><div class="thinking-text">${esc(liveThink)}</div></details></div>` : ""}
+        <div class="live-orch md">${md(liveText ?? "")}<span class="cursor"></span></div>
+      </div></div>`);
+  }
+  if (scroll !== false) scrollBottom();
 }
 
 function welcomeEl() {
@@ -530,8 +621,9 @@ async function selectSession(id) {
   setRunning(false);
   S.graph = null;
   S.reports = [];
-  S.drill = null;
+  S.unitView = null;
   S.dispatches = [];
+  updateTopbar();
   renderSidebar();
   renderRight();
   try {
@@ -562,19 +654,19 @@ async function send() {
   if (!text || !S.sessionId) return;
   input.value = "";
   autosize();
+  const agent = S.unitView; // 子代理会话视图内 → 直聊该个体
   const label = S.images.length ? `${text}（附 ${S.images.length} 张图片）` : text;
   S.messages = [...S.messages, { id: `local-${Date.now()}`, role: "user", statements: [{ tag: "要求", text: label }], createdAt: new Date().toISOString() }];
-  resetLive();
-  setRunning(true);
+  if (!agent) { resetLive(); setRunning(true); }
   renderStream(true);
   updateSessionPreview(S.sessionId, label);
   const images = S.images;
   S.images = [];
   renderAttachRow();
   try {
-    await api.chat(S.sessionId, text, images);
+    await api.chat(S.sessionId, text, images, agent);
   } catch (e) {
-    setRunning(false);
+    if (!agent) setRunning(false);
     alertErr(e);
   }
 }
@@ -609,7 +701,6 @@ function setRightOpen(on) {
 
 function renderRight() {
   const body = $("rp-body");
-  if (S.drill) { renderAgentDrill(body); return; }
   const nodes = S.graph?.nodes ?? [];
   const units = Object.entries(S.live.units);
   const unitThink = Object.entries(S.live.unitThinking);
@@ -656,76 +747,9 @@ function renderRight() {
     }
   }
   body.innerHTML = html;
-  // 点击个体卡 → 下钻该子个体的会话视图
+  // 点击个体卡 → 进入与指挥体同款的子代理会话界面
   body.querySelectorAll("[data-agent]").forEach((el) =>
-    el.addEventListener("click", () => openDrill(el.dataset.agent)));
-}
-
-// —— 子个体会话（下钻视图）：派发单 + 该个体的任务/实时流/工具轨迹/回执 ——
-function openDrill(agent) {
-  S.drill = agent;
-  renderRight();
-  // 派发单懒加载：存储事件 type=dispatch 且 to=该个体（含目标/验收/边界契约）
-  if (!S.dispatches.some((d) => d.to === agent)) {
-    api.sessionEvents(S.sessionId).then((evs) => {
-      S.dispatches = (evs ?? []).filter((e) => e.type === "dispatch" && e.to);
-      renderRight();
-    }).catch(() => {});
-  }
-}
-
-function renderAgentDrill(body) {
-  const agent = S.drill;
-  const nodes = (S.graph?.nodes ?? []).filter((n) => n.agentIdentifier === agent);
-  const dispatch = S.dispatches.find((d) => d.to === agent);
-  const live = S.live.units[agent];
-  const think = S.live.unitThinking[agent];
-  const tools = S.live.toolCalls.filter((c) => c.agentId === agent);
-  const reports = S.reports.filter((r) => r.agent === agent);
-  $("rp-count").textContent = `@${agent}`;
-  let html = `<button class="rp-back" id="rp-back">‹ 返回任务总览</button>`;
-  // 派发单（任务契约：目标 / 验收 / 边界）
-  const dp = dispatch?.payload ?? null;
-  html += `<div class="rp-section">派发单</div><div class="task-card active">
-    <div class="task-top"><span class="task-agent">@${esc(agent)}</span>
-      ${nodes[0] ? `<span class="task-status st-${esc(nodes[0].status ?? "pending")}">${ST_LABELS[nodes[0].status] ?? ""}</span>` : ""}</div>
-    ${dp?.goal ? `<div class="task-title">${esc(dp.goal)}</div>` : nodes[0]?.objective ? `<div class="task-title">${esc(nodes[0].objective)}</div>` : ""}
-    ${dp?.acceptance?.length ? `<div class="task-deps">验收：${esc(dp.acceptance.join("；"))}</div>` : ""}
-    ${dp?.boundary ? `<div class="task-deps">边界：范围内 ${esc((dp.boundary.inScope ?? []).join("、") || "—")}；禁止 ${esc((dp.boundary.forbidden ?? []).join("、") || "—")}</div>` : ""}
-    ${!dp && nodes[0] ? `<div class="task-obj">${esc(nodes[0].objective ?? "")}</div>` : ""}
-  </div>`;
-  // 实时输出 / 思维链（运行中）
-  if (live || think) {
-    html += `<div class="rp-section">实时会话</div><div class="unit-card">
-      <div class="unit-head"><span class="spinner"></span>@${esc(agent)}</div>
-      ${think ? `<div class="unit-text" style="color:var(--text-faint)">${esc(think)}</div>` : ""}
-      ${live ? `<div class="unit-text">${esc(live)}</div>` : ""}
-    </div>`;
-  }
-  // 该个体的工具执行轨迹
-  if (tools.length) {
-    html += `<div class="rp-section">工具轨迹</div>`;
-    for (const t of tools) {
-      html += `<div class="tool-row"><span class="tool-name">${esc(t.tool)}</span>
-        <span class="tool-status"><span class="${t.status}">${t.status === "ok" ? "✓" : t.status === "error" ? "✗" : "…"} ${t.durationMs ? `${(t.durationMs / 1000).toFixed(1)}s` : ""}</span></span>
-        <span class="tool-summary">${esc(t.summary ?? "")}</span></div>`;
-    }
-  }
-  // 回执（本轮结论 + 置信度）
-  if (reports.length) {
-    html += `<div class="rp-section">回执</div>`;
-    for (const r of reports) {
-      html += `<div class="unit-card" style="border-color:var(--border);background:var(--panel)">
-        <div class="unit-head" style="color:var(--ok)">✓ 置信 ${r.confidence.toFixed(2)}</div>
-        <div class="unit-text" style="max-height:none">${esc(r.summary)}</div>
-      </div>`;
-    }
-  }
-  if (!live && !think && !tools.length && !reports.length && !dp) {
-    html += `<div class="rp-empty">暂无该个体的执行记录（派发后此处展示其任务与输出）</div>`;
-  }
-  body.innerHTML = html;
-  $("rp-back").addEventListener("click", () => { S.drill = null; renderRight(); });
+    el.addEventListener("click", () => openUnitView(el.dataset.agent)));
 }
 
 // ────────────────────────────── 输入区上下文芯片 ──────────────────────────────
@@ -749,18 +773,21 @@ function currentWorkspace() {
   return S.workspace;
 }
 
-const EFFORT_LABELS = { default: "思考：默认", low: "思考：低", medium: "思考：中", high: "思考：高" };
 
 function renderChips() {
   const ws = currentWorkspace();
-  $("chip-ws").innerHTML = `<span class="chip-label">工作目录</span>${ws ? esc(basename(ws)) : "默认"}`;
+  $("chip-ws").innerHTML = `📂 ${ws ? `<b>${esc(basename(ws))}</b>` : "不使用工作空间"}`;
   const t = S.target;
   $("chip-target").innerHTML = t?.mode === "single"
     ? `<span class="chip-label">智能体</span>@${esc(t.name || t.id)}`
     : `<span class="chip-label">组</span>${esc(groupName(t?.id ?? "default"))}`;
+  // 生效模型：组/个体显式指定 > 生效档案的默认模型（与控制台「模型设置」一致）
   const mv = currentModelValue();
-  $("chip-model").innerHTML = `<span class="chip-label">模型</span>${mv ? esc(mv.includes("/") ? mv.split("/").pop() : (S.profiles.find((p) => p.id === mv)?.name ?? mv)) : "默认"}`;
-  $("chip-mode").textContent = EFFORT_LABELS[S.effort] ?? EFFORT_LABELS.default;
+  const activeProfile = S.profiles.find((p) => p.id === S.activeProfileId);
+  const shown = mv
+    ? (mv.includes("/") ? mv.split("/").pop() : (S.profiles.find((p) => p.id === mv)?.name ?? mv))
+    : (activeProfile?.model || activeProfile?.name || "默认");
+  $("chip-model").innerHTML = `<span class="chip-label">模型</span><b>${esc(shown)}</b>`;
 }
 
 // —— 弹出菜单骨架：统一开合、点外即收 ——
@@ -808,6 +835,7 @@ async function refreshContext() {
     S.groups = groups.groups ?? [];
     S.singles = singles.singles ?? [];
     S.profiles = profiles.profiles ?? [];
+    S.activeProfileId = profiles.active ?? null;
     S.workspace = String(ws?.workspace ?? "");
     const name = S.target?.mode === "single" ? `智能体 · @${S.target.name || S.target.id}` : `组 · ${groupName(S.target?.id ?? "default")}`;
     $("target-chip").innerHTML = `对话对象：<b>${esc(name)}</b>`;
@@ -816,35 +844,64 @@ async function refreshContext() {
 }
 
 function wsMenu(pop) {
-  pop.appendChild(popTitle("工作目录（干活的项目，智能体 / 智能体组通用）"));
-  const input = document.createElement("input");
-  input.className = "pop-input";
-  input.value = currentWorkspace();
-  input.placeholder = "/path/to/project（目录须已存在）";
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); e.stopPropagation(); });
-  pop.appendChild(input);
-  const save = async (clear = false) => {
-    try {
-      const r = await api.setWorkspace(clear ? "" : input.value.trim());
-      S.workspace = String(r?.workspace ?? "");
-      closePopover();
-      renderChips();
-    } catch (e) { alertErr(e); }
-  };
-  const btn = document.createElement("button");
-  btn.className = "pop-save";
-  btn.textContent = "保存工作目录";
-  btn.addEventListener("click", () => save(false));
-  pop.appendChild(btn);
-  const reset = document.createElement("button");
-  reset.className = "pop-save";
-  reset.style.marginLeft = "8px";
-  reset.style.borderColor = "var(--border)";
-  reset.style.color = "var(--text-dim)";
-  reset.style.background = "transparent";
-  reset.textContent = "恢复默认";
-  reset.addEventListener("click", () => save(true));
-  pop.appendChild(reset);
+  // 图一口径：最近工作空间 / 打开本地文件夹 / 不使用工作空间
+  let recents = [];
+  try { recents = JSON.parse(localStorage.getItem("exm.wsRecent") ?? "[]"); } catch { recents = []; }
+  recents = recents.filter((p) => p && p !== currentWorkspace());
+
+  if (currentWorkspace()) {
+    pop.appendChild(popItem({ title: `📂 ${basename(currentWorkspace())}`, sub: currentWorkspace(), current: true, onclick: closePopover }));
+  }
+  for (const p of recents) {
+    pop.appendChild(popItem({ title: `📂 ${basename(p)}`, sub: p, onclick: async () => { closePopover(); await applyWorkspace(p); } }));
+  }
+  // 打开本地文件夹：桌面端原生目录选择器（浏览器调试回退为手输）
+  pop.appendChild(popItem({
+    title: "打开本地文件夹",
+    onclick: async () => {
+      try {
+        const picked = await window.__TAURI__?.dialog?.open({ directory: true, multiple: false });
+        const path = Array.isArray(picked) ? picked[0] : picked;
+        if (path) { closePopover(); await applyWorkspace(String(path)); }
+        else closePopover();
+      } catch {
+        // 非桌面环境：回退为手输路径
+        pop.querySelectorAll(".pop-input,.pop-save").forEach((e) => e.remove());
+        manualInput(pop);
+      }
+    },
+  }));
+  pop.appendChild(popItem({ title: "不使用工作空间", sub: "回退全局数据目录", onclick: async () => { closePopover(); await applyWorkspace(""); } }));
+
+  function manualInput(container) {
+    const input = document.createElement("input");
+    input.className = "pop-input";
+    input.placeholder = "/path/to/project（目录须已存在）";
+    container.appendChild(input);
+    const btn = document.createElement("button");
+    btn.className = "pop-save";
+    btn.textContent = "保存工作目录";
+    btn.addEventListener("click", () => applyWorkspace(input.value.trim()));
+    container.appendChild(btn);
+  }
+}
+
+function rememberWorkspace(path) {
+  try {
+    const list = JSON.parse(localStorage.getItem("exm.wsRecent") ?? "[]").filter((p) => p !== path);
+    list.unshift(path);
+    localStorage.setItem("exm.wsRecent", JSON.stringify(list.slice(0, 5)));
+  } catch { /* 忽略 */ }
+}
+
+async function applyWorkspace(path) {
+  try {
+    const r = await api.setWorkspace(path);
+    S.workspace = String(r?.workspace ?? "");
+    if (path) rememberWorkspace(path);
+    closePopover();
+    renderChips();
+  } catch (e) { alertErr(e); }
 }
 
 function targetMenu(pop) {
@@ -869,9 +926,10 @@ function targetMenu(pop) {
 }
 
 function modelMenu(pop) {
+  // 图二口径：模型 + 推理等级 两行式合并菜单
   pop.appendChild(popTitle("模型（档案 / 档案内模型）"));
   const current = currentModelValue();
-  pop.appendChild(popItem({ title: "跟随全局生效档案", current: !current, onclick: async () => { closePopover(); await setModel(""); } }));
+  pop.appendChild(popItem({ title: "跟随生效档案", sub: activeModelName(), current: !current, onclick: async () => { closePopover(); await setModel(""); } }));
   for (const p of S.profiles) {
     pop.appendChild(popItem({ title: p.name, sub: `${p.id} · 默认 ${p.model || "未指定"}`, current: current === p.id, onclick: async () => { closePopover(); await setModel(p.id); } }));
     for (const m of p.models ?? []) {
@@ -879,6 +937,32 @@ function modelMenu(pop) {
       pop.appendChild(popItem({ title: m.model, sub: `${p.name}${m.vision ? " · 视觉" : ""}${m.audio ? " · 语音" : ""}`, current: current === v, onclick: async () => { closePopover(); await setModel(v); } }));
     }
   }
+  pop.appendChild(popTitle("推理等级（全局生效）"));
+  const items = [
+    ["default", "端点默认", "不向模型下发推理强度参数"],
+    ["low", "低", "快速响应、节省 token（reasoning: low）"],
+    ["medium", "中", "平衡模式（reasoning: medium）"],
+    ["high", "高", "深度推理，复杂问题更稳（reasoning: high）"],
+  ];
+  for (const [v, title, sub] of items) {
+    pop.appendChild(popItem({
+      title, sub, current: S.effort === v,
+      onclick: () => {
+        S.effort = v;
+        try { localStorage.setItem("exm.effort", v); } catch { /* 忽略 */ }
+        api.setEffort(v === "default" ? "" : v).catch(alertErr);
+        renderChips();
+      },
+    }));
+  }
+}
+
+// 当前实际生效的模型名（组/个体覆盖 > 生效档案默认）
+function activeModelName() {
+  const mv = currentModelValue();
+  if (mv) return mv.includes("/") ? mv.split("/").pop() : (S.profiles.find((p) => p.id === mv)?.name ?? mv);
+  const p = S.profiles.find((x) => x.id === S.activeProfileId);
+  return p ? (p.model || p.name) : "默认";
 }
 
 async function setModel(value) {
@@ -894,29 +978,6 @@ async function setModel(value) {
     }
     renderChips();
   } catch (e) { alertErr(e); }
-}
-
-function effortMenu(pop) {
-  pop.appendChild(popTitle("模型思考强度（reasoning effort，全局生效）"));
-  const items = [
-    ["default", "端点默认", "不向模型下发推理强度参数，由端点自行决定"],
-    ["low", "低", "快速响应、节省 token（reasoning: low）"],
-    ["medium", "中", "平衡模式（reasoning: medium）"],
-    ["high", "高", "深度推理，复杂问题更稳（reasoning: high）"],
-  ];
-  for (const [v, title, sub] of items) {
-    pop.appendChild(popItem({
-      title, sub, current: S.effort === v,
-      onclick: () => {
-        S.effort = v;
-        try { localStorage.setItem("exm.effort", v); } catch { /* 忽略 */ }
-        // 网关进程级生效；重启后由启动时的重设逻辑恢复
-        api.setEffort(v === "default" ? "" : v).catch(alertErr);
-        closePopover();
-        renderChips();
-      },
-    }));
-  }
 }
 
 // —— 附件（图片，data URL 随本轮进入规划）——
@@ -965,6 +1026,7 @@ async function openConsole() {
 }
 
 async function init() {
+  $("btn-back").addEventListener("click", exitUnitView);
   $("btn-new").addEventListener("click", () => newSession().catch(alertErr));
   $("btn-send").addEventListener("click", send);
   $("btn-stop").addEventListener("click", () => S.sessionId && api.stop(S.sessionId).catch(alertErr));
@@ -982,7 +1044,6 @@ async function init() {
   $("chip-ws").addEventListener("click", () => openPopover(wsMenu));
   $("chip-target").addEventListener("click", () => openPopover(targetMenu));
   $("chip-model").addEventListener("click", () => openPopover(modelMenu));
-  $("chip-mode").addEventListener("click", () => openPopover(effortMenu));
   $("btn-plus").addEventListener("click", () => $("file-pick").click());
   $("file-pick").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
   document.addEventListener("click", (e) => {

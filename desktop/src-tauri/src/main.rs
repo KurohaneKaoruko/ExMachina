@@ -58,6 +58,7 @@ fn main() {
     tauri::Builder::default()
         .manage(GatewayChild(Mutex::new(None)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {

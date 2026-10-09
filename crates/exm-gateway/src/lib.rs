@@ -1065,6 +1065,9 @@ struct ChatBody {
     /// 本轮模式（思考模式）：direct = 强制 L0 直答；full = 强制拆解派发。缺省 = 跟随指挥体规划
     #[serde(default)]
     mode: Option<String>,
+    /// 子代理直聊目标：非空 = 本轮绕过编排，直接与该子个体对话（桌面端子代理会话）
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Json<ChatBody>) -> impl IntoResponse {
@@ -1084,8 +1087,14 @@ async fn chat(State(st): State<AppState>, Path(id): Path<String>, Json(body): Js
     if let Some(mode) = &body.mode {
         exm_core::orchestrator::set_session_mode(&id, mode);
     }
+    let agent = body.agent.clone();
     tokio::spawn(async move {
-        if let Err(e) = core.chat(&id, &text).await {
+        let result = match &agent {
+            // 子代理直聊：绕过编排，与该子个体单独对话（用户可见派发任务与传回内容，可直接追问）
+            Some(a) => core.orchestrator().unit_direct_round(&id, a, &text).await,
+            None => core.chat(&id, &text).await,
+        };
+        if let Err(e) = result {
             let _ = core.events.send(CoreEvent {
                 kind: "run.error".into(),
                 session_id: id.clone(),

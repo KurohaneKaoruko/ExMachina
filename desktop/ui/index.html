@@ -25,6 +25,7 @@
       <main id="main">
         <header id="topbar">
           <button id="btn-side" class="icon-btn" title="显示 / 收起侧栏">☰</button>
+          <button id="btn-back" class="icon-btn hidden" title="返回主会话">‹</button>
           <div id="target-chip" class="target-chip">…</div>
           <div class="top-actions">
             <span id="run-state" class="run-state hidden"><span class="spinner"></span>运行中</span>
@@ -44,10 +45,9 @@
             <textarea id="input" rows="1" placeholder="给 EXMACHINA 发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
             <div class="composer-bar">
               <button id="btn-plus" class="btn-plus" title="添加附件">＋</button>
-              <button id="chip-ws" class="chip" title="工作目录">…</button>
+              <button id="chip-ws" class="chip" title="工作目录（项目）">…</button>
               <button id="chip-target" class="chip" title="切换智能体 / 智能体组">…</button>
-              <button id="chip-model" class="chip" title="模型">…</button>
-              <button id="chip-mode" class="chip" title="思考强度">…</button>
+              <button id="chip-model" class="chip" title="模型与推理等级">…</button>
               <span class="bar-spacer"></span>
               <button id="btn-send" class="btn-send" title="发送">➤</button>
             </div>
