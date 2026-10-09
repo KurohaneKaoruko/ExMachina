@@ -450,19 +450,45 @@ pub async fn execute_shell_with(
     // Windows：收进作业对象（内存/进程数上限 + 句柄关闭即整树终止）。
     // 句柄活到函数末尾，Drop 即关 —— 命令结束后不留游离子进程。
     let _job = attach_job(&child, opts);
-    // 管道读取放入独立任务：超时路径可 abort，避免残留读端拖住运行时收尾
+    // 管道读取放入独立任务：增量写入共享缓冲（而非 read_to_end 等闭流）。
+    // 为什么：超时强杀后可能残留孙进程占着管道写端（如 sh -c "x; sleep 30" 杀不掉 sleep），
+    // 等 EOF 会永远等不到——增量缓冲让超时路径能立刻快照「已产出」的部分输出。
+    // 1MB 软上限防病态输出撑爆内存（末尾文本截断策略不变）。
+    const OUTPUT_BUF_CAP: usize = 1024 * 1024;
+    let out_buf: Arc<parking_lot::Mutex<Vec<u8>>> = Arc::default();
+    let err_buf: Arc<parking_lot::Mutex<Vec<u8>>> = Arc::default();
     let out_task = child.stdout.take().map(|mut s| {
+        let buf = out_buf.clone();
         tokio::spawn(async move {
-            let mut b = Vec::new();
-            let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut b).await;
-            b
+            let mut chunk = [0u8; 8192];
+            loop {
+                match tokio::io::AsyncReadExt::read(&mut s, &mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut b = buf.lock();
+                        if b.len() < OUTPUT_BUF_CAP {
+                            b.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                }
+            }
         })
     });
     let err_task = child.stderr.take().map(|mut s| {
+        let buf = err_buf.clone();
         tokio::spawn(async move {
-            let mut b = Vec::new();
-            let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut b).await;
-            b
+            let mut chunk = [0u8; 4096];
+            loop {
+                match tokio::io::AsyncReadExt::read(&mut s, &mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut b = buf.lock();
+                        if b.len() < OUTPUT_BUF_CAP {
+                            b.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                }
+            }
         })
     });
 
@@ -482,28 +508,43 @@ pub async fn execute_shell_with(
                         .await;
                 }
             }
-            // 有界回收：等待被杀进程退出，最长 3s——超时路径绝不无限阻塞
+            // 有界回收：先强杀（POSIX 立即 SIGKILL；Windows 上方 taskkill 已收进程树），
+            // 再等被杀进程退出最长 3s——超时路径绝不无限阻塞。
+            // 为什么必须显式杀：kill_on_drop 只在 Child 被 drop 时才生效。
+            child.start_kill();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+            // 快照已读输出：增量读者持续写入共享缓冲，即使残留孙进程占着管道写端
+            // （EOF 永不到来），超时前已产出的部分照样可诊断——长构建/测试卡在哪一步不再黑箱。
             if let Some(t) = out_task {
                 t.abort();
             }
             if let Some(t) = err_task {
                 t.abort();
             }
-            ToolResult::err(format!("命令超时（{timeout_secs}s）已终止"))
+            let out_lock = out_buf.lock();
+            let err_lock = err_buf.lock();
+            let partial = String::from_utf8_lossy(&out_lock);
+            let partial_err = String::from_utf8_lossy(&err_lock);
+            let mut msg = format!(
+                "命令超时（{timeout_secs}s）已终止；终止前输出：\n{}",
+                partial.chars().take(2000).collect::<String>()
+            );
+            if !partial_err.trim().is_empty() {
+                msg.push_str(&format!("\n[stderr] {}", partial_err.chars().take(1000).collect::<String>()));
+            }
+            ToolResult::err(msg)
         }
         Ok(Err(e)) => ToolResult::err(format!("命令执行失败: {e}")),
         Ok(Ok(status)) => {
-            let stdout = match out_task {
-                Some(t) => t.await.unwrap_or_default(),
-                None => Vec::new(),
-            };
-            let stderr = match err_task {
-                Some(t) => t.await.unwrap_or_default(),
-                None => Vec::new(),
-            };
-            let text = String::from_utf8_lossy(&stdout).to_string();
-            let err = String::from_utf8_lossy(&stderr).to_string();
+            // 正常退出：管道已闭（EOF），读者任务自然收尾后取全量输出
+            if let Some(t) = out_task {
+                let _ = t.await;
+            }
+            if let Some(t) = err_task {
+                let _ = t.await;
+            }
+            let text = String::from_utf8_lossy(&out_buf.lock()).to_string();
+            let err = String::from_utf8_lossy(&err_buf.lock()).to_string();
             let mut text = text.chars().take(8000).collect::<String>();
             if !err.trim().is_empty() {
                 text.push_str("\n[stderr] ");
@@ -3419,5 +3460,46 @@ mod memory_tool_tests {
         let no_body = r.gw.tool_memory_write("orch-1", &serde_json::json!({ "kind": "fact", "title": "t" }));
         assert!(!no_body.ok, "缺 body 应拒绝");
         let _ = std::fs::remove_dir_all(&r.dir);
+    }
+}
+
+// ---------------------------------------------------------------- 终端超时诊断测试
+
+#[cfg(test)]
+mod timeout_output_tests {
+    use super::*;
+
+    /// 超时强杀后必须带回终止前的部分输出（回归：超时只报「已终止」、输出全丢，
+    /// 长构建/测试卡死时无法诊断卡在哪一步）
+    #[tokio::test]
+    async fn 终端超时_部分输出随错误带回() {
+        let root = std::env::temp_dir();
+        // 先产出一段标记输出，再挂死等强杀
+        let cmd = if cfg!(windows) {
+            "echo out-start & ping -n 30 127.0.0.1".to_string()
+        } else {
+            "printf out-start; sleep 30".to_string()
+        };
+        let started = std::time::Instant::now();
+        let r = execute_shell_command_timed(&root, &cmd, 1).await;
+        let elapsed = started.elapsed();
+        assert!(!r.ok, "挂死命令应失败");
+        let err = r.error.unwrap_or_default();
+        assert!(err.contains("超时"), "应为超时错误: {err}");
+        assert!(
+            err.contains("out-start"),
+            "超时错误应包含终止前的部分输出，实际: {err}"
+        );
+        assert!(elapsed < std::time::Duration::from_secs(10), "应在时限附近快速返回，实际 {elapsed:?}");
+    }
+
+    /// 正常路径不受影响：快速完成的命令照常返回成功输出
+    #[tokio::test]
+    async fn 终端超时_正常完成不受影响() {
+        let root = std::env::temp_dir();
+        let cmd = if cfg!(windows) { "echo quick-ok" } else { "echo quick-ok" };
+        let r = execute_shell_command_timed(&root, cmd, 15).await;
+        assert!(r.ok, "快速命令应成功");
+        assert!(r.output.contains("quick-ok"), "输出应完整: {}", r.output);
     }
 }

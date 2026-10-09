@@ -1553,7 +1553,21 @@ impl Orchestrator {
             )),
         ];
         // 收束阶段：输出为用户面最终结果，流式可见
-        self.call_orch_stream(session_id, &messages, true).await
+        match self.call_orch_stream(session_id, &messages, true).await {
+            Ok(text) => Ok(text),
+            Err(e) => {
+                // 降级路径：候选链耗尽 / 网络断等导致收束 LLM 不可用时，不把本轮直接判死——
+                // 各节点已回流的真实成果（摘要 / 阻塞项 / 状态）改用确定性聚合收口，
+                // 失败原因显式注入残余未知段，用户仍能拿到可执行的结构化结论。
+                eprintln!("[orchestrator] 收束 LLM 调用失败，降级为结构化回流聚合: {e}");
+                self.emit(
+                    session_id,
+                    "converge.fallback",
+                    serde_json::json!({ "reason": e.to_string() }),
+                );
+                Ok(fallback_converge_text(plan, reports, graph, &e.to_string()))
+            }
+        }
     }
 
     async fn call_orch_stream(
@@ -2038,6 +2052,63 @@ fn sanitize_adaptation(text: &str) -> String {
 
 // ---------------------------------------------------------------- 收束文本 → 陈述序列
 
+/// 收束降级文本：收束 LLM 不可用时，把各节点回流按固定结构聚合为最终交付。
+/// 为什么不直接报错：调度已执行完毕、子个体回流已落库，因「收束这一跳」失败而丢弃
+/// 全部成果太亏——降级输出保留节点状态、摘要、阻塞项与失败原因，轮次仍有可执行结论。
+fn fallback_converge_text(
+    plan: &OrchestratorPlan,
+    reports: &Reports,
+    graph: &TaskGraphModel,
+    reason: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("## 任务边界".into());
+    lines.push(format!("- 目标：{}", plan.goal));
+    if !plan.acceptance.is_empty() {
+        lines.push(format!("- 验收：{}", plan.acceptance.join("；")));
+    }
+    lines.push(String::new());
+    lines.push("## 节点回流".into());
+    let (mut done, mut blocked, mut failed) = (0usize, 0usize, 0usize);
+    for n in graph.list() {
+        match n.status {
+            TaskStatus::Done => done += 1,
+            TaskStatus::Failed | TaskStatus::Cancelled => failed += 1,
+            TaskStatus::Blocked => blocked += 1,
+            _ => {}
+        }
+        let Some(r) = reports.get(&n.id) else {
+            lines.push(format!("- {} {}({})：无回流", n.id, n.title, n.agent_identifier));
+            continue;
+        };
+        let mut line = format!(
+            "- {} {}({}) [{}]：{}",
+            n.id,
+            n.title,
+            n.agent_identifier,
+            n.status.label(),
+            r.summary.chars().take(400).collect::<String>()
+        );
+        for b in &r.blockers {
+            line.push_str(&format!("（阻塞：{}；解除条件：{}）", b.reason, b.unblock_condition));
+        }
+        lines.push(line);
+    }
+    lines.push(String::new());
+    lines.push("## 降级说明（残余未知）".into());
+    lines.push(format!(
+        "- 收束 LLM 调用失败（{reason}），本轮结论为各节点回流的确定性聚合，未经主智能体综合裁决。"
+    ));
+    lines.push("- 恢复模型通道后可重新发起同类任务以获得综合收束。".into());
+    lines.push(String::new());
+    lines.push("## 最终交付".into());
+    lines.push(format!(
+        "- 节点统计：完成 {done}、受阻/待裁决 {blocked}、失败 {failed}，共 {} 个节点。",
+        graph.list().len()
+    ));
+    lines.join("\n")
+}
+
 /// 最近窗口消息渲染为文本（新→旧输入，按时间正序输出）
 fn render_recent(msgs: &[crate::types::ChatMessage]) -> String {
     render_recent_hlp(&msgs.iter().collect::<Vec<_>>())
@@ -2097,4 +2168,131 @@ pub fn text_to_statements(text: &str) -> Vec<Statement> {
         out.push(Statement::report("（收束输出为空）"));
     }
     out
+}
+
+// ---------------------------------------------------------------- 收束降级测试
+
+#[cfg(test)]
+mod fallback_converge_tests {
+    use super::*;
+    use crate::task::{NewNode, TaskGraphModel};
+    use crate::types::{BlockerItem, SyncReport, SyncStatus, TaskStatus};
+
+    fn report(node: &str, agent: &str, summary: &str, status: SyncStatus, blockers: Vec<BlockerItem>) -> SyncReport {
+        SyncReport {
+            source_agent: agent.into(),
+            task_node_id: node.into(),
+            status,
+            statements: vec![Statement::report(summary)],
+            summary: summary.into(),
+            evidence: vec![],
+            risks: vec![],
+            blockers,
+            conflicts: None,
+            next_suggestion: Default::default(),
+            confidence: 0.8,
+        }
+    }
+
+    /// 收束 LLM 失败的降级聚合：节点状态 / 摘要 / 阻塞项 / 失败原因必须全部在场，
+    /// 轮次有产出地收束而非把已完成的调度成果整体丢弃
+    #[test]
+    fn 收束降级_回流聚合完整在场() {
+        let plan = OrchestratorPlan {
+            route_level: RouteLevel::L2,
+            playbook: None,
+            goal: "审计存储层一致性".into(),
+            boundary: crate::types::DispatchBoundary { in_scope: vec![], forbidden: vec![] },
+            acceptance: vec!["结论带证据等级".into()],
+            nodes: vec![],
+            final_answer: None,
+        };
+        let mut graph = TaskGraphModel::new("ses-fb");
+        graph.add_node(
+            NewNode {
+                agent_identifier: "scout-agent".into(),
+                title: "背景补齐".into(),
+                objective: "补齐背景".into(),
+                acceptance: vec![],
+                priority: Priority::P1,
+            },
+            Some("T1".into()),
+            &[],
+        );
+        graph.add_node(
+            NewNode {
+                agent_identifier: "coding-agent".into(),
+                title: "实现校验".into(),
+                objective: "实现校验".into(),
+                acceptance: vec![],
+                priority: Priority::P1,
+            },
+            Some("T2".into()),
+            &["T1".to_string()],
+        );
+        graph.set_status("T1", TaskStatus::Done);
+        graph.set_status("T2", TaskStatus::Blocked);
+
+        let mut reports = Reports::new();
+        reports.insert(
+            "T1".into(),
+            report("T1", "scout-agent", "背景事实已补齐：存储层共 3 个入口", SyncStatus::Done, vec![]),
+        );
+        reports.insert(
+            "T2".into(),
+            report(
+                "T2",
+                "coding-agent",
+                "写入路径校验缺失",
+                SyncStatus::Blocked,
+                vec![BlockerItem {
+                    reason: "上游事实不足".into(),
+                    unblock_condition: "先完成 T1".into(),
+                }],
+            ),
+        );
+
+        let text = fallback_converge_text(&plan, &reports, &graph, "全部模型候选失败：网络不可达");
+        for needle in [
+            "审计存储层一致性",
+            "背景事实已补齐",
+            "写入路径校验缺失",
+            "上游事实不足",
+            "先完成 T1",
+            "全部模型候选失败：网络不可达",
+            "完成 1",
+            "受阻/待裁决 1",
+        ] {
+            assert!(text.contains(needle), "降级文本应含「{needle}」\n---\n{text}");
+        }
+    }
+
+    /// 无回流的节点（执行器异常等）也要显式标注，不得静默消失
+    #[test]
+    fn 收束降级_无回流节点显式标注() {
+        let plan = OrchestratorPlan {
+            route_level: RouteLevel::L1,
+            playbook: None,
+            goal: "单节点任务".into(),
+            boundary: crate::types::DispatchBoundary { in_scope: vec![], forbidden: vec![] },
+            acceptance: vec![],
+            nodes: vec![],
+            final_answer: None,
+        };
+        let mut graph = TaskGraphModel::new("ses-fb2");
+        graph.add_node(
+            NewNode {
+                agent_identifier: "solo-agent".into(),
+                title: "独立执行".into(),
+                objective: "独立执行".into(),
+                acceptance: vec![],
+                priority: Priority::P1,
+            },
+            Some("T1".into()),
+            &[],
+        );
+        let text = fallback_converge_text(&plan, &Reports::new(), &graph, "收束模型不可用");
+        assert!(text.contains("T1 独立执行(solo-agent)：无回流"), "无回流节点应显式标注：\n{text}");
+        assert!(text.contains("降级说明"), "应包含降级说明段");
+    }
 }

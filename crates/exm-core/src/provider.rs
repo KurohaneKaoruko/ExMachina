@@ -147,6 +147,51 @@ mod inline_think_tests {
     }
 }
 
+// ---------------------------------------------------------------- SSE 流解析
+
+/// SSE 字节流 → 完整行的增量解码器。
+/// 为什么按字节攒、只在完整行上解码：网络 chunk 边界可能落在多字节 UTF-8 字符中间
+/// （中文 / emoji 常见），逐 chunk `from_utf8_lossy` 会把被切断的字符替换成 U+FFFD，
+/// 流式正文出现乱码。行边界（`\n`）不可能出现在多字节字符内部，因此「完整行」
+/// 一定是合法字符边界，此时解码才安全；残缺行（半包）留在缓冲等下一块拼齐。
+pub(crate) struct SseLineDecoder {
+    buf: Vec<u8>,
+}
+
+impl SseLineDecoder {
+    pub(crate) fn new() -> Self {
+        SseLineDecoder { buf: Vec::new() }
+    }
+
+    /// 喂入一段原始字节，返回其中所有完整行（trim 后非空；不含行尾 `\n` / `\r`）
+    pub(crate) fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.buf.extend_from_slice(chunk);
+        let mut lines = Vec::new();
+        while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
+            // 到 \n 为止是完整行：多字节字符不会被行尾截断，此处解码不产生替换符
+            let line: Vec<u8> = self.buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line[..line.len() - 1]);
+            let line = line.trim_end_matches('\r').trim();
+            if !line.is_empty() {
+                lines.push(line.to_string());
+            }
+        }
+        lines
+    }
+
+    /// 流结束冲刷：残留半行（对端未发换行即断流）按 lossy 解码兜底返回，
+    /// 让尾部帧也有机会参与解析（宁可尾帧降级也不静默丢失）
+    pub(crate) fn flush(&mut self) -> Option<String> {
+        if self.buf.is_empty() {
+            return None;
+        }
+        let rest = std::mem::take(&mut self.buf);
+        let line = String::from_utf8_lossy(&rest);
+        let line = line.trim_end_matches('\r').trim();
+        (!line.is_empty()).then(|| line.to_string())
+    }
+}
+
 /// 模型发起的一次工具调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -1138,190 +1183,265 @@ impl LlmProvider for OpenAiCompatibleProvider {
         if self.keys.is_empty() {
             anyhow::bail!("未配置 API Key（Mock 通道不应使用真实 Provider）");
         }
-        let resp = loop {
-            let key = self.key_for(&hint);
-            let r = self
-                .build_request(&key, &req.model, true, self.body(&req, true))
-                .send()
-                .await
-                .map_err(|e| anyhow::anyhow!("LLM 流式请求失败: {e}"))?;
-            let status = r.status().as_u16();
-            if !(200..300).contains(&status) {
+        // 限额轮转限次（与 chat() 的 for 上界对齐）：最多每把 Key 尝试一次。
+        // 此前是无限 `loop`——全部 Key 都限额时 rotate 永久轮转，调用方（节点执行 /
+        // 会话轮次）被无限挂死，编排并发槽随之耗尽。这里改为有界轮转并把最后状态报出来。
+        let resp = {
+            let mut last_quota: Option<u16> = None;
+            let mut ok: Option<reqwest::Response> = None;
+            for _ in 0..self.keys.len().max(1) {
+                let key = self.key_for(&hint);
+                let r = self
+                    .build_request(&key, &req.model, true, self.body(&req, true))
+                    .send()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LLM 流式请求失败: {e}"))?;
+                let status = r.status().as_u16();
+                if (200..300).contains(&status) {
+                    ok = Some(r);
+                    break;
+                }
                 let text = r.text().await.unwrap_or_default();
                 if Self::is_quota_failure(status, &text) && self.keys.len() > 1 {
+                    last_quota = Some(status);
                     self.rotate_index(&hint);
-                    continue;
+                    continue; // 限额 → 切换下一把 Key 并粘住
                 }
                 anyhow::bail!("LLM 流式请求失败 {status}: {}", text.chars().take(300).collect::<String>());
             }
-            break r;
+            match ok {
+                Some(r) => r,
+                None => anyhow::bail!(
+                    "全部 {} 把 API Key 均限额（最后状态 HTTP {}）：流式请求不可用，请稍后重试或补充 Key",
+                    self.keys.len(),
+                    last_quota.unwrap_or(0)
+                ),
+            }
         };
 
-        let mut acc = String::new();
-        let mut reasoning_acc = String::new();
-        let mut buf = String::new();
-        // 内联思维链分流（MiniMax-M1 等把思考放 <think>…</think> 正文内）：0=未判定 1=思考中 2=正文
-        let mut think_state: u8 = 0;
-        let mut think_buf = String::new();
-        // 用量统计（三协议：openai 末块 usage / anthropic message_start+message_delta / gemini usageMetadata）
-        let mut usage_prompt: u64 = 0;
-        let mut usage_completion: u64 = 0;
-        // 工具调用流式分片组装：openai/anthropic 按索引拼增量，gemini 为整块
-        let mut call_frags: Vec<(String, String, String)> = Vec::new(); // (id, name, arguments-json)
-        let mut gemini_calls: Vec<ToolCall> = Vec::new();
+        // 流组装：逐帧解析状态收拢在 StreamAssembler，主循环只负责「读字节 → 出完整行」
+        let mut asm = StreamAssembler::new(self);
+        let mut sse = SseLineDecoder::new();
+        let mut done = false;
         let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
+        while !done {
+            let Some(chunk) = stream.next().await else { break };
             let bytes = chunk?;
-            buf.push_str(&String::from_utf8_lossy(&bytes));
-            while let Some(pos) = buf.find('\n') {
-                let line: String = buf.drain(..=pos).collect();
-                let line = line.trim();
+            for line in sse.feed(&bytes) {
                 if !line.starts_with("data:") {
                     continue;
                 }
                 let payload = line.trim_start_matches("data:").trim();
                 if payload == "[DONE]" {
+                    // 显式结束帧：停止读流。部分端点 [DONE] 后仍会发送杂散帧/保活注释，
+                    // 继续读只会拖长收尾（且可能重复计帧）。
+                    done = true;
                     break;
                 }
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
-                    match self.api_format.as_str() {
-                        "anthropic" => {
-                            let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            if ty == "content_block_start" {
-                                if let Some(block) = v.pointer("/content_block") {
-                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                                        let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                                        while call_frags.len() <= idx {
-                                            call_frags.push((String::new(), String::new(), String::new()));
-                                        }
-                                        call_frags[idx].0 = block.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                                        call_frags[idx].1 = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                                    }
-                                }
-                            } else if ty == "content_block_delta" {
-                                if let Some(d) = v.get("delta") {
-                                    if d.get("type").and_then(|t| t.as_str()) == Some("input_json_delta") {
-                                        let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                                        while call_frags.len() <= idx {
-                                            call_frags.push((String::new(), String::new(), String::new()));
-                                        }
-                                        call_frags[idx].2.push_str(d.get("partial_json").and_then(|p| p.as_str()).unwrap_or(""));
-                                    }
-                                }
-                            }
-                        }
-                        "gemini" => {
-                            if let Some(parts) = v.pointer("/candidates/0/content/parts").and_then(|p| p.as_array()) {
-                                for part in parts {
-                                    if let Some(fc) = part.get("functionCall") {
-                                        gemini_calls.push(ToolCall {
-                                            id: format!("gem_{}", gemini_calls.len()),
-                                            name: fc.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-                                            arguments: fc.get("args").cloned().unwrap_or_else(|| serde_json::json!({})),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some(fcs) = v.pointer("/choices/0/delta/tool_calls").and_then(|c| c.as_array()) {
-                                for tc in fcs {
-                                    let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(call_frags.len() as u64) as usize;
-                                    while call_frags.len() <= idx {
-                                        call_frags.push((String::new(), String::new(), String::new()));
-                                    }
-                                    if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
-                                        call_frags[idx].0 = id.to_string();
-                                    }
-                                    if let Some(nm) = tc.pointer("/function/name").and_then(|x| x.as_str()) {
-                                        call_frags[idx].1 = nm.to_string();
-                                    }
-                                    if let Some(a) = tc.pointer("/function/arguments").and_then(|x| x.as_str()) {
-                                        call_frags[idx].2.push_str(a);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let (text_delta, think_delta) = self.parse_delta(&v);
-                    if let Some(t) = think_delta {
-                        reasoning_acc.push_str(&t);
-                        let _ = tx.send(StreamDelta::Thinking(t));
-                    }
-                    if let Some(d) = text_delta {
-                        // 正文增量先过内联 <think> 分流，再分别入轨
-                        for (is_think, part) in inline_think::route(&mut think_state, &mut think_buf, &d) {
-                            if is_think {
-                                reasoning_acc.push_str(&part);
-                                let _ = tx.send(StreamDelta::Thinking(part));
-                            } else {
-                                acc.push_str(&part);
-                                let _ = tx.send(StreamDelta::Text(part));
-                            }
-                        }
-                    }
-                    // 用量：openai（末块 usage）/ anthropic（message_start 输入）/ gemini
-                    if let Some(u) = v.get("usage") {
-                        let p = u
-                            .get("prompt_tokens")
-                            .or_else(|| u.get("input_tokens"))
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(0);
-                        let c = u
-                            .get("completion_tokens")
-                            .or_else(|| u.get("output_tokens"))
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(0);
-                        if p > 0 {
-                            usage_prompt = p;
-                        }
-                        if c > 0 {
-                            usage_completion = c;
-                        }
-                    }
-                    if let Some(p) = v.pointer("/message/usage/input_tokens").and_then(|x| x.as_u64()) {
-                        usage_prompt = p;
-                    }
-                    if let Some(u) = v.get("usageMetadata") {
-                        if let Some(p) = u.get("promptTokenCount").and_then(|x| x.as_u64()) {
-                            usage_prompt = p;
-                        }
-                        if let Some(c) = u.get("candidatesTokenCount").and_then(|x| x.as_u64()) {
-                            usage_completion = c;
+                    asm.frame(&v, &tx);
+                }
+                // 异常帧（非 JSON）静默跳过：SSE 流中允许注释/心跳，解析失败不应中断整条流
+            }
+        }
+        // 对端未发换行即断流：冲刷残留半行（可能恰好是最后一帧，丢了会缺尾部内容）
+        if !done {
+            if let Some(line) = sse.flush() {
+                if line.starts_with("data:") {
+                    let payload = line.trim_start_matches("data:").trim();
+                    if payload != "[DONE]" {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+                            asm.frame(&v, &tx);
                         }
                     }
                 }
             }
         }
-        // 收尾：未判定的前缀缓冲（不足 "<think>" 长度即结束）或未闭合的思考尾段冲刷
-        if !think_buf.is_empty() {
-            let text = std::mem::take(&mut think_buf);
-            if think_state == 1 {
-                reasoning_acc.push_str(&text);
+        Ok(asm.finish(&tx))
+    }
+}
+
+/// 流式响应组装器：正文 / 思维链累积、内联 `<think>` 分流、用量统计、工具调用分片拼装。
+/// 把原本散在 `stream()` 主循环里的十余个可变局部收拢成状态机——
+/// 主循环只管「字节 → 完整行」，帧处理全部收口在 [`StreamAssembler::frame`]。
+struct StreamAssembler<'a> {
+    provider: &'a OpenAiCompatibleProvider,
+    /// 正文累积（已过内联 <think> 分流）
+    acc: String,
+    /// 思维链累积（原生 reasoning 轨 + 内联 think 轨）
+    reasoning_acc: String,
+    /// 内联思维链分流状态（0=未判定 1=思考中 2=正文）
+    think_state: u8,
+    think_buf: String,
+    usage_prompt: u64,
+    usage_completion: u64,
+    /// 工具调用流式分片组装：openai/anthropic 按索引拼增量，gemini 为整块
+    call_frags: Vec<(String, String, String)>, // (id, name, arguments-json)
+    gemini_calls: Vec<ToolCall>,
+}
+
+impl<'a> StreamAssembler<'a> {
+    fn new(provider: &'a OpenAiCompatibleProvider) -> Self {
+        StreamAssembler {
+            provider,
+            acc: String::new(),
+            reasoning_acc: String::new(),
+            think_state: 0,
+            think_buf: String::new(),
+            usage_prompt: 0,
+            usage_completion: 0,
+            call_frags: Vec::new(),
+            gemini_calls: Vec::new(),
+        }
+    }
+
+    /// 处理一帧 SSE data JSON：分轨（正文/思考）、攒工具调用分片、累计用量
+    fn frame(&mut self, v: &serde_json::Value, tx: &UnboundedSender<StreamDelta>) {
+        match self.provider.api_format.as_str() {
+            "anthropic" => {
+                let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if ty == "content_block_start" {
+                    if let Some(block) = v.pointer("/content_block") {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                            let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                            while self.call_frags.len() <= idx {
+                                self.call_frags.push((String::new(), String::new(), String::new()));
+                            }
+                            self.call_frags[idx].0 = block.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            self.call_frags[idx].1 = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        }
+                    }
+                } else if ty == "content_block_delta" {
+                    if let Some(d) = v.get("delta") {
+                        if d.get("type").and_then(|t| t.as_str()) == Some("input_json_delta") {
+                            let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                            while self.call_frags.len() <= idx {
+                                self.call_frags.push((String::new(), String::new(), String::new()));
+                            }
+                            let partial = d.get("partial_json").and_then(|p| p.as_str()).unwrap_or("");
+                            self.call_frags[idx].2.push_str(partial);
+                        }
+                    }
+                }
+            }
+            "gemini" => {
+                if let Some(parts) = v.pointer("/candidates/0/content/parts").and_then(|p| p.as_array()) {
+                    for part in parts {
+                        if let Some(fc) = part.get("functionCall") {
+                            self.gemini_calls.push(ToolCall {
+                                id: format!("gem_{}", self.gemini_calls.len()),
+                                name: fc.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+                                arguments: fc.get("args").cloned().unwrap_or_else(|| serde_json::json!({})),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Some(fcs) = v.pointer("/choices/0/delta/tool_calls").and_then(|c| c.as_array()) {
+                    for tc in fcs {
+                        let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(self.call_frags.len() as u64) as usize;
+                        while self.call_frags.len() <= idx {
+                            self.call_frags.push((String::new(), String::new(), String::new()));
+                        }
+                        if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
+                            self.call_frags[idx].0 = id.to_string();
+                        }
+                        if let Some(nm) = tc.pointer("/function/name").and_then(|x| x.as_str()) {
+                            self.call_frags[idx].1 = nm.to_string();
+                        }
+                        if let Some(a) = tc.pointer("/function/arguments").and_then(|x| x.as_str()) {
+                            self.call_frags[idx].2.push_str(a);
+                        }
+                    }
+                }
+            }
+        }
+        let (text_delta, think_delta) = self.provider.parse_delta(v);
+        if let Some(t) = think_delta {
+            self.reasoning_acc.push_str(&t);
+            let _ = tx.send(StreamDelta::Thinking(t));
+        }
+        if let Some(d) = text_delta {
+            // 正文增量先过内联 <think> 分流，再分别入轨
+            for (is_think, part) in
+                inline_think::route(&mut self.think_state, &mut self.think_buf, &d)
+            {
+                if is_think {
+                    self.reasoning_acc.push_str(&part);
+                    let _ = tx.send(StreamDelta::Thinking(part));
+                } else {
+                    self.acc.push_str(&part);
+                    let _ = tx.send(StreamDelta::Text(part));
+                }
+            }
+        }
+        // 用量：openai（末块 usage）/ anthropic（message_start 输入）/ gemini
+        if let Some(u) = v.get("usage") {
+            let p = u
+                .get("prompt_tokens")
+                .or_else(|| u.get("input_tokens"))
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            let c = u
+                .get("completion_tokens")
+                .or_else(|| u.get("output_tokens"))
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            if p > 0 {
+                self.usage_prompt = p;
+            }
+            if c > 0 {
+                self.usage_completion = c;
+            }
+        }
+        if let Some(p) = v.pointer("/message/usage/input_tokens").and_then(|x| x.as_u64()) {
+            self.usage_prompt = p;
+        }
+        if let Some(u) = v.get("usageMetadata") {
+            if let Some(p) = u.get("promptTokenCount").and_then(|x| x.as_u64()) {
+                self.usage_prompt = p;
+            }
+            if let Some(c) = u.get("candidatesTokenCount").and_then(|x| x.as_u64()) {
+                self.usage_completion = c;
+            }
+        }
+    }
+
+    /// 流结束：未判定的前缀缓冲（不足 "<think>" 长度即结束）或未闭合的思考尾段冲刷，
+    /// 再拼装工具调用与用量，产出最终响应
+    fn finish(mut self, tx: &UnboundedSender<StreamDelta>) -> ChatResponse {
+        if !self.think_buf.is_empty() {
+            let text = std::mem::take(&mut self.think_buf);
+            if self.think_state == 1 {
+                self.reasoning_acc.push_str(&text);
                 let _ = tx.send(StreamDelta::Thinking(text));
             } else {
-                acc.push_str(&text);
+                self.acc.push_str(&text);
                 let _ = tx.send(StreamDelta::Text(text));
             }
         }
-        let mut tool_calls: Vec<ToolCall> = call_frags
+        let mut tool_calls: Vec<ToolCall> = self
+            .call_frags
             .into_iter()
             .enumerate()
             .filter(|(_, (_, name, _))| !name.is_empty())
             .map(|(i, (id, name, args))| ToolCall {
                 id: if id.is_empty() { format!("call_{i}") } else { id },
                 name,
+                // 分片 JSON 拼装失败（模型产出残缺参数）不应让整次响应报废：
+                // 回退空对象，调用方按「参数不全」走工具侧报错，循环可继续自纠
                 arguments: serde_json::from_str(&args).unwrap_or_else(|_| serde_json::json!({})),
             })
             .collect();
-        tool_calls.extend(gemini_calls);
-        Ok(ChatResponse {
-            content: acc,
-            reasoning: reasoning_acc,
-            prompt_tokens: usage_prompt,
-            completion_tokens: usage_completion,
+        tool_calls.extend(self.gemini_calls);
+        ChatResponse {
+            content: self.acc,
+            reasoning: self.reasoning_acc,
+            prompt_tokens: self.usage_prompt,
+            completion_tokens: self.usage_completion,
             tool_calls,
-        })
+        }
     }
 }
 
@@ -1722,5 +1842,154 @@ mod reasoning_effort_tests {
         // 非法值归一为 medium 而非透传（防不支持的自定义档位打 400）
         assert_eq!(normalize_effort("ultrathink"), "medium");
         assert_eq!(normalize_effort(" HIGH "), "high");
+    }
+}
+
+// ---------------------------------------------------------------- 流解析与 Key 池测试
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    /// 半包与多字节字符：SSE 帧按任意字节位置切块，内容必须完整无损（回归：逐 chunk
+    /// from_utf8_lossy 在 chunk 边界切断中文时产生 U+FFFD）
+    #[test]
+    fn sse_解码器_多字节字符跨块不损坏() {
+        // 正文含中文、emoji、四字节字符：覆盖 2/3/4 字节 UTF-8 序列
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"中文🦀emoji𝄞与英文 mixed\"}}]}\n\n";
+        let payload: String = frame
+            .split("content\":\"")
+            .nth(1)
+            .and_then(|s| s.split("\"").next())
+            .map(String::from)
+            .unwrap_or_default();
+        assert!(!payload.is_empty());
+
+        // 逐字节切块喂入（最苛刻的半包序列），重组结果必须与原文一致
+        let bytes = frame.as_bytes();
+        let mut dec = SseLineDecoder::new();
+        let mut content = String::new();
+        for b in bytes {
+            for line in dec.feed(std::slice::from_ref(b)) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(
+                    line.trim_start_matches("data:").trim(),
+                ) {
+                    if let Some(t) = v.pointer("/choices/0/delta/content").and_then(|t| t.as_str()) {
+                        content.push_str(t);
+                    }
+                }
+            }
+        }
+        assert_eq!(content, payload, "跨块多字节字符不得产生替换符");
+        assert!(!content.contains('\u{FFFD}'), "不得出现 U+FFFD");
+    }
+
+    /// 半包攒齐才出行：不完整的行不出、拼齐后恰好出一行；残留半行由 flush 兜底
+    #[test]
+    fn sse_解码器_半包与流尾冲刷() {
+        let mut dec = SseLineDecoder::new();
+        assert!(dec.feed(b"data: {\"a\"").is_empty(), "半包不应产出行");
+        let lines = dec.feed(b":1}\n\nkeep-alive\n");
+        assert_eq!(lines, vec![r#"data: {"a":1}"#, "keep-alive"]);
+        // 流尾残留（无换行）：flush 必须交出，避免尾部帧静默丢失
+        assert!(dec.feed(b"data: tail").is_empty());
+        assert_eq!(dec.flush().as_deref(), Some("data: tail"));
+        assert_eq!(dec.flush(), None, "冲刷后缓冲应为空");
+        // \r\n 行尾：\r 应剥掉
+        let mut dec2 = SseLineDecoder::new();
+        assert_eq!(dec2.feed(b"data: x\r\n"), vec!["data: x"]);
+    }
+
+    /// 流式 Key 池：全部 Key 限额时必须有限次尝试后报错（回归：无限 rotate 挂死调用方）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn 流式_全key限额_有限次轮转后报错() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // 最小 429 服务器：恒定返回限额错误，并统计被请求次数
+        let hits = StdArc::new(AtomicUsize::new(0));
+        let h2 = hits.clone();
+        let app = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(move || {
+                let h = h2.clone();
+                async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        axum::Json(serde_json::json!({
+                            "error": { "message": "rate limit exceeded", "type": "quota" }
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        // 双 Key 池：两把都指向恒定 429 的端点
+        let p = OpenAiCompatibleProvider::new(format!("http://{addr}"), vec!["k1".into(), "k2".into()]);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let started = std::time::Instant::now();
+        let err = p
+            .stream(ChatRequest::new("m", vec![ChatMessage::user("hi")]), tx)
+            .await
+            .expect_err("全部 Key 限额应报错");
+        let elapsed = started.elapsed();
+
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "应恰好尝试 2 次（每把 Key 一次）而非无限轮转");
+        assert!(err.to_string().contains("限额"), "错误应可诊断（说明全部 Key 限额）: {err}");
+        assert!(elapsed < std::time::Duration::from_secs(10), "应快速失败而非挂死，实际 {elapsed:?}");
+    }
+
+    /// 流式正常路径：SSE 帧解析 + 正文/思考分轨 + usage 统计（经字节级解码器）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn 流式_帧解析_分轨与用量() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"，世界\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想一想\"}}]}\n\n",
+            "data: {\"choices\":[{}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let app = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(move || {
+                let body = body.to_string();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let p = OpenAiCompatibleProvider::new(format!("http://{addr}"), vec!["k".into()]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let resp = p
+            .stream(ChatRequest::new("m", vec![ChatMessage::user("hi")]), tx)
+            .await
+            .expect("流式请求应成功");
+
+        assert_eq!(resp.content, "你好，世界");
+        assert_eq!(resp.reasoning, "想一想");
+        assert_eq!(resp.prompt_tokens, 11);
+        assert_eq!(resp.completion_tokens, 7);
+        // 增量序列：正文与思考分轨（重组一致即可，不约束切块粒度）
+        let mut text = String::new();
+        let mut think = String::new();
+        while let Ok(d) = rx.try_recv() {
+            match d {
+                StreamDelta::Text(t) => text.push_str(&t),
+                StreamDelta::Thinking(t) => think.push_str(&t),
+            }
+        }
+        assert_eq!(text, "你好，世界");
+        assert_eq!(think, "想一想");
     }
 }
