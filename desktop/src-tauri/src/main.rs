@@ -358,11 +358,26 @@ fn spawn_local_gateway(app: &tauri::AppHandle) -> Result<String, Box<dyn std::er
     let data_dir = desktop::data_dir().join("ExMachina");
     std::fs::create_dir_all(data_dir.join("data"))?;
 
-    let mut child = Command::new(&gateway)
-        .arg("serve")
+    // WebUI 构建产物随包捆绑（src-tauri/binaries/webui-dist/）：告知网关同端口托管，
+    // 否则窗口加载根路径 404（表现即「无法访问」）
+    let webui_dist = bin_dir.join("webui-dist");
+
+    let mut cmd = Command::new(&gateway);
+    cmd.arg("serve")
         .arg("--port")
         .arg(port.to_string())
-        .env("EXM_DATA_DIR", data_dir.join("data"))
+        .env("EXM_DATA_DIR", data_dir.join("data"));
+    if webui_dist.join("index.html").is_file() {
+        cmd.env("EXM_WEBUI_DIST", &webui_dist);
+    }
+    // Windows：网关是控制台子系统程序，GUI 进程无控制台可继承 → 系统会为其新开终端窗口；
+    // CREATE_NO_WINDOW (0x0800_0000) 抑制弹窗（日志经事件桥与 WebUI 可见，无需终端）
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("网关启动失败: {e}"))?;
 
