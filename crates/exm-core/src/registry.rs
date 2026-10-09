@@ -75,6 +75,8 @@ pub struct LocalRegistry {
     singles: RwLock<HashMap<String, AgentDefinition>>,
     /// 当前交互目标：None = 激活组；Some(id) = 单体智能体
     active_single: RwLock<Option<String>>,
+    /// 工作目录（干活的项目）：显式设置后优先于组声明与全局根，智能体/智能体组通用
+    active_workspace: RwLock<Option<String>>,
 }
 
 fn valid_id(s: &str) -> bool {
@@ -94,6 +96,7 @@ impl LocalRegistry {
             active: RwLock::new("exmachina".to_string()),
             singles: RwLock::new(HashMap::new()),
             active_single: RwLock::new(None),
+            active_workspace: RwLock::new(None),
         };
         reg.reload()?;
         Ok(reg)
@@ -188,6 +191,12 @@ impl LocalRegistry {
         *self.active_single.write() =
             if active_single.is_empty() { None } else { Some(active_single.to_string()) };
 
+        // 工作目录持久化：agents/active_workspace（干活的项目，智能体/智能体组通用）
+        let active_ws = std::fs::read_to_string(self.dir.join("active_workspace")).unwrap_or_default();
+        let active_ws = active_ws.trim();
+        *self.active_workspace.write() =
+            if active_ws.is_empty() { None } else { Some(active_ws.to_string()) };
+
         // 激活组持久化：agents/active_group
         let active_file = self.dir.join("active_group");
         let saved = std::fs::read_to_string(&active_file).unwrap_or_default();
@@ -258,6 +267,47 @@ impl LocalRegistry {
         std::fs::write(self.dir.join("active_group"), gid)?;
         Ok(())
     }
+
+    // ---------------- 工作目录（干活的项目） ----------------
+
+    /// 设置工作目录（项目路径）；None/空 = 清除（回退组声明 / 全局根）。智能体与智能体组通用。
+    pub fn set_active_workspace(&self, ws: Option<&str>) -> anyhow::Result<()> {
+        let ws = ws.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(p) = ws {
+            // 目录必须真实存在——工作目录是干活的项目，打到不存在的路径只会让工具静默失败
+            anyhow::ensure!(std::path::Path::new(p).is_dir(), "工作目录不存在或不是目录: {p}");
+        }
+        *self.active_workspace.write() = ws.map(str::to_string);
+        match ws {
+            Some(w) => std::fs::write(self.dir.join("active_workspace"), w)?,
+            None => {
+                let _ = std::fs::remove_file(self.dir.join("active_workspace"));
+            }
+        }
+        Ok(())
+    }
+
+    /// 显式工作目录（未设置 = None）
+    pub fn active_workspace(&self) -> Option<String> {
+        self.active_workspace.read().clone()
+    }
+
+    /// 生效工作区根：显式工作目录 > 激活组声明 > 全局根（相对路径相对全局根解析）
+    pub fn effective_workspace(&self, global_root: &std::path::Path) -> std::path::PathBuf {
+        let resolve = |ws: Option<String>| -> Option<PathBuf> {
+            let rel = ws?;
+            let trimmed = rel.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let p = std::path::PathBuf::from(trimmed);
+            Some(if p.is_absolute() { p } else { global_root.join(p) })
+        };
+        resolve(self.active_workspace())
+            .or_else(|| resolve(self.active_group_meta().and_then(|m| m.workspace)))
+            .unwrap_or_else(|| global_root.to_path_buf())
+    }
+
 
     // ---------------- 编成模板（entities/templates/，用户与 agent 共用） ----------------
 

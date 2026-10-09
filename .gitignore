@@ -13,6 +13,8 @@ webui/dist/
 
 # 激活组状态（运行时可变）
 agents/active_group
+# 工作目录（运行时可变）
+entities/active_workspace
 
 # 点路径：一律忽略（本机/工具状态目录与文件），需要上传的单独放行
 .*

@@ -286,6 +286,12 @@ button { font-family: inherit; cursor: pointer; }
 
 .rp-empty { color: var(--text-faint); font-size: 12.5px; text-align: center; padding: 40px 12px; }
 
+.rp-back {
+  display: block; width: 100%; border: 1px solid var(--border); background: var(--panel);
+  color: var(--text-dim); border-radius: 9px; padding: 6px 10px; font-size: 12.5px; margin-bottom: 10px;
+}
+.rp-back:hover { color: var(--accent-2); border-color: var(--accent); }
+
 /* 任务节点卡 */
 .task-card {
   border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px;

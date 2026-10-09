@@ -899,25 +899,9 @@ impl ToolGateway {
         result
     }
 
-    /// 生效工作区根：激活组声明了 workspace 时以其为根（相对路径相对全局根），否则全局根
+    /// 生效工作区根：显式工作目录（干活的项目）> 激活组声明 > 全局根（统一走注册表口径）
     fn effective_root(&self) -> PathBuf {
-        let global = self.workspace_root.clone();
-        let ws = self
-            .registry
-            .active_group_meta()
-            .and_then(|m| m.workspace)
-            .filter(|s| !s.trim().is_empty());
-        match ws {
-            Some(rel) => {
-                let p = PathBuf::from(rel.trim());
-                if p.is_absolute() {
-                    p
-                } else {
-                    global.join(p)
-                }
-            }
-            None => global,
-        }
+        self.registry.effective_workspace(&self.workspace_root)
     }
 
     /// 派发时的运行时工具白名单（8.2 口径）：

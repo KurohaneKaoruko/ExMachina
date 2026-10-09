@@ -42,7 +42,7 @@ const api = {
   stop: (id) => req(`/sessions/${id}/stop`, { method: "POST", body: JSON.stringify({}) }),
   graph: (id) => req(`/sessions/${id}/graph`),
   decideApproval: (id, approve) => req(`/approvals/${id}/${approve ? "approve" : "deny"}`, { method: "POST", body: JSON.stringify({}) }),
-  // 输入区上下文芯片：组 / 单体 / 模型 / 工作目录
+  // 输入区上下文芯片：组 / 智能体 / 模型 / 工作目录
   groups: () => req("/groups"),
   singles: () => req("/singles"),
   llmProfiles: () => req("/llm/profiles"),
@@ -50,6 +50,14 @@ const api = {
   setGroupWorkspace: (gid, workspace) => req(`/groups/${gid}/workspace`, { method: "PUT", body: JSON.stringify({ workspace }) }),
   setGroupModel: (gid, model) => req(`/groups/${gid}/model`, { method: "PUT", body: JSON.stringify({ model }) }),
   setSingleModel: (id, modelHint) => req(`/singles/${id}`, { method: "PUT", body: JSON.stringify({ modelHint }) }),
+  // 模型思考强度（reasoning effort）：进程级，对指挥体与子个体的全部 LLM 调用生效
+  getEffort: () => req("/llm/effort"),
+  setEffort: (effort) => req("/llm/effort", { method: "PUT", body: JSON.stringify({ effort }) }),
+  // 工作目录（干活的项目）：智能体与智能体组通用
+  getWorkspace: () => req("/workspace"),
+  setWorkspace: (path) => req("/workspace", { method: "PUT", body: JSON.stringify({ path }) }),
+  // 会话事件流（子个体详情：派发单/回执等存储事件）
+  sessionEvents: (id, limit = 300) => req(`/sessions/${id}/events?limit=${limit}`),
 };
 
 // ────────────────────────────── 全局状态 ──────────────────────────────
@@ -62,14 +70,18 @@ const S = {
   connected: false,
   target: null,        // {mode, id, name?, primary?}
   config: null,
-  // 输入区上下文芯片：项目（组）/ 单体 / 模型档案 / 思考强度 / 附件
+  drill: null,         // 右栏下钻的子个体标识（null = 任务总览）；@see renderRight
+  dispatches: [],      // 派发单缓存（存储事件 type=dispatch，按 to=个体 过滤）
+  // 输入区上下文芯片：智能体组 / 智能体 / 模型档案 / 思考强度 / 附件
   groups: [],          // GroupMeta[]（项目口径：组 = 项目，workspace 即项目目录）
   singles: [],
   profiles: [],        // LlmProfile[]（模型档案）
-  mode: "auto",        // auto=跟随规划 | direct=快速直答 | full=深度协作
+  effort: (() => { try { return localStorage.getItem("exm.effort") ?? "default"; } catch { return "default"; } })(),
+  // default=端点默认 | low | medium | high（模型推理预算，全局生效，本地记忆 + 启动时重设）
   images: [],          // data URL 附件
   graph: null,         // TaskGraph（任务派发图：指挥体 → 子个体）
   reports: [],         // 子个体回执 {agent, summary, confidence, nodeId}
+  workspace: "",       // 当前生效工作目录（干活的项目；空 = 全局根）
   rightOpen: (() => { try { return localStorage.getItem("exm.rightOpen") !== "0"; } catch { return true; } })(),
   // 本轮实时区（run.finished 后清空并并入最终消息）
   live: { orch: "", thinking: "", units: {}, unitThinking: {}, toolCalls: [], activity: [], approvals: [] },
@@ -426,7 +438,7 @@ function welcomeEl() {
   el.innerHTML = `
     <div class="logo">EX</div>
     <h1>有什么可以帮你？</h1>
-    <p>对话将交由当前智能体组协作完成；控制台可管理个体、模型与通道</p>
+    <p>对话交由当前对象（智能体或智能体组）协作完成；控制台可管理个体、模型与通道</p>
     <div class="suggest">
       <button data-q="帮我梳理一下这个项目的整体结构，给出模块说明">梳理项目结构，输出模块说明</button>
       <button data-q="写一个 Python 脚本：批量重命名当前目录下的图片文件，按日期编号">写一个批量重命名图片的脚本</button>
@@ -518,6 +530,8 @@ async function selectSession(id) {
   setRunning(false);
   S.graph = null;
   S.reports = [];
+  S.drill = null;
+  S.dispatches = [];
   renderSidebar();
   renderRight();
   try {
@@ -555,11 +569,10 @@ async function send() {
   renderStream(true);
   updateSessionPreview(S.sessionId, label);
   const images = S.images;
-  const mode = S.mode !== "auto" ? S.mode : undefined;
   S.images = [];
   renderAttachRow();
   try {
-    await api.chat(S.sessionId, text, images, mode);
+    await api.chat(S.sessionId, text, images);
   } catch (e) {
     setRunning(false);
     alertErr(e);
@@ -596,22 +609,22 @@ function setRightOpen(on) {
 
 function renderRight() {
   const body = $("rp-body");
+  if (S.drill) { renderAgentDrill(body); return; }
   const nodes = S.graph?.nodes ?? [];
   const units = Object.entries(S.live.units);
   const unitThink = Object.entries(S.live.unitThinking);
-  const active = activeNodeCount();
   $("rp-count").textContent = nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length}` : "";
   if (!nodes.length && !units.length && !unitThink.length && !S.reports.length) {
-    body.innerHTML = `<div class="rp-empty">本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示</div>`;
+    body.innerHTML = `<div class="rp-empty">本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示；点击个体卡可进入其会话</div>`;
     return;
   }
   let html = "";
   if (nodes.length) {
-    html += `<div class="rp-section">任务派发（指挥体 → 子个体）</div>`;
+    html += `<div class="rp-section">任务派发（指挥体 → 子个体，点击查看个体会话）</div>`;
     for (const n of nodes) {
       const isActive = ["dispatched", "running", "syncing", "arbitrating"].includes(n.status);
       const deps = (n.dependsOn ?? []).map((d) => nodes.find((x) => x.id === d)?.title ?? d);
-      html += `<div class="task-card${isActive ? " active" : ""}">
+      html += `<div class="task-card${isActive ? " active" : ""}" data-agent="${esc(n.agentIdentifier ?? "")}" style="cursor:pointer" title="进入 @${esc(n.agentIdentifier ?? "")} 的会话">
         <div class="task-top"><span class="task-agent">@${esc(n.agentIdentifier ?? "")}</span>
           <span class="task-status st-${esc(n.status ?? "pending")}">${ST_LABELS[n.status] ?? esc(n.status ?? "")}</span></div>
         <div class="task-title">${esc(n.title || n.objective || "未命名任务")}</div>
@@ -622,11 +635,11 @@ function renderRight() {
   }
   const liveCards = [...new Set([...units.map(([a]) => a), ...unitThink.map(([a]) => a)])];
   if (liveCards.length) {
-    html += `<div class="rp-section">子个体实时输出</div>`;
+    html += `<div class="rp-section">子个体实时输出（点击进入会话）</div>`;
     for (const agent of liveCards) {
       const text = S.live.units[agent];
       const think = S.live.unitThinking[agent];
-      html += `<div class="unit-card">
+      html += `<div class="unit-card" data-agent="${esc(agent)}" style="cursor:pointer">
         <div class="unit-head"><span class="spinner"></span>@${esc(agent)}</div>
         ${think ? `<div class="unit-text" style="color:var(--text-faint)">${esc(think)}</div>` : ""}
         ${text ? `<div class="unit-text">${esc(text)}</div>` : ""}
@@ -636,13 +649,83 @@ function renderRight() {
   if (S.reports.length) {
     html += `<div class="rp-section">回执</div>`;
     for (const r of S.reports.slice(-6).reverse()) {
-      html += `<div class="unit-card" style="border-color:var(--border);background:var(--panel)">
+      html += `<div class="unit-card" data-agent="${esc(r.agent)}" style="border-color:var(--border);background:var(--panel);cursor:pointer">
         <div class="unit-head" style="color:var(--ok)">✓ @${esc(r.agent)} <span style="color:var(--text-faint)">置信 ${r.confidence.toFixed(2)}</span></div>
         <div class="unit-text">${esc(r.summary.slice(0, 160))}</div>
       </div>`;
     }
   }
   body.innerHTML = html;
+  // 点击个体卡 → 下钻该子个体的会话视图
+  body.querySelectorAll("[data-agent]").forEach((el) =>
+    el.addEventListener("click", () => openDrill(el.dataset.agent)));
+}
+
+// —— 子个体会话（下钻视图）：派发单 + 该个体的任务/实时流/工具轨迹/回执 ——
+function openDrill(agent) {
+  S.drill = agent;
+  renderRight();
+  // 派发单懒加载：存储事件 type=dispatch 且 to=该个体（含目标/验收/边界契约）
+  if (!S.dispatches.some((d) => d.to === agent)) {
+    api.sessionEvents(S.sessionId).then((evs) => {
+      S.dispatches = (evs ?? []).filter((e) => e.type === "dispatch" && e.to);
+      renderRight();
+    }).catch(() => {});
+  }
+}
+
+function renderAgentDrill(body) {
+  const agent = S.drill;
+  const nodes = (S.graph?.nodes ?? []).filter((n) => n.agentIdentifier === agent);
+  const dispatch = S.dispatches.find((d) => d.to === agent);
+  const live = S.live.units[agent];
+  const think = S.live.unitThinking[agent];
+  const tools = S.live.toolCalls.filter((c) => c.agentId === agent);
+  const reports = S.reports.filter((r) => r.agent === agent);
+  $("rp-count").textContent = `@${agent}`;
+  let html = `<button class="rp-back" id="rp-back">‹ 返回任务总览</button>`;
+  // 派发单（任务契约：目标 / 验收 / 边界）
+  const dp = dispatch?.payload ?? null;
+  html += `<div class="rp-section">派发单</div><div class="task-card active">
+    <div class="task-top"><span class="task-agent">@${esc(agent)}</span>
+      ${nodes[0] ? `<span class="task-status st-${esc(nodes[0].status ?? "pending")}">${ST_LABELS[nodes[0].status] ?? ""}</span>` : ""}</div>
+    ${dp?.goal ? `<div class="task-title">${esc(dp.goal)}</div>` : nodes[0]?.objective ? `<div class="task-title">${esc(nodes[0].objective)}</div>` : ""}
+    ${dp?.acceptance?.length ? `<div class="task-deps">验收：${esc(dp.acceptance.join("；"))}</div>` : ""}
+    ${dp?.boundary ? `<div class="task-deps">边界：范围内 ${esc((dp.boundary.inScope ?? []).join("、") || "—")}；禁止 ${esc((dp.boundary.forbidden ?? []).join("、") || "—")}</div>` : ""}
+    ${!dp && nodes[0] ? `<div class="task-obj">${esc(nodes[0].objective ?? "")}</div>` : ""}
+  </div>`;
+  // 实时输出 / 思维链（运行中）
+  if (live || think) {
+    html += `<div class="rp-section">实时会话</div><div class="unit-card">
+      <div class="unit-head"><span class="spinner"></span>@${esc(agent)}</div>
+      ${think ? `<div class="unit-text" style="color:var(--text-faint)">${esc(think)}</div>` : ""}
+      ${live ? `<div class="unit-text">${esc(live)}</div>` : ""}
+    </div>`;
+  }
+  // 该个体的工具执行轨迹
+  if (tools.length) {
+    html += `<div class="rp-section">工具轨迹</div>`;
+    for (const t of tools) {
+      html += `<div class="tool-row"><span class="tool-name">${esc(t.tool)}</span>
+        <span class="tool-status"><span class="${t.status}">${t.status === "ok" ? "✓" : t.status === "error" ? "✗" : "…"} ${t.durationMs ? `${(t.durationMs / 1000).toFixed(1)}s` : ""}</span></span>
+        <span class="tool-summary">${esc(t.summary ?? "")}</span></div>`;
+    }
+  }
+  // 回执（本轮结论 + 置信度）
+  if (reports.length) {
+    html += `<div class="rp-section">回执</div>`;
+    for (const r of reports) {
+      html += `<div class="unit-card" style="border-color:var(--border);background:var(--panel)">
+        <div class="unit-head" style="color:var(--ok)">✓ 置信 ${r.confidence.toFixed(2)}</div>
+        <div class="unit-text" style="max-height:none">${esc(r.summary)}</div>
+      </div>`;
+    }
+  }
+  if (!live && !think && !tools.length && !reports.length && !dp) {
+    html += `<div class="rp-empty">暂无该个体的执行记录（派发后此处展示其任务与输出）</div>`;
+  }
+  body.innerHTML = html;
+  $("rp-back").addEventListener("click", () => { S.drill = null; renderRight(); });
 }
 
 // ────────────────────────────── 输入区上下文芯片 ──────────────────────────────
@@ -663,22 +746,21 @@ function currentModelValue() {
 }
 
 function currentWorkspace() {
-  return S.groups.find((g) => g.id === (S.target?.id ?? "default"))?.workspace ?? "";
+  return S.workspace;
 }
 
-const MODE_LABELS = { auto: "思考：自动", direct: "思考：快速直答", full: "思考：深度协作" };
+const EFFORT_LABELS = { default: "思考：默认", low: "思考：低", medium: "思考：中", high: "思考：高" };
 
 function renderChips() {
   const ws = currentWorkspace();
-  $("chip-ws").innerHTML = `<span class="chip-label">目录</span>${ws ? esc(basename(ws)) : "未设置"}`;
-  $("chip-ws").style.display = S.target?.mode === "single" ? "none" : "";
+  $("chip-ws").innerHTML = `<span class="chip-label">工作目录</span>${ws ? esc(basename(ws)) : "默认"}`;
   const t = S.target;
   $("chip-target").innerHTML = t?.mode === "single"
-    ? `<span class="chip-label">单体</span>@${esc(t.name || t.id)}`
+    ? `<span class="chip-label">智能体</span>@${esc(t.name || t.id)}`
     : `<span class="chip-label">组</span>${esc(groupName(t?.id ?? "default"))}`;
   const mv = currentModelValue();
   $("chip-model").innerHTML = `<span class="chip-label">模型</span>${mv ? esc(mv.includes("/") ? mv.split("/").pop() : (S.profiles.find((p) => p.id === mv)?.name ?? mv)) : "默认"}`;
-  $("chip-mode").textContent = MODE_LABELS[S.mode] ?? MODE_LABELS.auto;
+  $("chip-mode").textContent = EFFORT_LABELS[S.effort] ?? EFFORT_LABELS.default;
 }
 
 // —— 弹出菜单骨架：统一开合、点外即收 ——
@@ -721,31 +803,30 @@ async function switchTarget(mode, id) {
 
 async function refreshContext() {
   try {
-    const [target, groups, singles, profiles] = await Promise.all([api.target(), api.groups(), api.singles(), api.llmProfiles()]);
+    const [target, groups, singles, profiles, ws] = await Promise.all([api.target(), api.groups(), api.singles(), api.llmProfiles(), api.getWorkspace()]);
     S.target = target;
     S.groups = groups.groups ?? [];
     S.singles = singles.singles ?? [];
     S.profiles = profiles.profiles ?? [];
-    const name = S.target?.mode === "single" ? `单体 · ${S.target.name || S.target.id}` : `组 · ${groupName(S.target?.id ?? "default")}`;
+    S.workspace = String(ws?.workspace ?? "");
+    const name = S.target?.mode === "single" ? `智能体 · @${S.target.name || S.target.id}` : `组 · ${groupName(S.target?.id ?? "default")}`;
     $("target-chip").innerHTML = `对话对象：<b>${esc(name)}</b>`;
     renderChips();
   } catch { /* 上下文拉取失败不阻塞对话 */ }
 }
 
 function wsMenu(pop) {
-  pop.appendChild(popTitle("工作目录（当前组的项目路径）"));
+  pop.appendChild(popTitle("工作目录（干活的项目，智能体 / 智能体组通用）"));
   const input = document.createElement("input");
   input.className = "pop-input";
   input.value = currentWorkspace();
-  input.placeholder = "/path/to/project";
+  input.placeholder = "/path/to/project（目录须已存在）";
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); e.stopPropagation(); });
   pop.appendChild(input);
-  const save = async () => {
-    const gid = S.target?.id ?? "default";
+  const save = async (clear = false) => {
     try {
-      await api.setGroupWorkspace(gid, input.value.trim());
-      const g = S.groups.find((x) => x.id === gid);
-      if (g) g.workspace = input.value.trim();
+      const r = await api.setWorkspace(clear ? "" : input.value.trim());
+      S.workspace = String(r?.workspace ?? "");
       closePopover();
       renderChips();
     } catch (e) { alertErr(e); }
@@ -753,21 +834,30 @@ function wsMenu(pop) {
   const btn = document.createElement("button");
   btn.className = "pop-save";
   btn.textContent = "保存工作目录";
-  btn.addEventListener("click", save);
+  btn.addEventListener("click", () => save(false));
   pop.appendChild(btn);
+  const reset = document.createElement("button");
+  reset.className = "pop-save";
+  reset.style.marginLeft = "8px";
+  reset.style.borderColor = "var(--border)";
+  reset.style.color = "var(--text-dim)";
+  reset.style.background = "transparent";
+  reset.textContent = "恢复默认";
+  reset.addEventListener("click", () => save(true));
+  pop.appendChild(reset);
 }
 
 function targetMenu(pop) {
-  pop.appendChild(popTitle("智能体组（项目）"));
+  pop.appendChild(popTitle("智能体组"));
   for (const g of S.groups) {
     const active = S.target?.mode === "group" && (S.target.id ?? "default") === g.id;
     pop.appendChild(popItem({
-      title: g.name, sub: g.workspace ? `工作目录：${g.workspace}` : (g.description || "未设置工作目录"), current: active,
+      title: g.name, sub: g.workspace ? `组目录：${g.workspace}` : (g.description || "使用全局工作目录"), current: active,
       onclick: () => switchTarget("group", g.id),
     }));
   }
   if (S.singles.length) {
-    pop.appendChild(popTitle("单体智能体"));
+    pop.appendChild(popTitle("智能体"));
     for (const s of S.singles) {
       const active = S.target?.mode === "single" && S.target.id === s.identifier;
       pop.appendChild(popItem({
@@ -806,15 +896,26 @@ async function setModel(value) {
   } catch (e) { alertErr(e); }
 }
 
-function modeMenu(pop) {
-  pop.appendChild(popTitle("思考强度（本轮生效）"));
+function effortMenu(pop) {
+  pop.appendChild(popTitle("模型思考强度（reasoning effort，全局生效）"));
   const items = [
-    ["auto", "自动", "跟随指挥体规划：简单直答，复杂拆解派发"],
-    ["direct", "快速直答", "强制 L0 直答，不拆解不派发"],
-    ["full", "深度协作", "强制拆解并派发子个体协作完成"],
+    ["default", "端点默认", "不向模型下发推理强度参数，由端点自行决定"],
+    ["low", "低", "快速响应、节省 token（reasoning: low）"],
+    ["medium", "中", "平衡模式（reasoning: medium）"],
+    ["high", "高", "深度推理，复杂问题更稳（reasoning: high）"],
   ];
   for (const [v, title, sub] of items) {
-    pop.appendChild(popItem({ title, sub, current: S.mode === v, onclick: () => { S.mode = v; closePopover(); renderChips(); } }));
+    pop.appendChild(popItem({
+      title, sub, current: S.effort === v,
+      onclick: () => {
+        S.effort = v;
+        try { localStorage.setItem("exm.effort", v); } catch { /* 忽略 */ }
+        // 网关进程级生效；重启后由启动时的重设逻辑恢复
+        api.setEffort(v === "default" ? "" : v).catch(alertErr);
+        closePopover();
+        renderChips();
+      },
+    }));
   }
 }
 
@@ -881,7 +982,7 @@ async function init() {
   $("chip-ws").addEventListener("click", () => openPopover(wsMenu));
   $("chip-target").addEventListener("click", () => openPopover(targetMenu));
   $("chip-model").addEventListener("click", () => openPopover(modelMenu));
-  $("chip-mode").addEventListener("click", () => openPopover(modeMenu));
+  $("chip-mode").addEventListener("click", () => openPopover(effortMenu));
   $("btn-plus").addEventListener("click", () => $("file-pick").click());
   $("file-pick").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
   document.addEventListener("click", (e) => {
@@ -897,8 +998,10 @@ async function init() {
     $("conn-text").textContent = health.mock ? "已连接（测试替身）" : "已连接";
   } catch { setConn(false); }
 
-  // 上下文（组/单体/模型/目录）与配置；模型未配置 → 引导控制台
+  // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导控制台
   await refreshContext();
+  // 思考强度本地记忆重设（网关重启后回到端点默认，此处恢复用户选择）
+  if (S.effort !== "default") api.setEffort(S.effort).catch(() => {});
   try {
     S.config = await api.config();
     const llmReady = Boolean(S.config?.llm?.apiKey) || Boolean(S.config?.mock);

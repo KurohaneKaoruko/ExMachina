@@ -206,6 +206,10 @@ pub fn build_router(core: Arc<Core>) -> Router {
         // 通道连通测试（integration-ux）
         .route("/api/channels/:id/test", post(crate::channel_test::test_channel))
         .route("/api/auth/verify", post(verify_auth))
+        // 模型思考强度（reasoning effort）：进程级生效于全部 LLM 调用（指挥体/子个体/工具回路）
+        .route("/api/llm/effort", get(get_effort).put(put_effort))
+        // 工作目录（干活的项目）：智能体与智能体组通用，优先于组声明与全局根
+        .route("/api/workspace", get(get_workspace).put(put_workspace))
         // MCP 服务端 HTTP 挂载（10.3）：配置启用时挂载（默认关闭 = 不挂载）；
         // 挂载在鉴权中间件之前，复用同一鉴权口径
         .merge(mcp_mount(core.clone()))
@@ -998,6 +1002,57 @@ async fn list_messages(State(st): State<AppState>, Path(id): Path<String>) -> im
     match st.core.store.list_messages(&id, 200) {
         Ok(msgs) => Json(serde_json::to_value(msgs).unwrap_or(Value::Null)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct EffortBody {
+    /// low | medium | high；空/null = 恢复端点默认
+    effort: Option<String>,
+}
+
+/// 当前模型思考强度
+async fn get_effort() -> impl IntoResponse {
+    Json(json!({ "effort": exm_core::provider::reasoning_effort() }))
+}
+
+/// 设置模型思考强度（进程级，重启后回到端点默认；客户端可自行记忆并在启动时重设）
+async fn put_effort(Json(body): Json<EffortBody>) -> impl IntoResponse {
+    let raw = body.effort.unwrap_or_default();
+    exm_core::provider::set_reasoning_effort(Some(&raw));
+    let effort = exm_core::provider::reasoning_effort();
+    Json(json!({ "ok": true, "effort": effort }))
+}
+
+// ---------------------------------------------------------------- 工作目录（干活的项目）
+
+/// 当前生效工作区根：显式工作目录 > 激活组声明 > 全局根
+async fn get_workspace(State(st): State<AppState>) -> impl IntoResponse {
+    let global = st.core.config().workspace_root.clone();
+    let explicit = st.core.registry().active_workspace();
+    let path = st.core.registry().effective_workspace(&global);
+    Json(json!({ "workspace": path.to_string_lossy(), "explicit": explicit }))
+}
+
+#[derive(Deserialize)]
+struct WorkspaceBody {
+    /// 项目目录路径；空/null = 清除（回退组声明 / 全局根）
+    path: Option<String>,
+}
+
+/// 设置工作目录（智能体与智能体组通用；目录必须已存在）
+async fn put_workspace(
+    State(st): State<AppState>,
+    Json(body): Json<WorkspaceBody>,
+) -> impl IntoResponse {
+    let path = body.path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    match st.core.registry().set_active_workspace(path.as_deref()) {
+        Ok(()) => {
+            let global = st.core.config().workspace_root.clone();
+            let eff = st.core.registry().effective_workspace(&global);
+            Json(json!({ "ok": true, "workspace": eff.to_string_lossy() })).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
 
