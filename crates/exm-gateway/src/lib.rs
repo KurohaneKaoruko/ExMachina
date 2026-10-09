@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub mod channel_test;
+pub mod channel_util;
 pub mod git_panel;
 pub mod identity;pub mod limits;
 pub mod llm_admin;
