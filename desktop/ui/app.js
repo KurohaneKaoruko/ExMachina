@@ -38,10 +38,18 @@ const api = {
   createSession: (title) => req("/sessions", { method: "POST", body: JSON.stringify({ title }) }),
   deleteSession: (id) => req(`/sessions/${id}`, { method: "DELETE" }),
   messages: (id) => req(`/sessions/${id}/messages`),
-  chat: (id, text) => req(`/sessions/${id}/chat`, { method: "POST", body: JSON.stringify({ text }) }),
+  chat: (id, text, images, mode) => req(`/sessions/${id}/chat`, { method: "POST", body: JSON.stringify({ text, ...(images?.length ? { images } : {}), ...(mode ? { mode } : {}) }) }),
   stop: (id) => req(`/sessions/${id}/stop`, { method: "POST", body: JSON.stringify({}) }),
   graph: (id) => req(`/sessions/${id}/graph`),
   decideApproval: (id, approve) => req(`/approvals/${id}/${approve ? "approve" : "deny"}`, { method: "POST", body: JSON.stringify({}) }),
+  // 输入区上下文芯片：组 / 单体 / 模型 / 工作目录
+  groups: () => req("/groups"),
+  singles: () => req("/singles"),
+  llmProfiles: () => req("/llm/profiles"),
+  setTarget: (mode, id) => req("/target", { method: "PUT", body: JSON.stringify({ mode, ...(id ? { id } : {}) }) }),
+  setGroupWorkspace: (gid, workspace) => req(`/groups/${gid}/workspace`, { method: "PUT", body: JSON.stringify({ workspace }) }),
+  setGroupModel: (gid, model) => req(`/groups/${gid}/model`, { method: "PUT", body: JSON.stringify({ model }) }),
+  setSingleModel: (id, modelHint) => req(`/singles/${id}`, { method: "PUT", body: JSON.stringify({ modelHint }) }),
 };
 
 // ────────────────────────────── 全局状态 ──────────────────────────────
@@ -54,6 +62,15 @@ const S = {
   connected: false,
   target: null,        // {mode, id, name?, primary?}
   config: null,
+  // 输入区上下文芯片：项目（组）/ 单体 / 模型档案 / 思考强度 / 附件
+  groups: [],          // GroupMeta[]（项目口径：组 = 项目，workspace 即项目目录）
+  singles: [],
+  profiles: [],        // LlmProfile[]（模型档案）
+  mode: "auto",        // auto=跟随规划 | direct=快速直答 | full=深度协作
+  images: [],          // data URL 附件
+  graph: null,         // TaskGraph（任务派发图：指挥体 → 子个体）
+  reports: [],         // 子个体回执 {agent, summary, confidence, nodeId}
+  rightOpen: (() => { try { return localStorage.getItem("exm.rightOpen") !== "0"; } catch { return true; } })(),
   // 本轮实时区（run.finished 后清空并并入最终消息）
   live: { orch: "", thinking: "", units: {}, unitThinking: {}, toolCalls: [], activity: [], approvals: [] },
 };
@@ -83,15 +100,17 @@ function wsConnect() {
     wsBackoff = 0;
     setConn(true);
     if (!reconnected) return;
-    // 断连补偿：重拉消息 + 在途判定，补齐丢失事件
+    // 断连补偿：重拉消息 + 任务图 + 在途判定，补齐丢失事件
     void (async () => {
       try {
         const [messages, graph] = await Promise.all([api.messages(sessionId), api.graph(sessionId)]);
         if (gen !== wsGen || S.sessionId !== sessionId) return;
-        const pending = (graph?.nodes ?? []).some((n) => ["running", "dispatched", "syncing"].includes(String(n.status ?? "")));
         S.messages = messages;
+        S.graph = graph?.nodes?.length ? graph : null;
+        const pending = (graph?.nodes ?? []).some((n) => ["running", "dispatched", "syncing"].includes(String(n.status ?? "")));
         setRunning(pending);
         renderStream();
+        scheduleRight(true);
       } catch { /* 下轮重连再补偿 */ }
     })();
   };
@@ -128,7 +147,7 @@ function handleEvent(evt) {
       break;
     case "unit.token":
       live.units[String(p.agentId ?? "")] = (live.units[String(p.agentId ?? "")] ?? "") + String(p.delta ?? "");
-      scheduleLive();
+      scheduleRight();
       break;
     case "unit.thinking":
       live.unitThinking[String(p.agentId ?? "")] = (live.unitThinking[String(p.agentId ?? "")] ?? "") + String(p.delta ?? "");
@@ -153,15 +172,28 @@ function handleEvent(evt) {
       live.approvals = live.approvals.filter((a) => a.approvalId !== String(p.approvalId));
       renderApprovals();
       break;
-    case "dispatch.sent":
-      live.activity.push({ text: `派发 <b>@${esc(String(p.agentIdentifier ?? ""))}</b> → ${esc(String(p.nodeId ?? ""))}` });
-      scheduleLive();
+    case "graph.updated":
+      S.graph = p ?? null;
+      scheduleRight();
       break;
+    case "dispatch.sent": {
+      // 本地同步节点状态（graph.updated 全量图随后也会到达，此处即时反馈）
+      const node = S.graph?.nodes?.find((n) => n.id === String(p.nodeId ?? ""));
+      if (node && ["pending", "ready"].includes(node.status)) node.status = "dispatched";
+      live.activity.push({ text: `派发 <b>@${esc(String(p.agentIdentifier ?? ""))}</b> → ${esc(String(node?.title || p.nodeId || ""))}` });
+      scheduleLive();
+      scheduleRight(true);
+      break;
+    }
     case "sync.received": {
       const r = p.report ?? {};
+      const node = S.graph?.nodes?.find((n) => n.id === String(r.taskNodeId ?? ""));
+      if (node) node.status = "done";
       delete live.units[String(r.sourceAgent ?? "")];
+      S.reports = [...S.reports, { agent: String(r.sourceAgent ?? ""), summary: String(r.summary ?? ""), confidence: Number(r.confidence ?? 0), nodeId: String(r.taskNodeId ?? "") }].slice(-12);
       live.activity.push({ text: `<b>@${esc(String(r.sourceAgent ?? ""))}</b> 回执：${esc(String(r.summary ?? "").slice(0, 90))}（置信 ${Number(r.confidence ?? 0).toFixed(2)}）` });
       scheduleLive();
+      scheduleRight(true);
       break;
     }
     case "run.finished": {
@@ -178,6 +210,7 @@ function handleEvent(evt) {
       resetLive();
       setRunning(false);
       renderStream(true);
+      scheduleRight(true);
       updateSessionPreview(S.sessionId, statements.map((s) => s.text).join(" "));
       break;
     }
@@ -191,8 +224,11 @@ function handleEvent(evt) {
 }
 
 function resetLive() {
-  S.live = { orch: "", thinking: "", units: {}, unitThinking: {}, toolCalls: [], activity: [], approvals: S.live.approvals };
+  S.live = { orch: "", thinking: "", units: {}, unitThinking: {}, toolCalls: [], activity: [], approvals: liveApprovalsKeep() };
+  // S.reports 有意保留：回执是本轮执行痕迹，右栏继续展示，切会话时才清
 }
+
+function liveApprovalsKeep() { return S.live.approvals; }
 
 // ────────────────────────────── 迷你 Markdown 渲染 ──────────────────────────────
 // 安全优先：先整体 HTML 转义再生成有限标记；链接仅放行 http(s)。
@@ -291,28 +327,54 @@ function setRunning(on) {
 function renderSidebar() {
   const nav = $("session-list");
   nav.innerHTML = "";
+  // 按项目（组）分类：组头可折叠，会话归属组内（组 = 项目，workspace 即项目目录）
+  const byGroup = new Map();
   for (const s of S.sessions) {
-    const item = document.createElement("div");
-    item.className = `session-item${s.id === S.sessionId ? " active" : ""}`;
-    item.innerHTML = `
-      <div class="session-title">${esc(s.title || "未命名会话")}</div>
-      <div class="session-preview">${esc(s.lastMessagePreview ?? "")}</div>
-      <button class="session-del" title="删除会话">✕</button>`;
-    item.addEventListener("click", () => selectSession(s.id));
-    item.querySelector(".session-del").addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!confirm(`删除会话「${s.title || "未命名"}」？`)) return;
-      api.deleteSession(s.id).then(() => {
-        S.sessions = S.sessions.filter((x) => x.id !== s.id);
-        if (S.sessionId === s.id) {
-          S.sessionId = null;
-          if (S.sessions.length) selectSession(S.sessions[0].id);
-          else newSession();
-        } else renderSidebar();
-      }).catch(alertErr);
-    });
-    nav.appendChild(item);
+    const gid = s.groupId ?? "default";
+    if (!byGroup.has(gid)) byGroup.set(gid, []);
+    byGroup.get(gid).push(s);
   }
+  // 当前目标组置顶；其余按名称排序
+  const activeGid = S.target?.mode === "group" ? (S.target.id ?? "default") : null;
+  const gids = [...byGroup.keys()].sort((a, b) => (a === activeGid ? -1 : b === activeGid ? 1 : groupName(a).localeCompare(groupName(b), "zh")));
+  for (const gid of gids) {
+    const head = document.createElement("div");
+    head.className = "group-head";
+    head.innerHTML = `<span class="group-dot"></span><span class="group-name">${esc(groupName(gid))}</span><span class="group-count">${byGroup.get(gid).length}</span>`;
+    const box = document.createElement("div");
+    box.className = "group-box";
+    for (const s of byGroup.get(gid)) box.appendChild(sessionEl(s));
+    head.addEventListener("click", () => {
+      const folded = box.style.display === "none";
+      box.style.display = folded ? "" : "none";
+      head.classList.toggle("folded", !folded);
+    });
+    nav.appendChild(head);
+    nav.appendChild(box);
+  }
+}
+
+function sessionEl(s) {
+  const item = document.createElement("div");
+  item.className = `session-item${s.id === S.sessionId ? " active" : ""}`;
+  item.innerHTML = `
+    <div class="session-title">${esc(s.title || "未命名会话")}</div>
+    <div class="session-preview">${esc(s.lastMessagePreview ?? "")}</div>
+    <button class="session-del" title="删除会话">✕</button>`;
+  item.addEventListener("click", () => selectSession(s.id));
+  item.querySelector(".session-del").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!confirm(`删除会话「${s.title || "未命名"}」？`)) return;
+    api.deleteSession(s.id).then(() => {
+      S.sessions = S.sessions.filter((x) => x.id !== s.id);
+      if (S.sessionId === s.id) {
+        S.sessionId = null;
+        if (S.sessions.length) selectSession(S.sessions[0].id);
+        else newSession();
+      } else renderSidebar();
+    }).catch(alertErr);
+  });
+  return item;
 }
 
 function stmtHtml(st) {
@@ -395,16 +457,15 @@ function scheduleLive(force) {
       <span class="tool-status"><span class="${t.status}">${t.status === "ok" ? "✓" : t.status === "error" ? "✗" : "…"}</span></span>
       <span class="tool-summary">${esc(t.summary ?? "")}</span></div>`).join("");
     const activity = live.activity.slice(-12).map((a) => `<div class="act-line">${a.text}</div>`).join("");
-    const units = Object.entries(live.units).map(([agent, text]) =>
-      `<div class="live-unit"><div class="live-unit-head">@${esc(agent)}</div><div class="live-unit-text">${esc(text)}</div></div>`).join("");
     liveEl.innerHTML = `<div class="msg assistant"><div class="avatar">EX</div>
       <div class="msg-body">${orch}
         ${tools || activity ? `<div class="trace"><details open><summary>执行过程</summary>${tools}${activity}</details></div>` : ""}
-        ${units ? `<div class="live-units">${units}</div>` : ""}
       </div></div>`;
     if (nearBottom()) scrollBottom();
   });
 }
+
+let liveAgentId = "";
 
 function nearBottom() {
   const el = $("stream");
@@ -455,11 +516,15 @@ async function selectSession(id) {
   S.sessionId = id;
   resetLive();
   setRunning(false);
+  S.graph = null;
+  S.reports = [];
   renderSidebar();
+  renderRight();
   try {
     const [messages, graph] = await Promise.all([api.messages(id), api.graph(id)]);
     if (S.sessionId !== id) return;
     S.messages = messages;
+    S.graph = graph?.nodes?.length ? graph : null;
     const pending = (graph?.nodes ?? []).some((n) => ["running", "dispatched", "syncing"].includes(String(n.status ?? "")));
     setRunning(pending);
   } catch (e) {
@@ -467,6 +532,7 @@ async function selectSession(id) {
     alertErr(e);
   }
   renderStream();
+  scheduleRight(true);
   wsConnect();
 }
 
@@ -482,17 +548,303 @@ async function send() {
   if (!text || !S.sessionId) return;
   input.value = "";
   autosize();
-  S.messages = [...S.messages, { id: `local-${Date.now()}`, role: "user", statements: [{ tag: "要求", text }], createdAt: new Date().toISOString() }];
+  const label = S.images.length ? `${text}（附 ${S.images.length} 张图片）` : text;
+  S.messages = [...S.messages, { id: `local-${Date.now()}`, role: "user", statements: [{ tag: "要求", text: label }], createdAt: new Date().toISOString() }];
   resetLive();
   setRunning(true);
   renderStream(true);
-  updateSessionPreview(S.sessionId, text);
+  updateSessionPreview(S.sessionId, label);
+  const images = S.images;
+  const mode = S.mode !== "auto" ? S.mode : undefined;
+  S.images = [];
+  renderAttachRow();
   try {
-    await api.chat(S.sessionId, text);
+    await api.chat(S.sessionId, text, images, mode);
   } catch (e) {
     setRunning(false);
     alertErr(e);
   }
+}
+
+// ────────────────────────────── 右栏：子个体执行面板 ──────────────────────────────
+// 任务派发图（指挥体 → 子个体节点）+ 各子个体实时流 + 回执；运行中自动弹出
+
+const ST_LABELS = {
+  pending: "待派发", ready: "就绪", dispatched: "已派发", running: "执行中", syncing: "回流中",
+  done: "完成", blocked: "受阻", failed: "失败", arbitrating: "裁决中", cancelled: "已取消",
+};
+
+function scheduleRight(force) {
+  if (!S.running && !S.graph?.nodes?.length) { renderRight(); return; }
+  // 有活动任务时确保面板可见
+  if (!S.rightOpen && (S.running || activeNodeCount() > 0)) setRightOpen(true);
+  if (scheduleRight.pending && !force) return;
+  scheduleRight.pending = true;
+  requestAnimationFrame(() => { scheduleRight.pending = false; renderRight(); });
+}
+
+function activeNodeCount() {
+  return (S.graph?.nodes ?? []).filter((n) => ["dispatched", "running", "syncing", "arbitrating"].includes(n.status)).length;
+}
+
+function setRightOpen(on) {
+  S.rightOpen = on;
+  try { localStorage.setItem("exm.rightOpen", on ? "1" : "0"); } catch { /* 忽略 */ }
+  $("rightpanel").classList.toggle("collapsed", !on);
+  $("btn-right").classList.toggle("on", on);
+}
+
+function renderRight() {
+  const body = $("rp-body");
+  const nodes = S.graph?.nodes ?? [];
+  const units = Object.entries(S.live.units);
+  const unitThink = Object.entries(S.live.unitThinking);
+  const active = activeNodeCount();
+  $("rp-count").textContent = nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length}` : "";
+  if (!nodes.length && !units.length && !unitThink.length && !S.reports.length) {
+    body.innerHTML = `<div class="rp-empty">本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示</div>`;
+    return;
+  }
+  let html = "";
+  if (nodes.length) {
+    html += `<div class="rp-section">任务派发（指挥体 → 子个体）</div>`;
+    for (const n of nodes) {
+      const isActive = ["dispatched", "running", "syncing", "arbitrating"].includes(n.status);
+      const deps = (n.dependsOn ?? []).map((d) => nodes.find((x) => x.id === d)?.title ?? d);
+      html += `<div class="task-card${isActive ? " active" : ""}">
+        <div class="task-top"><span class="task-agent">@${esc(n.agentIdentifier ?? "")}</span>
+          <span class="task-status st-${esc(n.status ?? "pending")}">${ST_LABELS[n.status] ?? esc(n.status ?? "")}</span></div>
+        <div class="task-title">${esc(n.title || n.objective || "未命名任务")}</div>
+        ${n.objective && n.title ? `<div class="task-obj">${esc(n.objective)}</div>` : ""}
+        ${deps.length ? `<div class="task-deps">依赖：${esc(deps.join("、"))}</div>` : ""}
+      </div>`;
+    }
+  }
+  const liveCards = [...new Set([...units.map(([a]) => a), ...unitThink.map(([a]) => a)])];
+  if (liveCards.length) {
+    html += `<div class="rp-section">子个体实时输出</div>`;
+    for (const agent of liveCards) {
+      const text = S.live.units[agent];
+      const think = S.live.unitThinking[agent];
+      html += `<div class="unit-card">
+        <div class="unit-head"><span class="spinner"></span>@${esc(agent)}</div>
+        ${think ? `<div class="unit-text" style="color:var(--text-faint)">${esc(think)}</div>` : ""}
+        ${text ? `<div class="unit-text">${esc(text)}</div>` : ""}
+      </div>`;
+    }
+  }
+  if (S.reports.length) {
+    html += `<div class="rp-section">回执</div>`;
+    for (const r of S.reports.slice(-6).reverse()) {
+      html += `<div class="unit-card" style="border-color:var(--border);background:var(--panel)">
+        <div class="unit-head" style="color:var(--ok)">✓ @${esc(r.agent)} <span style="color:var(--text-faint)">置信 ${r.confidence.toFixed(2)}</span></div>
+        <div class="unit-text">${esc(r.summary.slice(0, 160))}</div>
+      </div>`;
+    }
+  }
+  body.innerHTML = html;
+}
+
+// ────────────────────────────── 输入区上下文芯片 ──────────────────────────────
+// 工作目录 / 智能体·智能体组 / 模型 / 思考强度：底部工具条芯片 + 弹出菜单；
+// 附件：最左下角「＋」（图片，多模态 data URL 直传）
+
+const basename = (p) => String(p ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+
+function groupName(gid) {
+  return S.groups.find((g) => g.id === gid)?.name ?? (gid === "default" ? "默认组" : (gid ?? "默认组"));
+}
+
+function currentModelValue() {
+  if (S.target?.mode === "single") {
+    return S.singles.find((s) => s.identifier === S.target.id)?.modelHint ?? "";
+  }
+  return S.groups.find((g) => g.id === (S.target?.id ?? "default"))?.model ?? "";
+}
+
+function currentWorkspace() {
+  return S.groups.find((g) => g.id === (S.target?.id ?? "default"))?.workspace ?? "";
+}
+
+const MODE_LABELS = { auto: "思考：自动", direct: "思考：快速直答", full: "思考：深度协作" };
+
+function renderChips() {
+  const ws = currentWorkspace();
+  $("chip-ws").innerHTML = `<span class="chip-label">目录</span>${ws ? esc(basename(ws)) : "未设置"}`;
+  $("chip-ws").style.display = S.target?.mode === "single" ? "none" : "";
+  const t = S.target;
+  $("chip-target").innerHTML = t?.mode === "single"
+    ? `<span class="chip-label">单体</span>@${esc(t.name || t.id)}`
+    : `<span class="chip-label">组</span>${esc(groupName(t?.id ?? "default"))}`;
+  const mv = currentModelValue();
+  $("chip-model").innerHTML = `<span class="chip-label">模型</span>${mv ? esc(mv.includes("/") ? mv.split("/").pop() : (S.profiles.find((p) => p.id === mv)?.name ?? mv)) : "默认"}`;
+  $("chip-mode").textContent = MODE_LABELS[S.mode] ?? MODE_LABELS.auto;
+}
+
+// —— 弹出菜单骨架：统一开合、点外即收 ——
+function closePopover() { $("popover").classList.add("hidden"); }
+
+function openPopover(build) {
+  const pop = $("popover");
+  pop.innerHTML = "";
+  build(pop);
+  pop.classList.remove("hidden");
+}
+
+function popItem({ title, sub, current, onclick }) {
+  const b = document.createElement("button");
+  b.className = `pop-item${current ? " current" : ""}`;
+  b.innerHTML = `<span class="mark">${current ? "✓" : ""}</span><span style="min-width:0;overflow:hidden"><span>${esc(title)}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</span>`;
+  b.addEventListener("click", onclick);
+  return b;
+}
+
+function popTitle(text) {
+  const d = document.createElement("div");
+  d.className = "pop-title";
+  d.textContent = text;
+  return d;
+}
+
+async function switchTarget(mode, id) {
+  closePopover();
+  try {
+    await api.setTarget(mode, id);
+    await refreshContext();
+    // 目标即交互上下文：切换后回到该上下文的最新会话（与 WebUI 同口径）
+    S.sessions = await api.sessions();
+    renderSidebar();
+    if (S.sessions.length) await selectSession(S.sessions[0].id);
+    else await newSession();
+  } catch (e) { alertErr(e); }
+}
+
+async function refreshContext() {
+  try {
+    const [target, groups, singles, profiles] = await Promise.all([api.target(), api.groups(), api.singles(), api.llmProfiles()]);
+    S.target = target;
+    S.groups = groups.groups ?? [];
+    S.singles = singles.singles ?? [];
+    S.profiles = profiles.profiles ?? [];
+    const name = S.target?.mode === "single" ? `单体 · ${S.target.name || S.target.id}` : `组 · ${groupName(S.target?.id ?? "default")}`;
+    $("target-chip").innerHTML = `对话对象：<b>${esc(name)}</b>`;
+    renderChips();
+  } catch { /* 上下文拉取失败不阻塞对话 */ }
+}
+
+function wsMenu(pop) {
+  pop.appendChild(popTitle("工作目录（当前组的项目路径）"));
+  const input = document.createElement("input");
+  input.className = "pop-input";
+  input.value = currentWorkspace();
+  input.placeholder = "/path/to/project";
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); e.stopPropagation(); });
+  pop.appendChild(input);
+  const save = async () => {
+    const gid = S.target?.id ?? "default";
+    try {
+      await api.setGroupWorkspace(gid, input.value.trim());
+      const g = S.groups.find((x) => x.id === gid);
+      if (g) g.workspace = input.value.trim();
+      closePopover();
+      renderChips();
+    } catch (e) { alertErr(e); }
+  };
+  const btn = document.createElement("button");
+  btn.className = "pop-save";
+  btn.textContent = "保存工作目录";
+  btn.addEventListener("click", save);
+  pop.appendChild(btn);
+}
+
+function targetMenu(pop) {
+  pop.appendChild(popTitle("智能体组（项目）"));
+  for (const g of S.groups) {
+    const active = S.target?.mode === "group" && (S.target.id ?? "default") === g.id;
+    pop.appendChild(popItem({
+      title: g.name, sub: g.workspace ? `工作目录：${g.workspace}` : (g.description || "未设置工作目录"), current: active,
+      onclick: () => switchTarget("group", g.id),
+    }));
+  }
+  if (S.singles.length) {
+    pop.appendChild(popTitle("单体智能体"));
+    for (const s of S.singles) {
+      const active = S.target?.mode === "single" && S.target.id === s.identifier;
+      pop.appendChild(popItem({
+        title: `@${s.name}`, sub: s.description || s.domain, current: active,
+        onclick: () => switchTarget("single", s.identifier),
+      }));
+    }
+  }
+}
+
+function modelMenu(pop) {
+  pop.appendChild(popTitle("模型（档案 / 档案内模型）"));
+  const current = currentModelValue();
+  pop.appendChild(popItem({ title: "跟随全局生效档案", current: !current, onclick: async () => { closePopover(); await setModel(""); } }));
+  for (const p of S.profiles) {
+    pop.appendChild(popItem({ title: p.name, sub: `${p.id} · 默认 ${p.model || "未指定"}`, current: current === p.id, onclick: async () => { closePopover(); await setModel(p.id); } }));
+    for (const m of p.models ?? []) {
+      const v = `${p.id}/${m.model}`;
+      pop.appendChild(popItem({ title: m.model, sub: `${p.name}${m.vision ? " · 视觉" : ""}${m.audio ? " · 语音" : ""}`, current: current === v, onclick: async () => { closePopover(); await setModel(v); } }));
+    }
+  }
+}
+
+async function setModel(value) {
+  try {
+    if (S.target?.mode === "single") await api.setSingleModel(S.target.id, value || null);
+    else await api.setGroupModel(S.target?.id ?? "default", value);
+    if (S.target?.mode === "single") {
+      const s = S.singles.find((x) => x.identifier === S.target.id);
+      if (s) s.modelHint = value || null;
+    } else {
+      const g = S.groups.find((x) => x.id === (S.target?.id ?? "default"));
+      if (g) g.model = value || null;
+    }
+    renderChips();
+  } catch (e) { alertErr(e); }
+}
+
+function modeMenu(pop) {
+  pop.appendChild(popTitle("思考强度（本轮生效）"));
+  const items = [
+    ["auto", "自动", "跟随指挥体规划：简单直答，复杂拆解派发"],
+    ["direct", "快速直答", "强制 L0 直答，不拆解不派发"],
+    ["full", "深度协作", "强制拆解并派发子个体协作完成"],
+  ];
+  for (const [v, title, sub] of items) {
+    pop.appendChild(popItem({ title, sub, current: S.mode === v, onclick: () => { S.mode = v; closePopover(); renderChips(); } }));
+  }
+}
+
+// —— 附件（图片，data URL 随本轮进入规划）——
+function renderAttachRow() {
+  const row = $("attach-row");
+  row.innerHTML = "";
+  row.classList.toggle("hidden", !S.images.length);
+  S.images.forEach((url, i) => {
+    const t = document.createElement("div");
+    t.className = "attach-thumb";
+    t.innerHTML = `<img src="${url}" alt="附件${i + 1}"/><button class="rm" title="移除">✕</button>`;
+    t.querySelector(".rm").addEventListener("click", () => { S.images.splice(i, 1); renderAttachRow(); });
+    row.appendChild(t);
+  });
+}
+
+async function addFiles(files) {
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) continue;
+    if (S.images.length >= 6) break; // 上限：6 张（多模态输入合理边界）
+    const url = await new Promise((ok, err) => {
+      const r = new FileReader();
+      r.onload = () => ok(String(r.result));
+      r.onerror = err;
+      r.readAsDataURL(f);
+    });
+    S.images.push(url);
+  }
+  renderAttachRow();
 }
 
 // ────────────────────────────── 初始化 ──────────────────────────────
@@ -517,10 +869,26 @@ async function init() {
   $("btn-stop").addEventListener("click", () => S.sessionId && api.stop(S.sessionId).catch(alertErr));
   $("btn-side").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
   $("btn-console").addEventListener("click", openConsole);
+  $("btn-right").addEventListener("click", () => setRightOpen(!S.rightOpen));
+  setRightOpen(S.rightOpen);
   const input = $("input");
   input.addEventListener("input", autosize);
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+
+  // 输入区上下文芯片：菜单开合与切换
+  $("chip-ws").addEventListener("click", () => openPopover(wsMenu));
+  $("chip-target").addEventListener("click", () => openPopover(targetMenu));
+  $("chip-model").addEventListener("click", () => openPopover(modelMenu));
+  $("chip-mode").addEventListener("click", () => openPopover(modeMenu));
+  $("btn-plus").addEventListener("click", () => $("file-pick").click());
+  $("file-pick").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
+  document.addEventListener("click", (e) => {
+    const pop = $("popover");
+    if (pop.classList.contains("hidden")) return;
+    if (pop.contains(e.target) || e.target.closest?.(".chip")) return;
+    closePopover();
   });
 
   try {
@@ -529,21 +897,18 @@ async function init() {
     $("conn-text").textContent = health.mock ? "已连接（测试替身）" : "已连接";
   } catch { setConn(false); }
 
-  // 目标指示（组 / 单体）；模型未配置 → 引导控制台
+  // 上下文（组/单体/模型/目录）与配置；模型未配置 → 引导控制台
+  await refreshContext();
   try {
-    const [target, config] = [await api.target(), await api.config()];
-    S.target = target;
-    S.config = config;
-    const name = target?.mode === "single" ? `单体 · ${target.name || target.id}` : `组 · ${target?.id ?? "default"}`;
-    $("target-chip").innerHTML = `对话对象：<b>${esc(name)}</b>`;
-    const llmReady = Boolean(config?.llm?.apiKey) || health?.mock;
+    S.config = await api.config();
+    const llmReady = Boolean(S.config?.llm?.apiKey) || Boolean(S.config?.mock);
     const banner = $("banner");
     if (!llmReady) {
       banner.classList.remove("hidden");
       banner.innerHTML = `<span>模型尚未配置——先在控制台填写提供商端点与 API Key，即可开始对话。</span><button class="banner-action" id="banner-console">打开控制台</button>`;
       $("banner-console").addEventListener("click", openConsole);
     }
-  } catch { /* target/config 拉取失败不阻塞对话 */ }
+  } catch { /* config 拉取失败不阻塞对话 */ }
 
   try {
     S.sessions = await api.sessions();

@@ -28,6 +28,7 @@
           <div id="target-chip" class="target-chip">…</div>
           <div class="top-actions">
             <span id="run-state" class="run-state hidden"><span class="spinner"></span>运行中</span>
+            <button id="btn-right" class="btn-right" title="子个体执行面板">执行面板</button>
             <button id="btn-stop" class="btn-stop hidden" title="终止本轮">■ 停止</button>
           </div>
         </header>
@@ -39,12 +40,29 @@
         <footer id="composer">
           <div id="approvals"></div>
           <div class="composer-box">
+            <div id="attach-row" class="attach-row hidden"></div>
             <textarea id="input" rows="1" placeholder="给 EXMACHINA 发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
-            <button id="btn-send" class="btn-send" title="发送">➤</button>
+            <div class="composer-bar">
+              <button id="btn-plus" class="btn-plus" title="添加附件">＋</button>
+              <button id="chip-ws" class="chip" title="工作目录">…</button>
+              <button id="chip-target" class="chip" title="切换智能体 / 智能体组">…</button>
+              <button id="chip-model" class="chip" title="模型">…</button>
+              <button id="chip-mode" class="chip" title="思考强度">…</button>
+              <span class="bar-spacer"></span>
+              <button id="btn-send" class="btn-send" title="发送">➤</button>
+            </div>
+            <div id="popover" class="popover hidden"></div>
           </div>
+          <input id="file-pick" type="file" accept="image/*" multiple class="hidden" />
           <div class="composer-hint">内容由 AI 生成，请自行核实重要信息</div>
         </footer>
       </main>
+
+      <!-- 右栏：子个体执行面板（任务派发图 + 各子个体实时流） -->
+      <aside id="rightpanel">
+        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span></div>
+        <div id="rp-body"></div>
+      </aside>
     </div>
     <script src="app.js"></script>
   </body>
