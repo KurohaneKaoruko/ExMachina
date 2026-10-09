@@ -8,6 +8,7 @@
 //! token 失效（M_UNKNOWN_TOKEN）上报错误后指数退避重试。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/凭证变更的账号回收任务。
 
+use crate::channel_util::{builtin_command, first_seen, media_placeholder};
 use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use parking_lot::Mutex;
@@ -167,11 +168,16 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                             "ok",
                             if self_user.is_empty() { "轮询中".into() } else { format!("账号 {self_user}") },
                         );
-                        for (room, sender, mentioned, raw_text) in parse_events(&body, &self_user) {
+                        for (room, sender, event_id, mentioned, raw_text) in parse_events(&body, &self_user) {
+                            // 消息去重（防御性）：/sync 游标本身保证不重放，这里兜底
+                            // 「游标丢失（如长期断线后重置）导致同批事件重见」的场景
+                            if !first_seen(&format!("matrix:{}", ch.id), &event_id) {
+                                continue;
+                            }
                             // 入站媒体（组 6.4）：标记行解析 → mxc 下载 → 注入
                             let mut saved: Vec<(String, String, String)> = Vec::new();
-                            let text = if let Some(rest) = raw_text.strip_prefix(US) {
-                                let parts: Vec<&str> = rest.split(US).collect();
+                            let text: String = if raw_text.starts_with(US) {
+                                let parts: Vec<&str> = raw_text.split(US).collect();
                                 if parts.len() == 3 {
                                     let (kind, mxc, _room) = (parts[0], parts[1], parts[2]);
                                     let dl = format!(
@@ -179,24 +185,27 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                                         hs,
                                         url_encode(mxc.trim_start_matches("mxc://"))
                                     );
+                                    // 纯媒体消息占位正文：曾给空串导致整条被下方空文本检查丢弃——
+                                    // 「只发一张图」在 matrix 通道完全石沉大海
+                                    let mut text = media_placeholder(&[kind]);
                                     match client.get(dl).bearer_auth(&token).send().await {
                                         Ok(r) if r.status().is_success() => {
-                                            let name = format!("matrix-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" });
+                                            let ext = if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" };
+                                            let name = format!("matrix-{}.{ext}", exm_core::types::now_ms());
                                             if let Some(bytes) = r.bytes().await.ok().map(|b| b.to_vec()) {
                                                 if let Some(p) = crate::platform::save_inbound_media(core.as_ref(), &ch, &name, bytes).await {
                                                     saved.push((kind.to_string(), p, name));
                                                 }
                                             }
                                         }
-                                        Err(_) => {
-                                            saved.push((kind.to_string(), String::new(), "下载失败附件".into()));
-                                        }
-                                        Ok(_) => {
-                                            saved.push((kind.to_string(), String::new(), "下载失败附件".into()));
+                                        _ => {
+                                            // 下载失败不硬塞空路径条目（会注出「已保存：<空>」的假话），
+                                            // 改成显式失败占位，用户与模型都知道附件没收到
+                                            let kind_cn = if kind == "image" { "图片" } else if kind == "voice" { "语音" } else { "文件" };
+                                            text = format!("（用户发来一个{kind_cn}附件，但下载失败，未能读取内容）");
                                         }
                                     }
-                                    // 媒体消息无文本正文
-                                    String::new()
+                                    text
                                 } else {
                                     raw_text
                                 }
@@ -231,6 +240,15 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                                     continue;
                                 }
                             }
+                            // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
+                            if let Some(reply) = builtin_command(&core, &ch, &room, &text).await {
+                                let client2 = client.clone();
+                                let hs2 = hs.clone();
+                                let token2 = token.clone();
+                                let room2 = room.clone();
+                                tokio::spawn(async move { send_message(&client2, &hs2, &token2, &room2, &reply).await });
+                                continue;
+                            }
                             let core = core.clone();
                             let ch2 = ch.clone();
                             let hs2 = hs.clone();
@@ -238,7 +256,7 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                             let client2 = client.clone();
                             let sender2 = sender.clone();
                             tokio::spawn(async move {
-                                handle_message(&core, &ch2, &client2, &hs2, &token2, &room, &sender2, text.trim()).await;
+                                handle_message(&core, &ch2, &client2, &hs2, &token2, &room, &sender2, saved, &text).await;
                             });
                         }
                         since = next.or(since);
@@ -272,8 +290,8 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
 
 const US: char = '\u{1}'; // 入站媒体标记行分隔符（媒体消息正文形如 \u{1}kind\u{1}mxc\u{1}room）
 
-/// /sync 响应 → [(房间 id, 发送者, 是否提及, 正文)]。自己发的消息与非文本消息一律忽略。
-fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, String)> {
+/// /sync 响应 → [(房间 id, 发送者, 事件 id, 是否提及, 正文)]。自己发的消息与非文本消息一律忽略。
+fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, String, bool, String)> {
     let mut out = Vec::new();
     let Some(join) = body.pointer("/rooms/join").and_then(|v| v.as_object()) else {
         return out;
@@ -291,6 +309,7 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
             if !self_user.is_empty() && sender == self_user {
                 continue;
             }
+            let event_id = e.get("event_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
             // 入站媒体（组 6.4）：m.image / m.file / m.audio → (kind, mxc, 文件名)
             let msgtype = content.get("msgtype").and_then(|x| x.as_str()).unwrap_or("");
             if matches!(msgtype, "m.image" | "m.file" | "m.audio") {
@@ -304,6 +323,7 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
                     out.push((
                         room_id.clone(),
                         sender.to_string(),
+                        event_id,
                         false,
                         format!("{US}media{US}{kind}{US}{url}{US}{room_id}"),
                     ));
@@ -321,7 +341,7 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
                 .map(|a| a.iter().any(|u| u.as_str() == Some(self_user)))
                 .unwrap_or(false)
                 || (!self_user.is_empty() && text.to_lowercase().contains(&format!("@{}", self_user.to_lowercase())));
-            out.push((room_id.clone(), sender.to_string(), mentioned, text.to_string()));
+            out.push((room_id.clone(), sender.to_string(), event_id, mentioned, text.to_string()));
         }
     }
     out
@@ -354,11 +374,16 @@ async fn handle_message(
     token: &str,
     room: &str,
     sender: &str,
+    media: Vec<(String, String, String)>,
     text: &str,
 ) {
     // 会话键用房间 id，房间内多人共享同一会话（Matrix 房间即群）
     let Some((run, rx)) = ChannelRun::begin(core, ch, room).await else { return };
     core.stamp_session_origin(&run.session_id, sender, core.identity_of(&ch.id, sender).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, sender)).as_str());
+    // 入站媒体注入（组 6.4）：图片进多模态暂存，文件/语音附路径说明——
+    // 曾下载保存后忘了传入执行上下文，附件等于白收
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     let client2 = client.clone();
     let hs2 = hs.to_string();
     let token2 = token.to_string();
@@ -388,7 +413,7 @@ async fn handle_message(
             async move { mx_send_media(&client2, &hs2, &token2, &room2, &item).await }
         },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }
 
@@ -487,5 +512,62 @@ async fn send_message(client: &reqwest::Client, hs: &str, token: &str, room: &st
             eprintln!("[matrix] 回复失败：HTTP {status} {body}");
         }
         Err(e) => eprintln!("[matrix] 回复网络错误：{e}"),
+    }
+}
+
+// ---------------------------------------------------------------- 测试（纯函数部分）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// /sync 事件解析：文本提及、自身过滤、媒体消息打标记行、非文本事件忽略
+    #[test]
+    fn 事件解析_提及与自身过滤与媒体标记() {
+        let body = json!({
+            "rooms": { "join": {
+                "!r1:x": { "timeline": { "events": [
+                    // 他人文本 + m.mentions 命中
+                    { "type": "m.room.message", "sender": "@a:x", "event_id": "$e1",
+                      "content": { "msgtype": "m.text", "body": "帮我看看", "m.mentions": { "user_ids": ["@me:x"] } } },
+                    // 自己发的：忽略
+                    { "type": "m.room.message", "sender": "@me:x", "event_id": "$e2",
+                      "content": { "msgtype": "m.text", "body": "我自己说的" } },
+                    // 图片消息：转标记行
+                    { "type": "m.room.message", "sender": "@b:x", "event_id": "$e3",
+                      "content": { "msgtype": "m.image", "body": "shot.png", "url": "mxc://x/abc" } },
+                    // 非文本（如 m.notice）：忽略
+                    { "type": "m.room.message", "sender": "@b:x", "event_id": "$e4",
+                      "content": { "msgtype": "m.notice", "body": "bot 广播" } },
+                    // 其他事件类型：忽略
+                    { "type": "m.room.member", "sender": "@b:x", "event_id": "$e5", "content": {} },
+                ] } }
+            } }
+        });
+        let out = parse_events(&body, "@me:x");
+        assert_eq!(out.len(), 2, "自身/notice/非消息事件不收：{out:?}");
+        // 文本事件：提及命中、event_id 作去重键
+        assert_eq!(out[0].0, "!r1:x");
+        assert_eq!(out[0].2, "$e1");
+        assert!(out[0].3, "m.mentions 命中应算提及");
+        assert_eq!(out[0].4, "帮我看看");
+        // 图片消息：标记行 \u{1}kind\u{1}mxc\u{1}room，未提及
+        assert_eq!(out[1].2, "$e3");
+        assert!(!out[1].3);
+        assert_eq!(out[1].4, format!("{US}media{US}image{US}mxc://x/abc{US}!r1:x"));
+        // 无 join 房间（初始 sync）返回空
+        assert!(parse_events(&json!({}), "@me:x").is_empty());
+    }
+
+    /// URL 编码：只放行 unreserved 字符（since 游标 / 房间 id 含保留字符也不跑偏）
+    #[test]
+    fn url编码_游标与房间id安全() {
+        assert_eq!(url_encode("abc123"), "abc123");
+        assert_eq!(url_encode("a b/c+d"), "a%20b%2Fc%2Bd");
+        assert_eq!(url_encode("!room:x.org"), "%21room%3Ax.org");
+        assert_eq!(url_encode("-_.~"), "-_.~", "unreserved 字符不编码");
+        // 非 ASCII 按 UTF-8 字节展开
+        assert_eq!(url_encode("房"), "%E6%88%BF");
     }
 }

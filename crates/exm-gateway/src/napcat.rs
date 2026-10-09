@@ -6,6 +6,7 @@
 //! 收发解耦：入站读取不阻塞（消息处理全部 spawn），动作经 mpsc 通道交给专职写任务，
 //! 避免长运行期间无法应答 WS 层 Ping 被服务端断开。
 
+use crate::channel_util::{builtin_command, first_seen, media_placeholder};
 use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
@@ -77,6 +78,9 @@ async fn reconcile(core: &Arc<Core>) {
 async fn connect_loop(core: Arc<Core>, ch: Channel) {
     let url = ch.cfg("url").unwrap_or_default();
     let token = ch.cfg("token").unwrap_or_default();
+    // 断线退避：连续失败按 5→10→20…（封顶 300s）指数递增；连接成功即复位。
+    // NapCat 停机维护时不该每 5 秒重试一次敲日志。
+    let mut fail_streak: u32 = 0;
     loop {
         // 带鉴权头的握手请求（token 为空则不带）
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
@@ -89,13 +93,17 @@ async fn connect_loop(core: Arc<Core>, ch: Channel) {
                 Ok((ws, _)) => {
                     println!("[napcat:{}] 已连结 {url}", ch.id);
                     report_status(&ch.id, "ok", format!("已连结 {url}"));
+                    // 复位退避：连上即视为恢复（连上后立刻断开属对端不稳，5s 基线重试可接受）
+                    fail_streak = 0;
                     ws
                 }
                 Err(e) => {
                     let msg = format!("连接失败：{e}");
                     eprintln!("[napcat:{}] {msg}", ch.id);
                     report_status(&ch.id, "error", msg);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let wait = std::time::Duration::from_secs((5u64 << fail_streak.min(7)).min(300));
+                    fail_streak = fail_streak.saturating_add(1);
+                    tokio::time::sleep(wait).await;
                     continue;
                 }
             },
@@ -140,7 +148,10 @@ async fn connect_loop(core: Arc<Core>, ch: Channel) {
         }
         drop(tx);
         let _ = writer.await;
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // 断线退避：指数递增（连接成功时已复位）
+        let wait = std::time::Duration::from_secs((5u64 << fail_streak.min(7)).min(300));
+        fail_streak = fail_streak.saturating_add(1);
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -162,7 +173,23 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
     }
     let group_id = v.get("group_id").and_then(|x| x.as_i64());
     let user_id = v.get("user_id").and_then(|x| x.as_i64());
-    let text = extract_text(v.get("message").unwrap_or(&serde_json::Value::Null));
+    // 机器人自己的消息不回环处理（NapCat 开启 reportSelfMessage 时会上报自己说的话）
+    if user_id.is_some() && v.get("self_id").and_then(|x| x.as_i64()) == user_id {
+        return;
+    }
+    // 消息去重：OneBot 实现断线重连可能重放最近事件，按 message_id 首见放行
+    let msg_id = v.get("message_id").map(|x| x.to_string()).unwrap_or_default();
+    if !first_seen(&format!("napcat:{}", ch.id), &msg_id) {
+        return;
+    }
+    let mut text = extract_text(v.get("message").unwrap_or(&serde_json::Value::Null));
+    // 入站媒体段（组 6.4）：先盘类型，纯媒体消息给占位正文——
+    // 曾在文本为空时直接 return，「只发一张图」被整体丢弃
+    let media = collect_media(v.get("message").unwrap_or(&serde_json::Value::Null));
+    if text.trim().is_empty() {
+        let kinds: Vec<&str> = media.iter().map(|(k, _)| k.as_str()).collect();
+        text = media_placeholder(&kinds);
+    }
     if text.trim().is_empty() {
         return;
     }
@@ -183,22 +210,10 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
         let Some(external_id) = napcat_gate(&core, &ch, &tx, group_id, user_id, &raw, &text).await else {
             return; // 闸门拦截（忽略 / 已回复）
         };
-        // 入站媒体（组 6.4）：image/file 段 → 下载或本地 file:// 复制 → 注入
-        let mut media: Vec<(String, String)> = Vec::new();
-        if let Some(segs) = raw.get("message").and_then(|m| m.as_array()) {
-            for seg in segs {
-                let t = seg.get("type").and_then(|x| x.as_str()).unwrap_or("");
-                if t != "image" && t != "file" {
-                    continue;
-                }
-                let url = seg.pointer("/data/url").and_then(|x| x.as_str()).unwrap_or("");
-                let file = seg.pointer("/data/file").and_then(|x| x.as_str()).unwrap_or("");
-                media.push((t.to_string(), if !url.is_empty() { url.to_string() } else { file.to_string() }));
-            }
-        }
+        // 入站媒体（组 6.4）：下载或本地 file:// 复制 → 注入（段清单已在闸门前盘好）
         let mut saved: Vec<(String, String, String)> = Vec::new();
         for (kind, src) in media {
-            let name = format!("napcat-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else { "bin" });
+            let name = format!("napcat-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" });
             let bytes = if let Some(local) = src.strip_prefix("file://") {
                 std::fs::read(local).ok()
             } else {
@@ -210,8 +225,55 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
                 }
             }
         }
+        // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
+        // 会话键与 handle_message 同口径：群号优先，私聊为用户 id
+        let peer = group_id
+            .map(|g| g.to_string())
+            .or_else(|| user_id.map(|u| u.to_string()))
+            .unwrap_or_default();
+        if let Some(reply) = builtin_command(&core, &ch, &peer, &text).await {
+            let action = match group_id {
+                Some(g) => serde_json::json!({
+                    "action": "send_group_msg",
+                    "params": { "group_id": g, "message": [{ "type": "text", "data": { "text": reply } }] },
+                }),
+                None => serde_json::json!({
+                    "action": "send_private_msg",
+                    "params": { "user_id": user_id.unwrap_or(0), "message": [{ "type": "text", "data": { "text": reply } }] },
+                }),
+            };
+            let _ = tx.send(action);
+            return;
+        }
         handle_message(&core, &ch, &tx, group_id, user_id, &external_id, saved, &text).await;
     });
+}
+
+/// OneBot 消息体 → 附件段清单 (kind, 来源)：kind ∈ image | file | voice（record 归一为 voice）；
+/// 来源取 data.url，缺省回退 data.file（可能是本地 file:// 路径，由调用方分支处理）。
+fn collect_media(m: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Some(arr) = m.as_array() else {
+        return out; // CQ 码字符串形态不带结构化附件段（NapCat 默认数组段）
+    };
+    for seg in arr {
+        let t = seg.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let kind = match t {
+            "image" => "image",
+            "file" => "file",
+            // 语音段（record / voice 两种写法都见过）；视频体积大且无消费方，不采
+            "record" | "voice" => "voice",
+            _ => continue,
+        };
+        let url = seg.pointer("/data/url").and_then(|x| x.as_str()).unwrap_or("");
+        let file = seg.pointer("/data/file").and_then(|x| x.as_str()).unwrap_or("");
+        let src = if !url.is_empty() { url.to_string() } else { file.to_string() };
+        if src.is_empty() {
+            continue;
+        }
+        out.push((kind.to_string(), src));
+    }
+    out
 }
 
 /// OneBot 消息的入站闸门（群聊唤醒 + 身份管控）：在 spawn 的任务内执行
@@ -277,7 +339,12 @@ fn strip_cq(s: &str) -> String {
         out.push_str(&rest[..i]);
         match rest[i..].find(']') {
             Some(j) => rest = &rest[i + j + 1..],
-            None => break,
+            None => {
+                // 找不到收尾 ] ：原样保留标记与后面正文，曾把前缀重复拼一遍
+                out.push_str(&rest[i..]);
+                rest = "";
+                break;
+            }
         }
     }
     out.push_str(rest);
@@ -367,4 +434,52 @@ async fn handle_message(
     );
     run.run(&text).await;
     let _ = reply.await;
+}
+
+// ---------------------------------------------------------------- 测试（纯函数部分）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 文本提取：数组段拼接 text，其余类型（图/文件/AT）不混入正文
+    #[test]
+    fn 文本提取_数组段拼接() {
+        let m = json!([
+            { "type": "text", "data": { "text": "帮我" } },
+            { "type": "image", "data": { "url": "https://x/y.png" } },
+            { "type": "text", "data": { "text": "看这张图" } },
+            { "type": "at", "data": { "qq": "10086" } },
+        ]);
+        assert_eq!(extract_text(&m), "帮我看这张图");
+        // 非数组（CQ 码字符串）走剥离路径
+        assert_eq!(extract_text(&json!("看[CQ:image,id=1]这张")), "看这张");
+    }
+
+    /// CQ 码剥离：完整码剥掉；未闭合码不吞后面正文
+    #[test]
+    fn cq码剥离_未闭合不吞正文() {
+        assert_eq!(strip_cq("[CQ:at,qq=1]你好"), "你好");
+        assert_eq!(strip_cq("a[CQ:x]b[CQ:y]c"), "abc");
+        assert_eq!(strip_cq("没有码"), "没有码");
+        assert_eq!(strip_cq("未闭合[CQ:at"), "未闭合[CQ:at");
+    }
+
+    /// 附件段盘型：image / file / record(→voice) 分类，缺来源的段跳过，非数组段返回空
+    #[test]
+    fn 附件段盘型_语音归一与来源回退() {
+        let m = json!([
+            { "type": "image", "data": { "url": "https://x/a.png", "file": "a.png" } },
+            { "type": "record", "data": { "file": "file:///tmp/b.mp3" } },
+            { "type": "file", "data": {} },
+            { "type": "at", "data": { "qq": "1" } },
+        ]);
+        let media = collect_media(&m);
+        assert_eq!(media.len(), 2, "缺来源的 file 段与 at 段不收：{media:?}");
+        assert_eq!(media[0], ("image".to_string(), "https://x/a.png".to_string()), "url 优先");
+        assert_eq!(media[1], ("voice".to_string(), "file:///tmp/b.mp3".to_string()), "record 归一为 voice");
+        // CQ 码字符串形态：无结构化段 → 空（不至于误采）
+        assert!(collect_media(&json!("[CQ:image,url=x]")).is_empty());
+    }
 }

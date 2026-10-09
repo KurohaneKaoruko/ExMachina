@@ -171,6 +171,32 @@ pub(crate) fn first_seen(scope: &str, key: &str) -> bool {
     true
 }
 
+// ---------------------------------------------------------------- 媒体占位正文
+
+/// 纯媒体消息的占位正文：只发图 / 只发文件的消息没有文字，若直接丢弃，
+/// 用户会觉得「发了图没人理」（telegram 通道曾因此丢图，修复时总结成共用小件）。
+/// 给一句最小说明让消息继续走完闸门与会话；附件的路径 / 多模态注入细节由
+/// `platform::stage_inbound_media` 在执行前追加，这里只负责「消息不凭空消失」。
+pub(crate) fn media_placeholder(kinds: &[&str]) -> String {
+    let imgs = kinds.iter().filter(|k| **k == "image").count();
+    let voices = kinds.iter().filter(|k| **k == "voice").count();
+    let files = kinds.iter().filter(|k| **k == "file").count();
+    let mut parts: Vec<String> = Vec::new();
+    if imgs > 0 {
+        parts.push(format!("图片 x{imgs}"));
+    }
+    if voices > 0 {
+        parts.push(format!("语音 x{voices}"));
+    }
+    if files > 0 {
+        parts.push(format!("文件 x{files}"));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("（用户发来附件：{}，附件细节见消息注入）", parts.join("、"))
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[cfg(test)]
@@ -187,6 +213,20 @@ mod tests {
         assert_eq!(parse_command("你好 /new"), None, "混在句中不算命令");
         assert_eq!(parse_command("/stop"), None, "/stop 归 admit 管，这里不认");
         assert_eq!(parse_command(""), None);
+    }
+
+    #[test]
+    fn 媒体占位_类型计数与空清单() {
+        assert_eq!(media_placeholder(&[]), "", "无附件不给占位（调用方应直接丢弃）");
+        assert_eq!(
+            media_placeholder(&["image"]),
+            "（用户发来附件：图片 x1，附件细节见消息注入）"
+        );
+        let multi = media_placeholder(&["image", "image", "file"]);
+        assert!(multi.contains("图片 x2") && multi.contains("文件 x1"), "{multi}");
+        let voice = media_placeholder(&["voice"]);
+        assert!(voice.contains("语音 x1"), "{voice}");
+        assert_eq!(media_placeholder(&["unknown"]), "", "未知类型不计入占位（避免误导模型）");
     }
 
     #[test]

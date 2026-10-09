@@ -9,6 +9,7 @@
 //! config.sandbox = "true" 时走沙箱 openapi（sandbox.api.sgroup.qq.com）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
+use crate::channel_util::{builtin_command, first_seen, media_placeholder};
 use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
@@ -139,6 +140,9 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
     let creds = Arc::new(BotCreds { app_id, secret, client: client.clone(), cache: Mutex::new(None) });
     // (session_id, seq)：断线优先 Resume 补发
     let mut session: Option<(String, i64)> = None;
+    // 断线退避：连续失败按 3→6→12…（封顶 300s）指数退避；成功连结（READY/RESUMED）即复位。
+    // 否则凭证长期失效时会每 3 秒敲一次网关，日志与对端都不好看。
+    let mut fail_streak: u32 = 0;
 
     loop {
         let Some(token) = creds.token().await else {
@@ -248,12 +252,19 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                         let user = d.pointer("/user/username").and_then(|x| x.as_str()).unwrap_or("?");
                                         println!("[qqbot:{}] 机器人已连结：{user}", ch.id);
                                         report_status(&ch.id, "ok", format!("机器人 {user}"));
+                                        fail_streak = 0;
                                     }
                                     "RESUMED" => {
                                         report_status(&ch.id, "ok", "会话已恢复");
+                                        fail_streak = 0;
                                     }
                                     "GROUP_AT_MESSAGE_CREATE" | "C2C_MESSAGE_CREATE" | "AT_MESSAGE_CREATE" => {
                                         let Some((peer, msg_id, content)) = parse_message(t, &d) else { continue };
+                                        // 消息去重：断线 Resume 会重放最近事件，按平台消息 id 首见放行。
+                                        // 放在最前——重放期间不能重复下载附件，更不能重复执行一轮对话。
+                                        if !first_seen(&format!("qqbot:{}", ch.id), &msg_id) {
+                                            continue;
+                                        }
                                         // 入站媒体（组 6.4）：attachments 下载
                                         let mut inbound: Vec<(String, String, String, Vec<u8>)> = Vec::new();
                                         if let Some(atts) = d.get("attachments").and_then(|x| x.as_array()) {
@@ -270,7 +281,11 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                                 }
                                             }
                                         }
-                                        if content.trim().is_empty() && inbound.is_empty() {
+                                        // 纯媒体消息（官方平台发图常无 caption）：占位正文兜底，
+                                        // 曾直接空内容丢弃——用户「只发一张图」会得不到任何响应
+                                        let kinds: Vec<&str> = inbound.iter().map(|(k, _, _, _)| k.as_str()).collect();
+                                        let text = if content.trim().is_empty() { media_placeholder(&kinds) } else { content.trim().to_string() };
+                                        if text.trim().is_empty() && inbound.is_empty() {
                                             continue;
                                         }
                                         if !ch.allowed_chats.is_empty()
@@ -284,7 +299,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                         let external_id =
                                             d.pointer("/author/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                                         let gate_ctx = InboundCtx {
-                                            text: &content,
+                                            text: &text,
                                             external_id: &external_id,
                                             display_name: &external_id,
                                             is_group,
@@ -304,6 +319,17 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                                 continue;
                                             }
                                         }
+                                        // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
+                                        // ——未绑定 / 被拒用户已被闸门挡住，这里只服务合法用户
+                                        if let Some(reply) = builtin_command(&core, &ch, peer.key(), &text).await {
+                                            let creds2 = creds.clone();
+                                            let peer2 = peer.clone();
+                                            let msg_id2 = msg_id.clone();
+                                            tokio::spawn(async move {
+                                                send_passive(&creds2, &base, &peer2, &msg_id2, 1, &reply).await;
+                                            });
+                                            continue;
+                                        }
                                         let core = core.clone();
                                         let ch2 = ch.clone();
                                         let creds2 = creds.clone();
@@ -314,7 +340,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                                     saved.push((kind, p, name));
                                                 }
                                             }
-                                            handle_message(&core, &ch2, &creds2, base, peer, &external_id, saved, msg_id, content.trim()).await;
+                                            handle_message(&core, &ch2, &creds2, base, peer, &external_id, saved, msg_id, &text).await;
                                         });
                                     }
                                     _ => {}
@@ -344,7 +370,10 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 断线退避：指数递增（3→6→12…封顶 300s）；连结成功时已在 READY/RESUMED 处复位
+        let wait = Duration::from_secs((3u64 << fail_streak.min(7)).min(300));
+        fail_streak = fail_streak.saturating_add(1);
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -403,7 +432,7 @@ impl Peer {
     }
 }
 
-/// 频道 @ 消息正文剥掉 `<@…>` 提及片段
+/// 频道 @ 消息正文剥掉 `<@…>` 提及片段；未闭合片段保留原样（曾把前缀重复拼一遍）
 fn strip_mentions(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
@@ -411,7 +440,12 @@ fn strip_mentions(s: &str) -> String {
         out.push_str(&rest[..i]);
         match rest[i..].find('>') {
             Some(j) => rest = &rest[i + j + 1..],
-            None => break,
+            None => {
+                // 找不到收尾 > ：把标记连同后面正文原样保留，宁可带杂质也不吞正文
+                out.push_str(&rest[i..]);
+                rest = "";
+                break;
+            }
         }
     }
     out.push_str(rest);
@@ -497,5 +531,68 @@ async fn send_passive(creds: &BotCreds, base: &str, peer: &Peer, msg_id: &str, m
             eprintln!("[qqbot] 回复失败：HTTP {status} {body}");
         }
         Err(e) => eprintln!("[qqbot] 回复网络错误：{e}"),
+    }
+}
+
+// ---------------------------------------------------------------- 测试（纯函数部分）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 消息解析：群 / 单聊 / 公域频道三种事件形态各自取到正确的会话端点与正文
+    #[test]
+    fn 消息解析_群单聊频道三形态() {
+        // 群聊：group_openid 优先
+        let (peer, msg_id, content) = parse_message(
+            "GROUP_AT_MESSAGE_CREATE",
+            &json!({ "id": "m1", "group_openid": "G1", "content": "<@!bot>在吗" }),
+        )
+        .expect("群事件应可解析");
+        assert_eq!(peer.key(), "G1");
+        assert!(!matches!(peer, Peer::C2C(_)), "群聊不是私聊");
+        assert_eq!(msg_id, "m1");
+        assert_eq!(content, "在吗", "群 @ 消息应剥掉提及片段");
+
+        // 单聊：user_openid；缺 author.user_openid 时兜底指针
+        let (peer, _, content) = parse_message(
+            "C2C_MESSAGE_CREATE",
+            &json!({ "id": "m2", "user_openid": "U9", "content": "帮我查天气" }),
+        )
+        .expect("单聊事件应可解析");
+        assert!(matches!(peer, Peer::C2C(_)), "C2C 应识别为私聊（门控豁免依据）");
+        assert_eq!(content, "帮我查天气");
+
+        // 公域频道：channel_id
+        let (peer, _, _) = parse_message(
+            "AT_MESSAGE_CREATE",
+            &json!({ "id": "m3", "channel_id": "CH1", "content": "hi" }),
+        )
+        .expect("频道事件应可解析");
+        assert!(matches!(peer, Peer::Guild(_)));
+
+        // 缺 msg_id / 缺端点 → 不可路由，直接放弃
+        assert!(parse_message("GROUP_AT_MESSAGE_CREATE", &json!({ "content": "x" })).is_none());
+        assert!(parse_message("GROUP_AT_MESSAGE_CREATE", &json!({ "id": "m4" })).is_none());
+        // 未知事件类型不解析
+        assert!(parse_message("DIRECT_MESSAGE_CREATE", &json!({ "id": "m5" })).is_none());
+    }
+
+    /// 提及剥离：完整片段剥掉、未闭合片段保持原样（宁可带杂质也不吞正文）
+    #[test]
+    fn 提及剥离_未闭合保持原样() {
+        assert_eq!(strip_mentions("<@!abc123>在吗"), "在吗");
+        assert_eq!(strip_mentions("前缀<@x>中缀<@y>后缀"), "前缀中缀后缀");
+        assert_eq!(strip_mentions("没有提及"), "没有提及");
+        assert_eq!(strip_mentions("未闭合<@abc"), "未闭合<@abc", "找不到 > 时不再吞后面正文");
+    }
+
+    /// 回复上限：群/单聊文本限 2000 字节（CJK 按 650 字符收敛），公域频道走常规上限
+    #[test]
+    fn 回复上限_按端点收敛() {
+        assert_eq!(Peer::Group("g".into()).max_chars(), 650);
+        assert_eq!(Peer::C2C("u".into()).max_chars(), 650);
+        assert_eq!(Peer::Guild("c".into()).max_chars(), 3800);
     }
 }
