@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Segmented, Collapse, Button, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message } from "antd";
 import { CaretRightOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { api, type CronJob, type CronRun } from "../api";
+import { api, type Channel, type CronJob, type CronRun } from "../api";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
@@ -20,6 +20,7 @@ export function AutomationsView(): React.ReactElement {
   const t = useT();
   const { groups, activeGroup } = useExm();
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(false);
   const [runsFor, setRunsFor] = useState<CronJob | null>(null);
@@ -29,7 +30,9 @@ export function AutomationsView(): React.ReactElement {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setJobs(await api.listCron());
+      const [jobs, chs] = await Promise.all([api.listCron(), api.listChannels()]);
+      setJobs(jobs);
+      setChannels(chs);
     } finally {
       setLoading(false);
     }
@@ -50,6 +53,7 @@ export function AutomationsView(): React.ReactElement {
         at: oneOff ? (v.at as string | undefined) : undefined,
         group: v.group || undefined,
         sessionTitle: v.sessionTitle || undefined,
+        notifyChannels: ((v.notifyChannels ?? []) as string[]).map((s) => s.trim()).filter(Boolean),
       });
       message.success(t("cron.created"));
       setModal(false);
@@ -124,7 +128,19 @@ export function AutomationsView(): React.ReactElement {
                 </Space>
               ),
             },
-            { title: t("cron.colGroup"), render: (_, j) => <span className="mono">{j.group ?? t("cron.currentGroup")}</span> },
+            {
+              title: t("cron.colGroup"),
+              render: (_, j) => (
+                <Space direction="vertical" size={0}>
+                  <span className="mono">{j.group ?? t("cron.currentGroup")}</span>
+                  {j.notifyChannels && j.notifyChannels.length > 0 && (
+                    <span className="mono dim">
+                      {t("cron.f.notifyChannels")}: {j.notifyChannels.join(", ")}
+                    </span>
+                  )}
+                </Space>
+              ),
+            },
             {
               title: t("cron.colEnabled"),
               render: (_, j) => <Switch size="small" checked={j.enabled} onChange={(v) => void toggle(j, v)} />,
@@ -240,13 +256,30 @@ export function AutomationsView(): React.ReactElement {
                 key: "adv",
                 label: t("cron.adv"),
                 children: (
-                  <Form.Item
-                    name="sessionTitle"
-                    label={t("cron.f.sessionTitle")}
-                    extra={t("cron.f.sessionTitleExtra")}
-                  >
-                    <Input placeholder={t("cron.f.sessionTitlePh")} />
-                  </Form.Item>
+                  <>
+                    <Form.Item
+                      name="sessionTitle"
+                      label={t("cron.f.sessionTitle")}
+                      extra={t("cron.f.sessionTitleExtra")}
+                    >
+                      <Input placeholder={t("cron.f.sessionTitlePh")} />
+                    </Form.Item>
+                    <Form.Item
+                      name="notifyChannels"
+                      label={t("cron.f.notifyChannels")}
+                      extra={t("cron.f.notifyChannelsExtra")}
+                    >
+                      <Select
+                        mode="multiple"
+                        allowClear
+                        placeholder={t("cron.f.notifyChannelsPh")}
+                        options={channels.map((c) => ({
+                          value: c.id,
+                          label: c.account ? `${c.account}（${c.id}）` : c.id,
+                        }))}
+                      />
+                    </Form.Item>
+                  </>
                 ),
               },
             ]}

@@ -188,6 +188,12 @@ export function ChannelsView(): React.ReactElement {
   const openEdit = (c: Channel) => {
     setEditing(c);
     const plat = PLATFORMS.find((p) => p.key === c.type);
+    // 扩展 config（目录之外键）反序列化为 JSON 预填，保存时随 config 一并回传
+    const catalogKeys = new Set((plat?.fields ?? []).map((f) => f.key));
+    const extra: Record<string, string> = {};
+    for (const [k, v] of Object.entries(c.config ?? {})) {
+      if (!catalogKeys.has(k)) extra[k] = v;
+    }
     const cfg: Record<string, unknown> = { ...(c.config ?? {}) };
     plat?.fields
       .filter((f) => f.toggle)
@@ -203,18 +209,52 @@ export function ChannelsView(): React.ReactElement {
       token: c.token,
       allowedChats: (c.allowedChats ?? []).join(", "),
       config: cfg,
+      configJson: Object.keys(extra).length > 0 ? JSON.stringify(extra, null, 2) : "",
     });
     setModal(true);
+  };
+
+  /** 解析 config 扩展 JSON：空串 = 空对象；合法对象（标量值）→ 键值表；否则返回错误文案 */
+  const parseConfigJson = (raw: unknown): { value: Record<string, string>; error?: string } => {
+    const s = String(raw ?? "").trim();
+    if (!s) return { value: {} };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(s);
+    } catch {
+      return { value: {}, error: t("channels.f.configJsonBad") };
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { value: {}, error: t("channels.f.configJsonObj") };
+    }
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!["string", "number", "boolean"].includes(typeof v)) {
+        return { value: {}, error: t("channels.f.configJsonObj") };
+      }
+      out[k] = String(v);
+    }
+    return { value: out };
   };
 
   const submit = async () => {
     const v = await form.validateFields();
     const plat = PLATFORMS.find((p) => p.key === v.platform) ?? PLATFORMS[0];
-    const config: Record<string, string> = {};
+    // config 扩展 JSON：面板未展开时字段未注册，从 form store 直读并手动校验（合法才允许保存）
+    const parsedJson = parseConfigJson(form.getFieldValue("configJson"));
+    if (parsedJson.error) {
+      message.error(parsedJson.error);
+      return;
+    }
+    // 目录字段优先：剔除扩展 JSON 里的同名键，避免「清空目录字段却被扩展 JSON 复活」
+    for (const f of plat.fields) {
+      delete parsedJson.value[f.key];
+    }
+    const config: Record<string, string> = { ...parsedJson.value };
     for (const f of plat.fields) {
       if (f.top) continue;
-      const raw = v.config?.[f.key];
-      config[f.key] = f.toggle ? (raw ? "true" : "") : String(raw ?? "").trim();
+      const val = f.toggle ? (v.config?.[f.key] ? "true" : "") : String(v.config?.[f.key] ?? "").trim();
+      if (val) config[f.key] = val; // 空值不入库（清空敏感键即删除，与后端口径一致）
     }
     const body = {
       platform: v.platform,
@@ -450,7 +490,7 @@ export function ChannelsView(): React.ReactElement {
                     <Select
                       disabled={editing !== null}
                       options={PLATFORMS.map((p) => ({ value: p.key, label: t(p.labelKey) }))}
-                      onChange={() => form.setFieldsValue({ token: undefined, secret: undefined, config: {} })}
+                      onChange={() => form.setFieldsValue({ token: undefined, secret: undefined, config: {}, configJson: undefined })}
                     />
                   </Form.Item>
                   {!editing && (
@@ -526,6 +566,27 @@ export function ChannelsView(): React.ReactElement {
                               </Form.Item>
                             )}
                           </>
+                        ),
+                      },
+                      {
+                        key: "cfgjson",
+                        label: t("channels.advConfig"),
+                        children: (
+                          <Form.Item
+                            name="configJson"
+                            label={t("channels.f.configJsonLabel")}
+                            extra={t("channels.f.configJsonExtra")}
+                            rules={[
+                              {
+                                validator: (_rule, value) => {
+                                  const r = parseConfigJson(value);
+                                  return r.error ? Promise.reject(new Error(r.error)) : Promise.resolve();
+                                },
+                              },
+                            ]}
+                          >
+                            <Input.TextArea rows={4} className="mono" placeholder={t("channels.f.configJsonPh")} />
+                          </Form.Item>
                         ),
                       },
                     ]}
