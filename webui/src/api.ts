@@ -75,6 +75,8 @@ export interface GatewayConfig {
     heartbeatIntervalMinutes: number;
     heartbeatPrompt: string;
     autoAdapt: boolean;
+    /** 心跳目标个体 identifier（空 = 全局巡检激活组） */
+    heartbeatAgent?: string | null;
     /** 子个体单次派发的最大工具步数 */
     unitMaxSteps?: number;
   };
@@ -204,6 +206,8 @@ export interface CronJob {
   group?: string;
   sessionTitle?: string;
   enabled: boolean;
+  /** 结果推送订阅的通道 id 清单（空 = 不推送；受「结果推送」总开关约束） */
+  notifyChannels?: string[];
   lastRunAt?: string;
   lastStatus?: string;
   createdAt: string;
@@ -258,6 +262,8 @@ export interface Channel {
   config?: Record<string, string>;
   /** 会话白名单（Telegram chat id / QQ openid / OneBot 群号或 QQ 号；空 = 不限） */
   allowedChats?: string[];
+  /** 群聊唤醒门控逐通道覆盖：true = 群内仅提及/回复触发；缺省 = 跟随全局默认 */
+  groupGate?: boolean;
   createdAt: string;
 }
 
@@ -571,6 +577,7 @@ export const api = {
     at?: string;
     group?: string;
     sessionTitle?: string;
+    notifyChannels?: string[];
   }) => req<CronJob>("/cron", { method: "POST", body: JSON.stringify(body) }),
   updateCron: (id: string, body: { enabled?: boolean }) =>
     req<CronJob>(`/cron/${id}`, { method: "PUT", body: JSON.stringify(body) }),
@@ -608,9 +615,10 @@ export const api = {
     token?: string;
     enabled?: boolean;
     allowedChats?: string[];
+    groupGate?: boolean;
     config?: Record<string, string>;
   }) => req<Channel>("/channels", { method: "POST", body: JSON.stringify(body) }),
-  updateChannel: (id: string, body: { enabled?: boolean; group?: string; token?: string; secret?: string; replyWebhook?: string; account?: string; allowedChats?: string[]; config?: Record<string, string> }) =>
+  updateChannel: (id: string, body: { enabled?: boolean; group?: string; token?: string; secret?: string; replyWebhook?: string; account?: string; allowedChats?: string[]; groupGate?: boolean; config?: Record<string, string> }) =>
     req<Channel>(`/channels/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteChannel: (id: string) => req<{ ok: boolean }>(`/channels/${id}`, { method: "DELETE" }),
 

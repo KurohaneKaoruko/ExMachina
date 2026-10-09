@@ -22,7 +22,7 @@ const SECTIONS: Record<string, { icon: React.ReactNode; titleKey: TKey; descKey:
   sandbox: { icon: <SafetyOutlined />, titleKey: "sec.sandbox", descKey: "sec.sandbox.desc" },
   browser: { icon: <RobotOutlined />, titleKey: "sec.browser", descKey: "sec.browser.desc" },
   hooks: { icon: <ThunderboltOutlined />, titleKey: "sec.hooks", descKey: "sec.hooks.desc" },
-  computer: { icon: <DesktopOutlined />, titleKey: "sec.computer", descKey: "sec.computer.desc" },
+  computerUse: { icon: <DesktopOutlined />, titleKey: "sec.computer", descKey: "sec.computer.desc" },
   identity: { icon: <IdcardOutlined />, titleKey: "sec.identity", descKey: "sec.identity.desc" },
   limits: { icon: <PieChartOutlined />, titleKey: "sec.limits", descKey: "sec.limits.desc" },
   triggers: { icon: <RadarChartOutlined />, titleKey: "sec.triggers", descKey: "sec.triggers.desc" },
@@ -52,8 +52,14 @@ const FIELD_I18N: Record<string, { label: TKey; help?: TKey }> = {
   "automation.heartbeatPrompt": { label: "cfg.heartbeatPrompt", help: "cfg.heartbeatPrompt.help" },
   "automation.autoAdapt": { label: "cfg.autoAdapt", help: "cfg.autoAdapt.help" },
   "automation.unitMaxSteps": { label: "cfg.unitMaxSteps", help: "cfg.unitMaxSteps.help" },
+  "automation.heartbeatAgent": { label: "cfg.heartbeatAgent", help: "cfg.heartbeatAgent.help" },
   "security.terminalTimeoutSecs": { label: "cfg.terminalTimeout", help: "cfg.terminalTimeout.help" },
   "security.toolOutputSpillChars": { label: "cfg.spillChars", help: "cfg.spillChars.help" },
+  "security.approvalWaitSecs": { label: "cfg.approvalWait", help: "cfg.approvalWait.help" },
+  "computer.enabled": { label: "cfg.computerEnabled", help: "cfg.computerEnabled.help" },
+  "computer.approval": { label: "cfg.computerApproval", help: "cfg.computerApproval.help" },
+  "computer.maxEdge": { label: "cfg.computerMaxEdge", help: "cfg.computerMaxEdge.help" },
+  "computer.actionIntervalMs": { label: "cfg.computerInterval", help: "cfg.computerInterval.help" },
   "search.provider": { label: "cfg.searchProvider", help: "cfg.searchProvider.help" },
   "search.endpoint": { label: "cfg.searchEndpoint", help: "cfg.searchEndpoint.help" },
   "search.apiKey": { label: "cfg.searchApiKey", help: "cfg.searchApiKey.help" },
@@ -71,6 +77,27 @@ const FIELD_I18N: Record<string, { label: TKey; help?: TKey }> = {
   "hooks.postTool": { label: "cfg.hookPost", help: "cfg.hookPost.help" },
   "hooks.onRunEnd": { label: "cfg.hookRun", help: "cfg.hookRun.help" },
   "tools.custom": { label: "cfg.toolsCustom", help: "cfg.toolsCustom.help" },
+  "identity.identityRequired": { label: "cfg.identityRequired", help: "cfg.identityRequired.help" },
+  "identity.pairingTtlSecs": { label: "cfg.pairingTtl", help: "cfg.pairingTtl.help" },
+  "identity.groupGateDefault": { label: "cfg.groupGateDefault", help: "cfg.groupGateDefault.help" },
+  "limits.enabled": { label: "cfg.limitsEnabled", help: "cfg.limitsEnabled.help" },
+  "limits.windowSecs": { label: "cfg.limitsWindow", help: "cfg.limitsWindow.help" },
+  "limits.maxRequests": { label: "cfg.limitsMaxReq", help: "cfg.limitsMaxReq.help" },
+  "limits.quotaPeriod": { label: "cfg.limitsQuotaPeriod", help: "cfg.limitsQuotaPeriod.help" },
+  "limits.quotaTokens": { label: "cfg.limitsQuotaTokens", help: "cfg.limitsQuotaTokens.help" },
+  "limits.quotaRequests": { label: "cfg.limitsQuotaRequests", help: "cfg.limitsQuotaRequests.help" },
+  "limits.quotaRunningPolicy": { label: "cfg.limitsQuotaPolicy", help: "cfg.limitsQuotaPolicy.help" },
+  "triggers.fileWatch.enabled": { label: "cfg.fileWatchEnabled", help: "cfg.fileWatchEnabled.help" },
+  "triggers.fileWatch.debounceMs": { label: "cfg.fileWatchDebounce", help: "cfg.fileWatchDebounce.help" },
+  "triggers.fileWatch.exclude": { label: "cfg.fileWatchExclude", help: "cfg.fileWatchExclude.help" },
+  "triggers.eventWebhook.enabled": { label: "cfg.eventWebhookEnabled", help: "cfg.eventWebhookEnabled.help" },
+  "triggers.eventWebhook.secret": { label: "cfg.eventWebhookSecret", help: "cfg.eventWebhookSecret.help" },
+  "mcpServe.enabled": { label: "cfg.mcpEnabled", help: "cfg.mcpEnabled.help" },
+  "mcpServe.httpPath": { label: "cfg.mcpPath", help: "cfg.mcpPath.help" },
+  "mcpServe.allowedGroups": { label: "cfg.mcpGroups", help: "cfg.mcpGroups.help" },
+  "mcpServe.allowedTools": { label: "cfg.mcpTools", help: "cfg.mcpTools.help" },
+  "notify.enabled": { label: "cfg.notifyEnabled", help: "cfg.notifyEnabled.help" },
+  "notify.maxChars": { label: "cfg.notifyMaxChars", help: "cfg.notifyMaxChars.help" },
 };
 
 /** 特定字段用选择器而非自由文本（显示名走 i18n，值是发给后端的枚举） */
@@ -84,6 +111,22 @@ const ENUM_OVERRIDES: Record<string, { value: string; labelKey: TKey }[]> = {
     { value: "off", labelKey: "cfg.sandbox.off" },
     { value: "workspace", labelKey: "cfg.sandbox.workspace" },
     { value: "strict", labelKey: "cfg.sandbox.strict" },
+  ],
+  "search.provider": [
+    { value: "", labelKey: "cfg.search.none" },
+    { value: "tavily", labelKey: "cfg.search.tavily" },
+    { value: "brave", labelKey: "cfg.search.brave" },
+    { value: "searxng", labelKey: "cfg.search.searxng" },
+    { value: "custom", labelKey: "cfg.search.custom" },
+  ],
+  "limits.quotaPeriod": [
+    { value: "daily", labelKey: "cfg.quota.daily" },
+    { value: "weekly", labelKey: "cfg.quota.weekly" },
+    { value: "monthly", labelKey: "cfg.quota.monthly" },
+  ],
+  "limits.quotaRunningPolicy": [
+    { value: "finish", labelKey: "cfg.policy.finish" },
+    { value: "interrupt", labelKey: "cfg.policy.interrupt" },
   ],
 };
 
@@ -123,10 +166,14 @@ function readCurrent(cfg: GatewayConfig | null, key: string): unknown {
       return cfg.automation.autoAdapt;
     case "automation.unitMaxSteps":
       return cfg.automation.unitMaxSteps;
+    case "automation.heartbeatAgent":
+      return cfg.automation.heartbeatAgent ?? "";
     case "security.terminalTimeoutSecs":
       return cfg.security.terminalTimeoutSecs;
     case "security.toolOutputSpillChars":
       return cfg.security.toolOutputSpillChars;
+    case "security.approvalWaitSecs":
+      return cfg.security.approvalWaitSecs;
     case "search.provider":
       return cfg.search?.provider;
     case "search.endpoint":
@@ -196,7 +243,7 @@ export function SettingsView(): React.ReactElement {
     setSaving(true);
     try {
       const body: Record<string, unknown> = {};
-      const nested = ["memory", "security", "automation", "search", "sandbox", "browser", "hooks", "tools"];
+      const nested = ["memory", "security", "automation", "computer", "search", "sandbox", "browser", "hooks", "tools"];
       for (const [k, v] of Object.entries(values)) {
         if (v === undefined) continue;
         const dot = k.indexOf(".");

@@ -25,7 +25,9 @@ async function req(path, init) {
   const resp = await fetch(`${GW.url}/api${path}`, { headers, ...init });
   if (!resp.ok && resp.status !== 202) {
     const body = await resp.text().catch(() => "");
-    throw new Error(`${init?.method ?? "GET"} ${path} → ${resp.status} ${body.slice(0, 200)}`);
+    let msg = body.slice(0, 200);
+    try { msg = JSON.parse(body).error ?? msg; } catch { /* 非 JSON 原样截断 */ }
+    throw new Error(`${init?.method ?? "GET"} ${path} → ${resp.status} ${msg}`);
   }
   return resp.json();
 }
@@ -58,6 +60,22 @@ const api = {
   setWorkspace: (path) => req("/workspace", { method: "PUT", body: JSON.stringify({ path }) }),
   // 会话事件流（子个体详情：派发单/回执等存储事件）
   sessionEvents: (id, limit = 300) => req(`/sessions/${id}/events?limit=${limit}`),
+  // 会话增强：详情（含台账 ledger）/ 重命名 / 分叉 / 撤销 / 归档 / 轮次快照
+  sessionDetail: (id) => req(`/sessions/${id}`),
+  renameSession: (id, title) => req(`/sessions/${id}/title`, { method: "PUT", body: JSON.stringify({ title }) }),
+  forkSession: (id, turn) => req(`/sessions/${id}/fork`, { method: "POST", body: JSON.stringify({ turn }) }),
+  undoSession: (id, turn, restoreFiles) => req(`/sessions/${id}/undo`, { method: "POST", body: JSON.stringify({ turn, restoreFiles }) }),
+  archive: (id) => req(`/sessions/${id}/archive`),
+  snapshots: (id) => req(`/sessions/${id}/snapshots`),
+  // 审批清单（status: pending|approved|denied|executed|failed；空串 = 全部，此时不带参数以免后端按空串过滤）
+  approvals: (status, limit = 50) => req(`/approvals?${status ? `status=${encodeURIComponent(status)}&` : ""}limit=${limit}`),
+  // 编码页：工作区文件树 / 文本读写 / 变更清单 / Git 概览与操作
+  fsList: (path) => req(`/fs/list?path=${encodeURIComponent(path)}`),
+  fsFile: (path) => req(`/fs/file?path=${encodeURIComponent(path)}`),
+  fsSave: (path, content) => req("/fs/file", { method: "PUT", body: JSON.stringify({ path, content }) }),
+  workspaceChanges: () => req("/workspace/changes"),
+  gitOverview: () => req("/git/overview"),
+  gitOp: (payload) => req("/git/op", { method: "POST", body: JSON.stringify(payload) }),
 };
 
 // ────────────────────────────── 全局状态 ──────────────────────────────
@@ -89,6 +107,16 @@ const S = {
   rightOpen: (() => { try { return localStorage.getItem("exm.rightOpen") !== "0"; } catch { return true; } })(),
   // 本轮实时区（run.finished 后清空并并入最终消息）
   live: { orch: "", thinking: "", units: {}, unitThinking: {}, toolCalls: [], activity: [], approvals: [] },
+  approvalsPending: 0, // 待处理审批数（侧栏角标；通道等跨会话审批也要亮）
+  // 编码页状态：树按目录懒加载（"" = 工作区根）；file 为编辑器当前内容（dirty 才可保存）
+  code: {
+    tree: { "": { open: true, loaded: false, entries: [] } },
+    file: null,          // {path, content, size, truncated, binary, dirty}
+    changes: null,       // /workspace/changes 原样数据
+    overview: null,      // /git/overview 原样数据
+    rightTab: "changes", // changes | git
+    changeMap: new Map(),// path → 变更字母（文件树标记）
+  },
 };
 
 // ────────────────────────────── WS 事件流 ──────────────────────────────
@@ -149,6 +177,8 @@ function wsConnect() {
 }
 
 function handleEvent(evt) {
+  // 审批角标先于会话过滤：通道发起的审批不属于当前会话也要亮
+  if (evt.type === "approval.required" || evt.type === "approval.resolved") refreshApprovalsBadge();
   if (evt.sessionId !== S.sessionId) return;
   const p = evt.payload ?? {};
   const live = S.live;
@@ -206,6 +236,8 @@ function handleEvent(evt) {
     case "graph.updated":
       S.graph = p ?? null;
       scheduleRight();
+      // 任务视图开着：跟随推送实时刷新（不依赖手动刷新）
+      if (S.view === "tasks") refreshTasks();
       break;
     case "dispatch.sent": {
       // 本地同步节点状态（graph.updated 全量图随后也会到达，此处即时反馈）
@@ -389,7 +421,10 @@ function setConn(ok) {
 function setRunning(on) {
   S.running = on;
   $("run-state").classList.toggle("hidden", !on);
-  $("btn-stop").classList.toggle("hidden", !on);
+  const stop = $("btn-stop");
+  stop.classList.toggle("hidden", !on);
+  // 复位「停止中…」态：收束（finished/error）或空闲兜底时按钮必须可预期
+  if (!on) { stop.disabled = false; stop.textContent = "■ 停止"; }
 }
 
 function renderSidebar() {
@@ -425,12 +460,14 @@ function renderSidebar() {
 function sessionEl(s) {
   const item = document.createElement("div");
   item.className = `session-item${s.id === S.sessionId ? " active" : ""}`;
+  item.dataset.sid = s.id; // 行内重命名按 id 定位 DOM
   item.innerHTML = `
     <div class="session-title">${esc(s.title || "未命名会话")}</div>
     <div class="session-preview">${esc(s.lastMessagePreview ?? "")}</div>
-    <button class="session-del" title="删除会话">✕</button>`;
+    <span class="session-acts"><button class="session-act" data-op="rename" title="重命名">✎</button><button class="session-act danger" data-op="del" title="删除会话">✕</button></span>`;
   item.addEventListener("click", () => selectSession(s.id));
-  item.querySelector(".session-del").addEventListener("click", (e) => {
+  item.querySelector('[data-op="rename"]').addEventListener("click", (e) => { e.stopPropagation(); startRename(s.id); });
+  item.querySelector('[data-op="del"]').addEventListener("click", (e) => {
     e.stopPropagation();
     if (!confirm(`删除会话「${s.title || "未命名"}」？`)) return;
     api.deleteSession(s.id).then(() => {
@@ -476,8 +513,8 @@ function msgHtml(msg) {
 }
 
 function renderStream(scroll) {
-  // 设置整页接管期间不触碰对话 DOM（返回对话时统一重渲染）
-  if (S.view === "settings") return;
+  // 独立整页（设置 / 编码 / 任务）接管期间不触碰对话 DOM（返回对话时统一重渲染）
+  if (S.view !== "chat") return;
   // 子代理会话视图：与主会话同款界面（流 + 输入区共用），内容过滤为该个体的对话
   if (S.unitView) { renderUnitStream(scroll); return; }
   // 已收束消息
@@ -534,7 +571,7 @@ function welcomeEl() {
   el.className = "welcome";
   el.innerHTML = `
     <h1>有什么可以帮你？</h1>
-    <p>对话交由当前对象（智能体或智能体组）协作完成；设置中可管理模型、个体与通道</p>
+    <p>对话交由当前对象（智能体或智能体组）协作完成；侧栏「编码」进入工作台、「任务」看派发与台账</p>
     <div class="suggest">
       <button data-q="帮我梳理一下这个项目的整体结构，给出模块说明">梳理项目结构，输出模块说明</button>
       <button data-q="写一个 Python 脚本：批量重命名当前目录下的图片文件，按日期编号">写一个批量重命名图片的脚本</button>
@@ -604,6 +641,7 @@ async function decide(id, approve) {
     await api.decideApproval(id, approve);
     S.live.approvals = S.live.approvals.filter((x) => x.approvalId !== id);
     renderApprovals();
+    refreshApprovalsBadge(); // 侧栏角标同步消化
   } catch (e) { alertErr(e); }
 }
 
@@ -613,9 +651,9 @@ function updateSessionPreview(id, preview) {
 }
 
 function alertErr(e) {
+  // 统一错误口径：toast 短提示（对话内的运行失败仍走 run.error 消息块，不在此列）
   console.error(e);
-  S.messages = [...S.messages, { id: `err-${Date.now()}`, role: "error", statements: [{ tag: "警告", text: String(e) }], createdAt: new Date().toISOString() }];
-  renderStream(true);
+  toast(String(e).replace(/^Error:\s*/, ""), false);
 }
 
 // ────────────────────────────── 会话操作 ──────────────────────────────
@@ -765,24 +803,33 @@ const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single"
 function showView(v) {
   S.view = v;
   updateTopbar();
-  // 设置是独立整页：接管整个窗口（对话区整体隐藏），返回时还原
+  // 独立整页（设置 / 编码 / 任务）接管整个窗口，chat 恢复三栏对话
   $("settings-page").classList.toggle("hidden", v !== "settings");
-  $("app").classList.toggle("hidden", v === "settings");
+  $("code-page").classList.toggle("hidden", v !== "code");
+  $("tasks-page").classList.toggle("hidden", v !== "tasks");
+  $("app").classList.toggle("hidden", v !== "chat");
   if (v === "settings") renderSettings();
-  else renderView();
+  else if (v === "code") enterCode();
+  else if (v === "tasks") enterTasks();
+  else renderStream(true);
 }
 
 function renderView() {
   if (S.view === "settings") renderSettings();
+  else if (S.view === "code") enterCode();
+  else if (S.view === "tasks") enterTasks();
   else renderStream(true);
 }
 
 function toast(msg, ok = true) {
+  // 统一容器纵向堆叠：旧实现 position:fixed 同点重叠，多条提示会互相遮挡
+  const box = $("toasts");
   const t = document.createElement("div");
   t.className = `toast ${ok ? "ok" : "err"}`;
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
+  t.textContent = String(msg).replace(/^Error:\s*/, "");
+  box.appendChild(t);
+  while (box.children.length > 4) box.firstChild.remove(); // 上限 4 条，防刷屏
+  setTimeout(() => t.remove(), 3200);
 }
 
 function renderSettings() {
@@ -1734,6 +1781,9 @@ async function applyWorkspace(path) {
   try {
     const r = await api.setWorkspace(path);
     S.workspace = String(r?.workspace ?? "");
+    // 工作目录变了：编码页的树与打开文件整体失效，清空待重载
+    S.code.tree = { "": { open: true, loaded: false, entries: [] } };
+    S.code.file = null;
     if (path) rememberWorkspace(path);
     closePopover();
     renderChips();
@@ -1890,6 +1940,700 @@ async function addFiles(files) {
   renderAttachRow();
 }
 
+// ────────────────────────────── 审批：侧栏角标 + 设置审批页 ──────────────────────────────
+// 口径：审批单跨会话存在（通道发起的不在当前会话流里）——角标靠轮询 + WS 事件即时刷新
+
+async function refreshApprovalsBadge() {
+  try {
+    const items = await api.approvals("pending", 50);
+    S.approvalsPending = Array.isArray(items) ? items.length : 0;
+  } catch { S.approvalsPending = 0; }
+  const b = $("approvals-badge");
+  b.textContent = S.approvalsPending > 50 ? "50+" : String(S.approvalsPending);
+  b.classList.toggle("hidden", !S.approvalsPending);
+}
+
+// 设置 → 审批：该 tab 此前在映射里被引用但从未实现（点击即 ReferenceError），这里补齐
+function renderSetApprovals(body) {
+  const card = setCard("审批单（破坏性操作的放行闸口）");
+  const filter = mkSelect([
+    ["pending", "待处理"], ["approved", "已批准"], ["denied", "已拒绝"],
+    ["executed", "已执行"], ["failed", "执行失败"], ["", "全部状态"],
+  ], "pending");
+  const list = document.createElement("div");
+  const load = () => {
+    list.innerHTML = `<div class="set-hint">加载中…</div>`;
+    api.approvals(filter.value || null, 100).then((items) => {
+      list.innerHTML = "";
+      if (!Array.isArray(items) || !items.length) {
+        list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "没有符合条件的审批单" }));
+        return;
+      }
+      for (const it of items) list.appendChild(approvalRow(it, load));
+    }).catch((e) => {
+      list.innerHTML = "";
+      list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `加载失败：${e}` }));
+    });
+  };
+  filter.addEventListener("change", load);
+  card.appendChild(mkField("状态筛选", filter));
+  card.appendChild(list);
+  body.appendChild(card);
+  load();
+}
+
+function approvalRow(it, refresh) {
+  const row = document.createElement("div");
+  row.className = "set-row";
+  const stCls = { pending: "st-blocked", approved: "st-done", executed: "st-done", denied: "st-failed", failed: "st-failed" }[it.status] ?? "";
+  row.innerHTML = `<div class="set-row-main">
+    <span class="approval-cmd">${esc(it.command || "（无命令内容）")}</span>
+    <div class="set-sub">@${esc(it.agentId || "?")} · ${esc(relTime(it.createdAt))} · 会话 ${esc(String(it.sessionId ?? "").slice(0, 10))}</div>
+    ${it.result ? `<div class="set-sub">结果：${esc(String(it.result).slice(0, 160))}</div>` : ""}
+  </div><span class="task-status ${stCls}">${esc(it.status ?? "")}</span>`;
+  const ops = document.createElement("div");
+  ops.className = "set-ops";
+  if (it.status === "pending") {
+    ops.appendChild(mkBtn("批准", async () => {
+      if (await settingsSave(api.decideApproval(it.id, true), "已批准，由系统代执行")) { refresh(); refreshApprovalsBadge(); }
+    }, "set-btn"));
+    ops.appendChild(mkBtn("拒绝", async () => {
+      if (await settingsSave(api.decideApproval(it.id, false), "已拒绝")) { refresh(); refreshApprovalsBadge(); }
+    }, "set-btn danger"));
+  }
+  row.appendChild(ops);
+  return row;
+}
+
+// —— 版本：本机版本 + 更新检查 + 一键更新（映射里被引用但此前从未实现，这里补齐）——
+function renderSetVersion(body) {
+  const card = setCard("版本与更新");
+  const info = document.createElement("div");
+  info.className = "set-hint";
+  info.textContent = "读取中…";
+  card.appendChild(info);
+  const detail = document.createElement("div");
+  card.appendChild(detail);
+  const ops = document.createElement("div");
+  ops.className = "set-ops";
+  card.appendChild(ops);
+  body.appendChild(card);
+
+  // 本机版本（version + git 短哈希）
+  const renderInfo = (v) => {
+    info.innerHTML = `本机版本 <b>${esc(v.version ?? "?")}</b> · commit <b>${esc(v.gitHash ?? "dev")}</b>${v.branch ? ` · 分支 <b>${esc(v.branch)}</b>` : ""}`;
+  };
+  req("/version").then(renderInfo).catch(() => { info.textContent = "版本信息读取失败"; });
+
+  // 更新检查：分支感知（本地在什么分支就对比该分支上游）
+  const check = async () => {
+    detail.innerHTML = `<div class="set-hint">检查更新中…（需网络，约数秒）</div>`;
+    let v;
+    try { v = await req("/version/check"); }
+    catch (e) { detail.innerHTML = ""; detail.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `检查失败：${e}` })); return; }
+    renderInfo(v);
+    detail.innerHTML = "";
+    if (v.note) detail.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: String(v.note) }));
+    const up = v.upstream;
+    if (up) {
+      detail.insertAdjacentHTML("beforeend", `<div class="set-sub">上游 ${esc(up.ref ?? "")} @ ${esc(up.short ?? "")}${up.date ? ` · ${esc(String(up.date).slice(0, 10))}` : ""}${up.url ? ` · <a href="${esc(up.url)}" target="_blank" rel="noopener">查看提交</a>` : ""}</div>`);
+    }
+    const avail = v.updateAvailable === true;
+    if (v.updateAvailable !== undefined && v.updateAvailable !== null) {
+      detail.insertAdjacentHTML("beforeend", `<div class="set-sub">${avail ? '<span class="tag-ok">有可用更新</span>' : "已是最新"}</div>`);
+    }
+    ops.innerHTML = "";
+    ops.appendChild(mkBtn("重新检查", check, "set-btn"));
+    if (avail) {
+      // 一键更新：容器部署（/host 挂载）才可用；桌面壳场景服务端会拒绝并说明
+      ops.appendChild(mkBtn("一键更新", async () => {
+        if (!confirm("更新会拉取上游并重建服务（git pull → build → up），期间网关可能短暂不可用。继续？")) return;
+        try {
+          await req("/version/apply", { method: "POST", body: JSON.stringify({}) });
+          toast("更新任务已启动，进度见下方日志");
+          pollApply();
+        } catch (e) { toast(String(e).slice(0, 200), false); }
+      }, "set-btn"));
+    }
+  };
+  ops.appendChild(mkBtn("检查更新", check, "set-btn"));
+
+  // 一键更新进度：轮询 status（running + 日志尾部），任务结束即停
+  let pollTimer = null;
+  const logBox = document.createElement("pre");
+  logBox.className = "cp-diff";
+  logBox.style.maxHeight = "220px";
+  const pollApply = () => {
+    if (pollTimer) return;
+    if (!logBox.isConnected) body.appendChild(logBox);
+    pollTimer = setInterval(async () => {
+      try {
+        const st = await req("/version/apply/status");
+        logBox.textContent = `更新日志（${st.running ? "进行中" : "已结束"}）\n${st.log ?? "（暂无输出）"}`;
+        if (!st.running) { clearInterval(pollTimer); pollTimer = null; toast("更新任务已结束（详情见日志）"); }
+      } catch { /* 网关重建期间拉不到状态：下轮再试 */ }
+    }, 2000);
+  };
+}
+
+// ────────────────────────────── 任务视图（整页）：任务图 + 台账 ──────────────────────────────
+// 数据源：GET /sessions/:id/graph + GET /sessions/:id（ledger）+ WS graph.updated 推送刷新
+
+const TASK_ST_COLOR = {
+  pending: "var(--text-faint)", ready: "var(--text-faint)", dispatched: "var(--accent-2)",
+  running: "var(--accent-2)", syncing: "#c4b5fd", arbitrating: "var(--warn)",
+  done: "var(--ok)", blocked: "var(--warn)", failed: "var(--err)", cancelled: "var(--text-faint)",
+};
+const TASK_LEGEND = [["pending", "待派发"], ["running", "执行中"], ["done", "完成"], ["blocked", "受阻"], ["failed", "失败"]];
+
+function enterTasks() {
+  $("tp-body").innerHTML = `<div class="set-hint">加载任务图与台账…</div>`;
+  refreshTasks();
+}
+
+async function refreshTasks() {
+  const id = S.sessionId;
+  if (!id) return;
+  const [graph, session] = await Promise.all([api.graph(id).catch(() => null), api.sessionDetail(id).catch(() => null)]);
+  // 会话或视图已切走：丢弃过期响应，避免串渲染
+  if (S.view !== "tasks" || S.sessionId !== id) return;
+  if (graph?.nodes?.length) S.graph = graph;
+  renderTasksPage(graph, session);
+}
+
+function renderTasksPage(graph, session) {
+  const body = $("tp-body");
+  body.innerHTML = "";
+  const nodes = graph?.nodes ?? [];
+  // —— 任务图：依赖深度缩进 + 状态色标（连线以缩进层级示意）——
+  const graphCard = setCard(`任务图 · ${nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length} 完成` : "空"}`);
+  graphCard.appendChild(Object.assign(document.createElement("div"), {
+    className: "tk-legend",
+    innerHTML: TASK_LEGEND.map(([k, t]) => `<span><span class="tk-dot" style="background:${TASK_ST_COLOR[k] ?? "var(--text-faint)"}"></span>${t}</span>`).join(""),
+  }));
+  if (!nodes.length) {
+    graphCard.appendChild(Object.assign(document.createElement("div"), {
+      className: "set-hint",
+      textContent: "本会话还没有任务图——指挥体把目标拆解派发给子个体后，节点与状态会在这里实时呈现。",
+    }));
+  }
+  const ordered = orderedNodes(nodes);
+  for (const item of ordered) graphCard.appendChild(taskNodeEl(item, nodes));
+  body.appendChild(graphCard);
+  // —— 任务台账：goal / 验收 / 证据 / 风险 分区渲染 ——
+  body.appendChild(ledgerCard(session));
+}
+
+// 依赖深度（拓扑层级）：依赖者比被依赖者深一层；环路与缺失依赖安全兜底
+function orderedNodes(nodes) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const memo = new Map();
+  const depthOf = (nid, stack = new Set()) => {
+    if (memo.has(nid)) return memo.get(nid);
+    if (stack.has(nid)) return 0; // 环：不再下钻
+    stack.add(nid);
+    const n = byId.get(nid);
+    const d = (n?.dependsOn ?? []).filter((x) => byId.has(x)).reduce((m, x) => Math.max(m, depthOf(x, stack) + 1), 0);
+    stack.delete(nid);
+    memo.set(nid, d);
+    return d;
+  };
+  return nodes
+    .map((n, i) => ({ n, i, depth: depthOf(n.id) }))
+    .sort((a, b) => (a.depth - b.depth) || (a.i - b.i)); // 浅层在前，同层保持原始顺序
+}
+
+function taskNodeEl({ n, depth }, nodes) {
+  const byId = new Map(nodes.map((x) => [x.id, x]));
+  const el = document.createElement("div");
+  el.className = `tk-node st-${esc(n.status ?? "pending")}`;
+  el.style.marginLeft = `${Math.min(depth, 6) * 22}px`; // 依赖缩进；超深层截断防溢出
+  if (n.agentIdentifier) el.dataset.agent = n.agentIdentifier;
+  const deps = (n.dependsOn ?? []).map((d) => byId.get(d)?.title ?? d);
+  el.innerHTML = `
+    <div class="tk-node-head">
+      ${n.agentIdentifier ? `<span class="tk-agent">@${esc(n.agentIdentifier)}</span>` : ""}
+      <span class="tk-title" title="${esc(n.title || n.objective || "")}">${esc(n.title || n.objective || "未命名任务")}</span>
+      <span class="task-status st-${esc(n.status ?? "pending")}">${ST_LABELS[n.status] ?? esc(n.status ?? "")}</span>
+    </div>
+    ${n.objective && n.objective !== n.title ? `<div class="tk-obj">${esc(n.objective)}</div>` : ""}
+    ${deps.length ? `<div class="tk-deps">↳ 依赖：${esc(deps.join("、"))}</div>` : ""}
+    ${(n.acceptance ?? []).length ? `<div class="tk-acc">${n.acceptance.slice(0, 4).map((a) => `<div>${esc(a)}</div>`).join("")}${n.acceptance.length > 4 ? `<div>…共 ${n.acceptance.length} 条</div>` : ""}</div>` : ""}`;
+  // 点击节点 → 直聊该子代理（与右栏个体卡同口径）
+  if (n.agentIdentifier) el.addEventListener("click", () => { showView("chat"); openUnitView(n.agentIdentifier); });
+  return el;
+}
+
+// 台账分区：目标 / 验收 / 约束 / 禁区 / 优先 / 证据 / 缺口 / 未决 / 影响 / 回退 / 阻塞
+function ledgerCard(session) {
+  const led = session?.ledger;
+  const card = setCard(`任务台账 · ${session?.title || "当前会话"}`);
+  if (!led?.task) {
+    card.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "台账暂不可用（会话详情拉取失败或为空）" }));
+    return card;
+  }
+  const t = led.task ?? {};
+  if (String(t.goal ?? "").trim()) {
+    const g = document.createElement("div");
+    g.className = "ledger-goal";
+    g.textContent = t.goal;
+    card.appendChild(g);
+  } else {
+    card.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "目标（goal）尚未登记——台账由网关在派发与回流时滚动维护。" }));
+  }
+  const addBlock = (title, items, opts = {}) => {
+    // 空分区默认折叠不渲染（验收标准除外——它是契约核心，空也要可见）
+    if (!items?.length && !opts.always) return;
+    const w = document.createElement("div");
+    w.className = "ledger-block";
+    w.innerHTML = `<div class="ledger-block-title">${esc(title)}</div>`;
+    if (!items?.length) w.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "（暂无）" }));
+    else for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "ledger-item";
+      if (typeof it === "string") row.textContent = it;
+      else row.innerHTML = `<span>${esc(it.text ?? "")}</span><span class="tag-dim">${esc(it.level ?? "")}</span><span class="ledger-src" title="${esc(it.source ?? "")}">${esc(it.source ?? "")}</span>`;
+      w.appendChild(row);
+    }
+    card.appendChild(w);
+  };
+  addBlock("验收标准", t.acceptance, { always: true });
+  addBlock("约束", t.constraints);
+  addBlock("禁区", t.forbidden);
+  addBlock("优先级", t.priorities);
+  addBlock("已确认证据", led.evidence?.confirmed);
+  addBlock("信息缺口", led.evidence?.gaps);
+  addBlock("未决断言", led.risk?.openAssertions);
+  addBlock("影响面", led.risk?.impact);
+  addBlock("回退路径", led.risk?.revertPaths);
+  addBlock("阻塞项", led.risk?.blockers);
+  return card;
+}
+
+// ────────────────────────────── 编码页（整页）：文件树 / 编辑器 / 变更 / Git ──────────────────────────────
+// 口径：fs/list 懒加载目录（网关要求 path 非空，根目录传 "."，返回项统一剥掉 "./" 前缀）；
+// fs/file 读（200KB 截断）+ PUT 写回；变更与 Git 直连 workspace/changes、git/overview、git/op。
+
+function enterCode() {
+  if (!S.workspace) { renderCodeNoWorkspace(); return; }
+  $("cp-ws-name").textContent = basename(S.workspace);
+  $("cp-ws-name").title = S.workspace;
+  renderEditor();
+  renderTree();
+  renderChangesPanel();
+  renderGitPanel();
+  refreshCodeAll(); // 后台拉新数据，不阻塞首次呈现
+}
+
+function renderCodeNoWorkspace() {
+  $("cp-ws-name").textContent = "未设置";
+  const box = $("cp-tree");
+  box.innerHTML = "";
+  const tip = document.createElement("div");
+  tip.className = "cp-tree-empty";
+  tip.innerHTML = `尚未选择工作目录。<br/>回到对话页，点底部「📂」芯片选择项目文件夹，<br/>这里就会成为编码工作台。`;
+  box.appendChild(tip);
+  box.appendChild(mkBtn("去选择工作目录", () => { showView("chat"); openPopover(wsMenu); }));
+  S.code.file = null;
+  renderEditor();
+  $("cp-changes").innerHTML = `<div class="cp-hint">未设置工作目录——变更视图不可用</div>`;
+  $("cp-git").innerHTML = `<div class="cp-hint">未设置工作目录——Git 视图不可用</div>`;
+}
+
+async function refreshCodeAll() {
+  if (!S.workspace) return;
+  // 根目录 + 变更 + 概览并行拉取；单项失败不拖累整体
+  await Promise.all([loadDir("").catch(() => {}), refreshChanges(), refreshGitOverview()]);
+  if (S.view === "code") renderTree();
+}
+
+// 拉取目录清单（懒加载）：dir 为 "" 表示工作区根
+async function loadDir(dir) {
+  const r = await api.fsList(dir || ".");
+  const slot = S.code.tree[dir] ?? (S.code.tree[dir] = { open: dir === "", loaded: false, entries: [] });
+  // 根目录（"."）返回的子路径带 "./" 前缀：统一剥掉，树内路径保持干净的相对形式
+  slot.entries = (r.entries ?? []).map((e) => ({ ...e, path: String(e.path ?? "").replace(/^\.\//, "") }));
+  slot.loaded = true;
+}
+
+async function toggleDir(entry) {
+  const slot = S.code.tree[entry.path] ?? (S.code.tree[entry.path] = { open: false, loaded: false, entries: [] });
+  slot.open = !slot.open;
+  if (slot.open && !slot.loaded) {
+    try { await loadDir(entry.path); }
+    catch (e) { toast(String(e).slice(0, 160), false); }
+  }
+  renderTree();
+}
+
+function renderTree() {
+  const box = $("cp-tree");
+  box.innerHTML = "";
+  if (!S.workspace) return; // 空态已由 renderCodeNoWorkspace 呈现
+  const walk = (dir, depth) => {
+    const slot = S.code.tree[dir];
+    for (const e of slot?.entries ?? []) {
+      box.appendChild(treeItem(e, depth));
+      // 只渲染「已加载且展开」的子目录（懒加载树的核心）
+      if (e.dir && slot.open && S.code.tree[e.path]?.open) walk(e.path, depth + 1);
+    }
+  };
+  walk("", 0);
+  // 只在根目录真实加载过后才判空，避免懒加载间隙误显「目录为空」
+  if (S.code.tree[""]?.loaded && !S.code.tree[""]?.entries?.length) box.innerHTML = `<div class="cp-tree-empty">目录为空</div>`;
+}
+
+function treeItem(e, depth) {
+  const item = document.createElement("div");
+  const slot = S.code.tree[e.path];
+  const open = Boolean(e.dir && slot?.open);
+  const mark = S.code.changeMap.get(e.path);
+  const dirty = S.code.file?.path === e.path && S.code.file.dirty;
+  item.className = `cp-tree-item${S.code.file?.path === e.path ? " on" : ""}`;
+  item.style.paddingLeft = `${10 + depth * 14}px`;
+  item.title = e.path;
+  item.innerHTML = `<span class="tw">${e.dir ? (open ? "▾" : "▸") : "·"}</span><span class="fname">${esc(e.name)}</span>
+    <span class="fmark">${dirty ? `<span class="st-dirty">●</span>` : mark ? `<span class="st-${esc(mark)}">${esc(mark)}</span>` : ""}</span>`;
+  item.addEventListener("click", () => (e.dir ? toggleDir(e) : openFile(e.path)));
+  return item;
+}
+
+async function openFile(path) {
+  if (S.code.file?.dirty && S.code.file.path !== path && !confirm(`「${S.code.file.path}」有未保存修改，放弃并打开新文件？`)) return;
+  try {
+    const r = await api.fsFile(path);
+    const content = String(r.content ?? "");
+    S.code.file = {
+      path,
+      content,
+      size: Number(r.size ?? 0),
+      truncated: Boolean(r.truncated),
+      binary: content.includes("\uFFFD"), // 替换字符 = 非 UTF-8 字节被改写，禁存防损坏
+      dirty: false,
+    };
+    renderEditor();
+    renderTree();
+  } catch (e) { toast(String(e).slice(0, 160), false); }
+}
+
+function renderEditor() {
+  const ta = $("cp-editor");
+  const f = S.code.file;
+  $("cp-editor-empty").classList.toggle("hidden", Boolean(f));
+  ta.classList.toggle("hidden", !f);
+  if (f) ta.value = f.content;
+  renderEditorState();
+}
+
+// 头部状态（路径 / 未保存 / 截断 / 大小 + 按钮可用性）：输入高频触发，保持轻量
+function renderEditorState() {
+  const f = S.code.file;
+  $("cp-file-path").textContent = f?.path ?? "未打开文件";
+  $("cp-file-state").innerHTML = !f ? "" : `
+    ${f.dirty ? `<span class="cp-chip cp-chip-accent">● 未保存</span>` : ""}
+    ${f.truncated ? `<span class="cp-chip cp-chip-warn">超过 200KB 已截断展示</span>` : ""}
+    ${f.binary ? `<span class="cp-chip cp-chip-warn">非 UTF-8 内容</span>` : ""}
+    <span class="cp-chip">${esc(fmtSize(f.size))}</span>`;
+  // 截断 / 二进制时禁存：写回会把不完整内容覆盖到完整文件上
+  $("cp-save").disabled = !f || f.truncated || f.binary || !f.dirty;
+  $("cp-reload").disabled = !f;
+}
+
+function onEditorInput() {
+  const f = S.code.file;
+  if (!f) return;
+  f.dirty = $("cp-editor").value !== f.content;
+  renderEditorState();
+}
+
+async function saveFile() {
+  const f = S.code.file;
+  const ta = $("cp-editor");
+  if (!f || f.truncated || f.binary || !f.dirty) return;
+  try {
+    await api.fsSave(f.path, ta.value);
+    f.content = ta.value;
+    f.dirty = false;
+    toast("已保存（含检查点与审计）");
+    renderEditorState();
+    renderTree();
+    refreshChanges(); // 变更面板跟随刷新，不 await 阻塞
+  } catch (e) { toast(String(e).slice(0, 160), false); }
+}
+
+async function refreshChanges() {
+  try { S.code.changes = await api.workspaceChanges(); }
+  catch { S.code.changes = null; }
+  S.code.changeMap = new Map((S.code.changes?.files ?? []).map((f) => [String(f.path), String(f.status ?? "")]));
+  if (S.view === "code") { renderChangesPanel(); renderTree(); }
+}
+
+function renderChangesPanel() {
+  const box = $("cp-changes");
+  const c = S.code.changes;
+  if (!c) {
+    box.innerHTML = `<div class="cp-hint">变更加载失败——点「工作区变更」页签重试，或回对话页确认工作目录。</div>`;
+    return;
+  }
+  const files = c.files ?? [];
+  const isGit = c.source === "git";
+  let html = `<div class="cp-changes-head"><span>${isGit ? "分支" : "检查点口径（非 git 仓库）"}</span><span class="cp-branch">${esc(c.branch || "—")}</span><span class="cp-changes-count">${files.length} 个文件</span></div>`;
+  if (!files.length) {
+    html += `<div class="cp-hint">工作区暂无未提交变更。<br/>AI 个体或你在此编辑保存后，文件差异会集中展示在这里。</div>`;
+  }
+  for (const f of files) {
+    const diffText = f.diff?.text ? diffHtml(f.diff.text) + (f.diff.truncated ? `\n<span class="d-hunk">… diff 过长已截断</span>` : "") : "";
+    html += `<div class="cp-file-row" data-path="${esc(f.path)}">
+      <div class="cp-file-top">
+        <span class="cp-fst st-${esc(f.status)}">${esc(f.status)}${f.staged ? "*" : ""}</span>
+        <span class="cp-file-path2" title="${esc(f.path)}">${esc(f.path)}</span>
+        ${isGit ? `<span class="cp-file-ops"><button class="set-btn" data-op="${f.staged ? "unstage" : "stage"}" data-path="${esc(f.path)}">${f.staged ? "取消暂存" : "暂存"}</button><button class="set-btn danger" data-op="discard" data-path="${esc(f.path)}">丢弃</button></span>` : ""}
+      </div>
+      ${diffText ? `<pre class="cp-diff hidden">${diffText}</pre>` : (!f.diff && !f.staged ? `<pre class="cp-diff hidden" data-untracked="${esc(f.path)}"><span class="d-hunk">未跟踪文件 —— 展开加载全文</span></pre>` : "")}
+    </div>`;
+  }
+  if (isGit) {
+    html += `<div class="cp-commit">
+      <input id="cp-commit-msg" class="pop-input" placeholder="提交信息（只提交已暂存文件）" />
+      <button id="cp-commit-btn" class="pop-save">提交</button>
+      <div class="cp-hint">push / 硬重置 / 丢弃改动是破坏性操作：会生成审批单，经侧栏「待审批」放行后代执行。</div>
+    </div>`;
+  }
+  box.innerHTML = html;
+  // 行点击展开/收起 diff；未跟踪文件首次展开时懒加载全文
+  box.querySelectorAll(".cp-file-top").forEach((top) => top.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    const pre = top.closest(".cp-file-row")?.querySelector(".cp-diff");
+    if (!pre) return;
+    const showing = !pre.classList.contains("hidden");
+    pre.classList.toggle("hidden", showing);
+    if (!showing && pre.dataset.untracked) loadUntracked(pre, pre.dataset.untracked);
+  }));
+  box.querySelectorAll(".cp-file-ops button").forEach((b) => b.addEventListener("click", () => {
+    const { op, path } = b.dataset;
+    if (op === "discard" && !confirm(`丢弃「${path}」的未提交修改？将生成审批单。`)) return;
+    runGitOp({ op, path }, op === "stage" ? "已暂存" : op === "unstage" ? "已取消暂存" : "已生成丢弃审批单");
+  }));
+  box.querySelector("#cp-commit-btn")?.addEventListener("click", () => {
+    const msg = box.querySelector("#cp-commit-msg").value.trim();
+    if (!msg) return toast("提交信息不能为空", false);
+    runGitOp({ op: "commit", message: msg }, "已提交");
+  });
+}
+
+// diff 文本着色：+ 行绿 / - 行红 / @@ 与文件头暗（逐行包 span，内容整体已转义）
+function diffHtml(text) {
+  return String(text ?? "").split(/\r?\n/).map((ln) => {
+    const cls = /^(\+\+\+|---)/.test(ln) ? "d-hunk" : ln.startsWith("+") ? "d-add" : ln.startsWith("-") ? "d-del" : ln.startsWith("@@") ? "d-hunk" : "d-ctx";
+    return `<span class="${cls}">${esc(ln) || " "}</span>`;
+  }).join("\n");
+}
+
+// 未跟踪文件没有 diff：全文按「新增行」口径渲染
+async function loadUntracked(pre, path) {
+  try {
+    const r = await api.fsFile(path);
+    pre.innerHTML = diffHtml(String(r.content ?? "").split(/\r?\n/).map((l) => `+${l}`).join("\n"));
+  } catch (e) { pre.innerHTML = `<span class="d-hunk">${esc(String(e))}</span>`; }
+}
+
+// git 操作统一出口：pending = 破坏性操作已转审批单（批准后由系统代执行）
+async function runGitOp(payload, okMsg) {
+  try {
+    const r = await api.gitOp(payload);
+    if (r?.pending) {
+      toast(`破坏性操作已生成审批单（${r.command}），等待放行`);
+      refreshApprovalsBadge();
+    } else {
+      toast(okMsg ?? "操作成功");
+    }
+    await Promise.all([refreshChanges(), refreshGitOverview()]);
+  } catch (e) { toast(String(e).slice(0, 160), false); }
+}
+
+async function refreshGitOverview() {
+  try { S.code.overview = await api.gitOverview(); }
+  catch { S.code.overview = null; }
+  if (S.view === "code") renderGitPanel();
+}
+
+function renderGitPanel() {
+  const box = $("cp-git");
+  const ov = S.code.overview;
+  if (!ov) {
+    box.innerHTML = `<div class="cp-hint">Git 概览加载失败——点「Git」页签重试。</div>`;
+    return;
+  }
+  if (!ov.repo) {
+    box.innerHTML = `<div class="cp-hint">当前工作目录不是 git 仓库。<br/>「工作区变更」页签走检查点口径仍可看 AI 改动；初始化仓库后这里会呈现分支与提交历史。</div>`;
+    return;
+  }
+  const branches = ov.branches ?? [];
+  box.innerHTML = `
+    <div class="cp-changes-head"><span>当前分支</span><span class="cp-branch">${esc(ov.branch || "—")}</span></div>
+    ${branches.length ? `<div class="cp-section">分支（点击切换）</div>${branches.map((b) => `<button class="cp-branch-item${b === ov.branch ? " on" : ""}" data-branch="${esc(b)}">${esc(b)}${b === ov.branch ? " ✓" : ""}</button>`).join("")}` : ""}
+    <div class="cp-section">提交历史（最近 20 条）</div>
+    ${(ov.log ?? []).map((l) => { const sp = String(l).indexOf(" "); return `<div class="cp-log-line"><b>${esc(String(l).slice(0, sp < 0 ? 7 : sp))}</b> ${esc(sp < 0 ? "" : String(l).slice(sp + 1))}</div>`; }).join("") || `<div class="cp-hint">暂无提交</div>`}`;
+  box.querySelectorAll(".cp-branch-item").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.branch === ov.branch) return;
+    if (!confirm(`切换到分支「${b.dataset.branch}」？`)) return;
+    runGitOp({ op: "switch", branch: b.dataset.branch }, `已切换到 ${b.dataset.branch}`);
+  }));
+}
+
+function fmtSize(n) {
+  if (!n) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// ────────────────────────────── 通用模态 ──────────────────────────────
+
+function showModal(title, build) {
+  $("modal-title").textContent = title;
+  const body = $("modal-body");
+  body.innerHTML = "";
+  build(body);
+  $("modal").classList.remove("hidden");
+}
+
+function closeModal() { $("modal").classList.add("hidden"); }
+
+// ────────────────────────────── 会话增强：重命名 / 分叉 / 撤销 / 归档 ──────────────────────────────
+
+function sessionOps() {
+  const s = S.sessions.find((x) => x.id === S.sessionId);
+  if (!s) return;
+  showModal(`会话操作 · ${s.title || "未命名"}`, (body) => {
+    const row = (label, sub, fn) => {
+      const b = document.createElement("button");
+      b.className = "modal-row";
+      b.innerHTML = `<b>${esc(label)}</b>${sub ? `<div class="modal-sub">${esc(sub)}</div>` : ""}`;
+      b.addEventListener("click", fn);
+      body.appendChild(b);
+    };
+    row("✎ 重命名", "在侧栏该会话上行内编辑标题", () => { closeModal(); startRename(S.sessionId); });
+    row("⑂ 分叉新会话", "选择截至轮次，携带前 N 轮完整副本；原会话保持不变", () => turnsModal("fork"));
+    row("↩ 撤销到指定轮次", "回退对话历史，可联动回滚该轮之后的文件变更", () => turnsModal("undo"));
+    row("☰ 归档留痕", "被撤销 / 编辑重发替换的内容可查证", () => archiveModal());
+  });
+}
+
+// 侧栏行内重命名：标题替换为输入框，Enter / 失焦提交，Esc 取消
+function startRename(id) {
+  const item = document.querySelector(`.session-item[data-sid="${CSS.escape(id)}"]`);
+  const s = S.sessions.find((x) => x.id === id);
+  const titleEl = item?.querySelector(".session-title");
+  if (!item || !titleEl || item.querySelector(".session-rename")) return;
+  const input = document.createElement("input");
+  input.className = "session-rename";
+  input.value = s?.title ?? "";
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let closed = false;
+  const cancel = () => { if (!closed) { closed = true; renderSidebar(); } };
+  const commit = async () => {
+    if (closed) return;
+    closed = true;
+    const title = input.value.trim();
+    if (!title || title === (s?.title ?? "")) { renderSidebar(); return; }
+    try {
+      await api.renameSession(id, title);
+      S.sessions = S.sessions.map((x) => (x.id === id ? { ...x, title } : x));
+      toast("已重命名");
+    } catch (e) { alertErr(e); }
+    renderSidebar();
+  };
+  // stopPropagation：避免 Enter / Esc 冒泡触发全局快捷键
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") commit();
+    else if (e.key === "Escape") cancel();
+  });
+  input.addEventListener("blur", commit);
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+
+// 轮次选择（分叉 / 撤销共用）：快照清单给出可选轮次；无快照时手输轮次号兜底
+async function turnsModal(mode) {
+  const id = S.sessionId;
+  if (!id) return;
+  let snaps = [];
+  try { snaps = await api.snapshots(id); } catch { /* 拉取失败走手输兜底 */ }
+  showModal(mode === "fork" ? "分叉新会话 · 选择截至轮次" : "撤销 · 选择目标轮次", (body) => {
+    if (mode === "undo") {
+      const cb = document.createElement("label");
+      cb.className = "modal-check";
+      cb.innerHTML = `<input type="checkbox" id="undo-restore" checked /> 联动回滚该轮之后的文件变更（检查点口径）`;
+      body.appendChild(cb);
+    }
+    const doTurn = async (turn) => {
+      const n = Math.max(0, Math.floor(Number(turn) || 0));
+      try {
+        if (mode === "fork") {
+          const ns = await api.forkSession(id, n);
+          closeModal();
+          toast(`已派生新会话（携带前 ${n} 轮）`);
+          S.sessions = await api.sessions();
+          renderSidebar();
+          await selectSession(ns.id);
+        } else {
+          const restore = $("undo-restore")?.checked ?? true;
+          await api.undoSession(id, n, restore);
+          closeModal();
+          toast(`已回退到第 ${n} 轮${restore ? "，文件已联动回滚" : ""}`);
+          await selectSession(id); // 重拉消息 / 任务图 / 运行态
+        }
+      } catch (e) { toast(String(e).slice(0, 160), false); }
+    };
+    if (!Array.isArray(snaps) || !snaps.length) {
+      body.appendChild(Object.assign(document.createElement("div"), { className: "cp-hint", textContent: "暂无轮次快照——完成一轮完整对话后再来；也可直接输入轮次号（0 = 空会话起算）。" }));
+      const wrap = document.createElement("div");
+      wrap.className = "modal-inline";
+      const num = mkInput("1", { type: "number" });
+      num.style.width = "110px";
+      wrap.appendChild(num);
+      wrap.appendChild(mkBtn(mode === "fork" ? "分叉" : "撤销", () => doTurn(num.value)));
+      body.appendChild(wrap);
+      return;
+    }
+    // 新轮次在上：最近的操作离手最近
+    for (const t of [...snaps].sort((a, b) => (b.turn ?? 0) - (a.turn ?? 0))) {
+      const b = document.createElement("button");
+      b.className = "modal-row";
+      const at = t.createdAt ?? t.created_at;
+      b.innerHTML = `<b>第 ${esc(t.turn)} 轮</b><div class="modal-sub">截至 ${esc(t.messageCount ?? 0)} 条消息${at ? ` · ${esc(relTime(at))}` : ""}</div>`;
+      b.addEventListener("click", () => doTurn(t.turn));
+      body.appendChild(b);
+    }
+  });
+}
+
+// 归档查看：撤销 / 编辑重发时被替换的历史内容（服务端 message_archive 留痕）
+async function archiveModal() {
+  const id = S.sessionId;
+  if (!id) return;
+  let msgs = [];
+  try { msgs = await api.archive(id); }
+  catch (e) { toast(String(e).slice(0, 160), false); return; }
+  showModal("归档留痕", (body) => {
+    if (!Array.isArray(msgs) || !msgs.length) {
+      body.appendChild(Object.assign(document.createElement("div"), {
+        className: "cp-hint",
+        textContent: "暂无归档——撤销或编辑重发时被替换的历史会留存在这里，可随时查证。",
+      }));
+      return;
+    }
+    for (const m of msgs) {
+      const who = m.role === "user" ? "你" : `@${m.agentId || "orchestrator"}`;
+      const text = (m.statements ?? []).map((s) => s.text).join("\n");
+      body.insertAdjacentHTML("beforeend", `<div class="arch-msg"><div class="arch-meta">${esc(who)} · ${esc(relTime(m.createdAt))}</div><div class="arch-text">${esc(text)}</div></div>`);
+    }
+  });
+}
+
 // ────────────────────────────── 初始化 ──────────────────────────────
 
 function autosize() {
@@ -1910,11 +2654,60 @@ async function init() {
   }
   $("btn-new").addEventListener("click", () => newSession().catch(alertErr));
   $("btn-send").addEventListener("click", send);
-  $("btn-stop").addEventListener("click", () => S.sessionId && api.stop(S.sessionId).catch(alertErr));
+  $("btn-stop").addEventListener("click", async () => {
+    if (!S.sessionId) return;
+    const b = $("btn-stop");
+    b.disabled = true;
+    b.textContent = "停止中…"; // 受理期间禁点，避免重复 stop
+    try {
+      await api.stop(S.sessionId);
+      // 兜底：停止受理后仍未收到 run.finished 就复位运行态（事件丢失不再卡死）
+      setTimeout(() => { if (S.running) setRunning(false); }, 1500);
+    } catch (e) {
+      setRunning(false); // 409 = 本就空闲，直接复位
+      alertErr(e);
+    }
+  });
   $("btn-side").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
   $("btn-settings").addEventListener("click", () => showView(S.view === "settings" ? "chat" : "settings"));
   $("btn-right").addEventListener("click", () => setRightOpen(!S.rightOpen));
   setRightOpen(S.rightOpen);
+  // 新视图入口：编码 / 任务 / 待审批（直达设置审批 tab）
+  $("btn-code").addEventListener("click", () => showView(S.view === "code" ? "chat" : "code"));
+  $("btn-tasks").addEventListener("click", () => showView(S.view === "tasks" ? "chat" : "tasks"));
+  $("btn-approvals").addEventListener("click", () => { S.settingsTab = "approval"; showView("settings"); });
+  $("rp-full").addEventListener("click", () => showView("tasks"));
+  $("btn-session-menu").addEventListener("click", sessionOps);
+  // 编码页交互
+  $("cp-back").addEventListener("click", () => showView("chat"));
+  $("tp-back").addEventListener("click", () => showView("chat"));
+  $("cp-tree-refresh").addEventListener("click", () => refreshCodeAll().catch(alertErr));
+  $("cp-save").addEventListener("click", saveFile);
+  $("cp-reload").addEventListener("click", () => {
+    const f = S.code.file;
+    if (!f) return;
+    if (f.dirty && !confirm("放弃未保存修改并重新加载？")) return;
+    openFile(f.path);
+  });
+  $("cp-editor").addEventListener("input", onEditorInput);
+  $("cp-editor").addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveFile(); }
+  });
+  $("cp-tabs").querySelectorAll(".cp-tab").forEach((b) => b.addEventListener("click", () => {
+    S.code.rightTab = b.dataset.tab;
+    $("cp-tabs").querySelectorAll(".cp-tab").forEach((x) => x.classList.toggle("on", x === b));
+    $("cp-changes").classList.toggle("hidden", S.code.rightTab !== "changes");
+    $("cp-git").classList.toggle("hidden", S.code.rightTab !== "git");
+    // 切回页签时顺手拉新：变更 / 概览都是廉价的只读接口
+    if (S.code.rightTab === "git") refreshGitOverview();
+    else refreshChanges();
+  }));
+  // 模态开合：关闭按钮 / 点 backdrop / Esc
+  $("modal-close").addEventListener("click", closeModal);
+  $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal();
+  });
   const input = $("input");
   input.addEventListener("input", autosize);
   input.addEventListener("keydown", (e) => {
@@ -1942,6 +2735,9 @@ async function init() {
 
   // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导设置
   await refreshContext();
+  // 待审批角标：启动即拉一次，之后 60s 轮询兜底（WS 事件负责即时性）
+  void refreshApprovalsBadge();
+  setInterval(() => void refreshApprovalsBadge(), 60000);
   // 思考强度本地记忆重设（网关重启后回到端点默认，此处恢复用户选择）
   if (S.effort !== "default") api.setEffort(S.effort).catch(() => {});
   try {
