@@ -258,16 +258,15 @@ function resetLive() {
 }
 
 // 子代理会话实时流：rAF 合帧（token 高频到达）
-let unitStreamPending = false;
+let unitStreamTimer = null;
 function scheduleUnitStream() {
-  if (unitStreamPending) return;
-  unitStreamPending = true;
-  requestAnimationFrame(() => {
-    unitStreamPending = false;
+  if (unitStreamTimer) return; // 120ms 合帧；后台标签页 rAF 不触发，故用定时器
+  unitStreamTimer = setTimeout(() => {
+    unitStreamTimer = null;
     if (!S.unitView) return;
     renderStream(false);
     if (nearBottom()) scrollBottom();
-  });
+  }, 120);
 }
 
 // 进入 / 退出子代理会话（与指挥体主会话同款界面）
@@ -470,7 +469,6 @@ function msgHtml(msg) {
     ? `<div class="msg-bubble">${esc(msg.statements?.map((s) => s.text).join("\n") ?? "")}</div>`
     : `<div class="msg-bubble">${(msg.statements ?? []).map(stmtHtml).join("") || "<span class='md'></span>"}</div>`;
   return `<div class="msg ${isUser ? "user" : isError ? "assistant error" : "assistant"}">
-    <div class="avatar">${isUser ? "你" : "EX"}</div>
     <div class="msg-body"><div class="msg-meta">${esc(who)} · ${relTime(msg.createdAt)}</div>${body}${traceHtml(msg)}</div>
   </div>`;
 }
@@ -493,12 +491,12 @@ function renderStream(scroll) {
 function renderUnitStream(scroll) {
   const agent = S.unitView;
   streamEl.innerHTML = "";
-  // 派发单契约卡（指挥体传给它的任务）
+  // 派发单契约卡（谁发的就显示谁的名字）
   const dp = S.dispatches.find((d) => d.to === agent)?.payload;
   const node = (S.graph?.nodes ?? []).find((n) => n.agentIdentifier === agent);
   if (dp || node) {
-    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="avatar">EX</div>
-      <div class="msg-body"><div class="msg-meta">指挥体派发的任务</div><div class="msg-bubble">
+    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="msg-body">
+      <div class="msg-meta">@${esc(orchestratorId())} · ${esc(node?.title || "派发任务")}</div><div class="msg-bubble">
         <div class="stmt"><span class="stmt-tag">任务</span><span class="stmt-text md">${esc(node?.objective || dp?.goal || "")}</span></div>
         ${(dp?.acceptance ?? []).length ? `<div class="stmt"><span class="stmt-tag">验收</span><span class="stmt-text md">${esc(dp.acceptance.join("；"))}</span></div>` : ""}
       </div></div></div>`);
@@ -506,21 +504,25 @@ function renderUnitStream(scroll) {
   // 对话历史：用户消息 + 该个体的回传
   const msgs = S.messages.filter((m) => m.role === "user" || (m.role === "unit" && m.agentId === agent));
   if (!msgs.length && !S.live.units[agent]) {
-    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="avatar">EX</div>
-      <div class="msg-body"><div class="msg-bubble" style="color:var(--text-dim)">还没有与 @${esc(agent)} 的直接对话——发消息即可单独与这个子个体交流，它会带着上面的任务上下文回答。</div></div></div>`);
+    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="msg-body"><div class="msg-bubble" style="color:var(--text-dim)">还没有与 @${esc(agent)} 的直接对话——发消息即可单独与这个个体交流，它会带着上面的任务上下文回答。</div></div></div>`);
   }
   for (const m of msgs) streamEl.insertAdjacentHTML("beforeend", msgHtml(m));
   // 实时流（直聊进行中）
   const liveText = S.live.units[agent];
   const liveThink = S.live.unitThinking[agent];
   if (liveText || liveThink) {
-    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="unit-live"><div class="avatar">EX</div>
-      <div class="msg-body"><div class="msg-meta">@${esc(agent)} · 正在输入</div>
+    streamEl.insertAdjacentHTML("beforeend", `<div class="msg assistant" id="unit-live"><div class="msg-body"><div class="msg-meta">@${esc(agent)} · 正在输入</div>
         ${liveThink ? `<div class="trace" style="margin:0 0 6px"><details open><summary>思考中</summary><div class="thinking-text">${esc(liveThink)}</div></details></div>` : ""}
         <div class="live-orch md">${md(liveText ?? "")}<span class="cursor"></span></div>
       </div></div>`);
   }
   if (scroll !== false) scrollBottom();
+}
+
+// 指挥体标识：组主智能体 id，缺省 orchestrator
+function orchestratorId() {
+  const gid = S.target?.mode === "group" ? (S.target.id ?? "default") : null;
+  return S.groups.find((g) => g.id === gid)?.primary || "orchestrator";
 }
 
 function welcomeEl() {
@@ -541,12 +543,12 @@ function welcomeEl() {
 }
 
 // 实时区（流式 token 高频到达 → rAF 合帧渲染）
-let livePending = false;
+let liveTimer = null;
 function scheduleLive(force) {
-  if (livePending && !force) return;
-  livePending = true;
-  requestAnimationFrame(() => {
-    livePending = false;
+  // setTimeout 而非 rAF：窗口隐藏/后台时 rAF 永不触发，实时区会冻住
+  if (liveTimer) { if (!force) return; clearTimeout(liveTimer); }
+  liveTimer = setTimeout(() => {
+    liveTimer = null;
     if (!S.running) { liveEl.style.display = "none"; return; }
     liveEl.style.display = "";
     const live = S.live;
@@ -560,7 +562,7 @@ function scheduleLive(force) {
       <span class="tool-status"><span class="${t.status}">${t.status === "ok" ? "✓" : t.status === "error" ? "✗" : "…"}</span></span>
       <span class="tool-summary">${esc(t.summary ?? "")}</span></div>`).join("");
     const activity = live.activity.slice(-12).map((a) => `<div class="act-line">${a.text}</div>`).join("");
-    liveEl.innerHTML = `<div class="msg assistant"><div class="avatar">EX</div>
+    liveEl.innerHTML = `<div class="msg assistant">
       <div class="msg-body">${orch}
         ${tools || activity ? `<div class="trace"><details open><summary>执行过程</summary>${tools}${activity}</details></div>` : ""}
       </div></div>`;
@@ -683,9 +685,8 @@ function scheduleRight(force) {
   if (!S.running && !S.graph?.nodes?.length) { renderRight(); return; }
   // 有活动任务时确保面板可见
   if (!S.rightOpen && (S.running || activeNodeCount() > 0)) setRightOpen(true);
-  if (scheduleRight.pending && !force) return;
-  scheduleRight.pending = true;
-  requestAnimationFrame(() => { scheduleRight.pending = false; renderRight(); });
+  if (scheduleRight.timer) { if (!force) return; clearTimeout(scheduleRight.timer); }
+  scheduleRight.timer = setTimeout(() => { scheduleRight.timer = null; renderRight(); }, 120);
 }
 
 function activeNodeCount() {
