@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "exm-cli"
-version = "0.1.1-rc.2"
+version = "0.1.1-rc.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "exm-core"
-version = "0.1.1-rc.2"
+version = "0.1.1-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "exm-gateway"
-version = "0.1.1-rc.2"
+version = "0.1.1-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",

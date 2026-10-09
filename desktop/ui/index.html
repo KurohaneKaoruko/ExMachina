@@ -2,23 +2,50 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EXMACHINA</title>
-    <style>
-      body { background: #0a0e13; color: #37e0ff; font-family: Consolas, monospace;
-             display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-      p { opacity: 0.7; font-size: 13px; }
-    </style>
-    <script>
-      // 正常路径下窗口直接加载网关 URL（本地拉起或 --remote）；本页仅为 Tauri frontendDist 占位，
-      // 万一被直接打开时给出引导。
-      if (location.protocol === "tauri:") {
-        document.addEventListener("DOMContentLoaded", () => {
-          document.body.innerHTML = "<p>未连接网关。请用 exmachina-desktop 启动，或 --remote 指定网关地址。</p>";
-        });
-      }
-    </script>
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <p>EX·MACHINA — 等待网关接入…</p>
+    <div id="app">
+      <!-- 侧栏：会话列表（可收起） -->
+      <aside id="sidebar">
+        <div class="side-head">
+          <div class="brand"><span class="brand-mark">EX</span><span class="brand-name">EXMACHINA</span></div>
+          <button id="btn-new" class="btn-new" title="开始新对话">＋ 新对话</button>
+        </div>
+        <nav id="session-list" aria-label="会话列表"></nav>
+        <div class="side-foot">
+          <div id="conn-status" class="conn"><span class="dot"></span><span id="conn-text">连接中…</span></div>
+          <button id="btn-console" class="side-link" title="在浏览器中打开管理控制台">⚙ 打开控制台</button>
+        </div>
+      </aside>
+
+      <!-- 主列：对话流 + 输入区 -->
+      <main id="main">
+        <header id="topbar">
+          <button id="btn-side" class="icon-btn" title="显示 / 收起侧栏">☰</button>
+          <div id="target-chip" class="target-chip">…</div>
+          <div class="top-actions">
+            <span id="run-state" class="run-state hidden"><span class="spinner"></span>运行中</span>
+            <button id="btn-stop" class="btn-stop hidden" title="终止本轮">■ 停止</button>
+          </div>
+        </header>
+
+        <div id="banner" class="banner hidden"></div>
+
+        <section id="stream"><div id="stream-inner"></div></section>
+
+        <footer id="composer">
+          <div id="approvals"></div>
+          <div class="composer-box">
+            <textarea id="input" rows="1" placeholder="给 EXMACHINA 发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button id="btn-send" class="btn-send" title="发送">➤</button>
+          </div>
+          <div class="composer-hint">内容由 AI 生成，请自行核实重要信息</div>
+        </footer>
+      </main>
+    </div>
+    <script src="app.js"></script>
   </body>
 </html>

@@ -1,14 +1,16 @@
 //! EXMACHINA 桌面端（Tauri v2 壳）—— 桌面集成（组 11）
 //!
-//! 与主流桌面交付形态一致：**桌面端自带本地服务器**（捆绑的 exm-gateway 随应用启动，
-//! WebUI 与 API 同端口），同时支持 `--remote <url>` 直连远程网关（服务器上的后台服务）。
+//! 桌面优先形态：**主窗口 = 壳内嵌的对话式 UI**（desktop/ui，经 frontendDist 嵌入二进制），
+//! 参考常见 agent 桌面客户端：打开即对话，会话列表 + 流式回答 + 审批内联裁决。
+//! 壳拉起捆绑的 exm-gateway 作为后端（REST/WS 同端口），WebUI 管理控制台不再作为主界面——
+//! 收为托盘「打开控制台（浏览器）」的次级入口；亦支持 `--remote <url>` 直连远程网关。
 //! 移动端无需单独 App：手机浏览器 / PWA 打开网关地址即为同源客户端。
 //!
 //! 启动形态：
-//! - `exmachina-desktop`                                          —— 拉起捆绑网关并打开窗口
+//! - `exmachina-desktop`                                          —— 拉起捆绑网关，主窗口进入对话界面
 //! - `exmachina-desktop --remote http://host:4173 --key <authKey>` —— 直连远程网关
 //!
-//! 密钥经 Tauri 初始化脚本写入 localStorage（exm.key），复用 WebUI 自身的登录门与鉴权层。
+//! 网关地址与密钥经 Tauri 初始化脚本注入 `window.__EXM_GATEWAY__`，对话 UI 据此直连环口。
 //!
 //! 组 11 桌面集成：
 //! - 系统托盘（11.1）：常驻托盘菜单（打开控制面板 / 显示隐藏 / 退出）；关窗默认驻留（可配置完全退出）；
@@ -69,7 +71,8 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             get_desktop_config,
-            set_desktop_config
+            set_desktop_config,
+            open_console
         ])
         .setup(move |app| {
             let url: String = match remote {
@@ -79,23 +82,20 @@ fn main() {
             let key_val = key.clone().unwrap_or_default();
             app.manage(GatewayInfo { url: url.clone(), key: key_val.clone() });
 
-            // 密钥注入 + 深链定位：document start 阶段写 localStorage（WebUI 的 api 层读取 exm.key）
-            let mut win = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::External(url.parse().map_err(|e| format!("无效的网关地址: {e}"))?),
-            )
-            .title("EXMACHINA · 多智能体系统")
-            .inner_size(1320.0, 860.0)
-            .min_inner_size(420.0, 360.0);
-            if !key_val.is_empty() {
-                let script = format!(
-                    "try {{ localStorage.setItem('exm.key', '{}'); }} catch (e) {{}}",
-                    key_val.replace('\'', "")
-                );
-                win = win.initialization_script(&script);
-            }
-            win.build()?;
+            // 主界面：壳内嵌的对话式 UI（desktop/ui，经 frontendDist 打进二进制），
+            // 网关只做后端（REST/WS）。网关地址与密钥经初始化脚本注入（window.__EXM_GATEWAY__），
+            // UI 据此直连环口；WebUI 控制台收为托盘「打开控制台」的浏览器次级入口。
+            let script = format!(
+                "window.__EXM_GATEWAY__ = {{ url: '{url}', key: '{key}' }};",
+                url = url.replace('\\', "\\\\").replace('\'', "\\'"),
+                key = key_val.replace('\\', "\\\\").replace('\'', "\\'"),
+            );
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+                .title("EXMACHINA · 多智能体系统")
+                .inner_size(1320.0, 860.0)
+                .min_inner_size(420.0, 360.0)
+                .initialization_script(&script)
+                .build()?;
 
             // 系统托盘（11.1）：常驻菜单 + 显隐 + 退出（退出级联终止网关子进程）
             build_tray(app.handle())?;
@@ -137,9 +137,10 @@ fn main() {
 fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem};
     let open = MenuItem::with_id(app, "open", "打开控制面板", true, None::<&str>)?;
+    let console = MenuItem::with_id(app, "console", "打开控制台（浏览器）", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &console, &toggle, &quit])?;
 
     let mut builder = tauri::tray::TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
@@ -147,6 +148,7 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
+            "console" => open_in_browser(&app.state::<GatewayInfo>().inner().url),
             "toggle" => toggle_main_window(app),
             "quit" => {
                 // 托盘退出：级联终止网关子进程（RunEvent::Exit 收口）
@@ -256,6 +258,35 @@ fn set_desktop_config(
     }
     cfg.save()?;
     Ok(cfg)
+}
+
+// ---------------------------------------------------------------- 控制台（浏览器次级入口）
+
+/// 在系统浏览器打开网关托管的 WebUI 控制台（管理面收为次级入口，主窗口是对话界面）
+#[tauri::command]
+fn open_console(app: tauri::AppHandle) -> Result<(), String> {
+    open_in_browser(&app.state::<GatewayInfo>().inner().url);
+    Ok(())
+}
+
+/// 系统默认浏览器打开 URL（零新依赖；Windows 经 cmd start 且抑制控制台闪窗）
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("cmd")
+            .args(["/c", "start", "", url])
+            .creation_flags(0x0800_0000)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = Command::new("xdg-open").arg(url).spawn();
+    }
 }
 
 // ---------------------------------------------------------------- 原生通知事件桥（11.2）
