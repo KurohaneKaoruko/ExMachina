@@ -2,8 +2,8 @@
 //!
 //! 桌面优先形态：**主窗口 = 壳内嵌的对话式 UI**（desktop/ui，经 frontendDist 嵌入二进制），
 //! 参考常见 agent 桌面客户端：打开即对话，会话列表 + 流式回答 + 审批内联裁决。
-//! 壳拉起捆绑的 exm-gateway 作为后端（REST/WS 同端口），WebUI 管理控制台不再作为主界面——
-//! 收为托盘「打开控制台（浏览器）」的次级入口；亦支持 `--remote <url>` 直连远程网关。
+//! 壳拉起捆绑的 exm-gateway 作为后端（REST/WS 同端口），全部管理能力（模型/组/通道/定时/
+//! 安全）由壳内原生设置视图直连环口 API 完成，**不依赖任何 webui**；亦支持 `--remote <url>`。
 //! 移动端无需单独 App：手机浏览器 / PWA 打开网关地址即为同源客户端。
 //!
 //! 启动形态：
@@ -72,8 +72,7 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             get_desktop_config,
-            set_desktop_config,
-            open_console
+            set_desktop_config
         ])
         .setup(move |app| {
             let url: String = match remote {
@@ -85,7 +84,7 @@ fn main() {
 
             // 主界面：壳内嵌的对话式 UI（desktop/ui，经 frontendDist 打进二进制），
             // 网关只做后端（REST/WS）。网关地址与密钥经初始化脚本注入（window.__EXM_GATEWAY__），
-            // UI 据此直连环口；WebUI 控制台收为托盘「打开控制台」的浏览器次级入口。
+            // UI 据此直连环口；管理能力经原生设置视图完成（桌面端零 webui 依赖）。
             let script = format!(
                 "window.__EXM_GATEWAY__ = {{ url: '{url}', key: '{key}' }};",
                 url = url.replace('\\', "\\\\").replace('\'', "\\'"),
@@ -138,10 +137,9 @@ fn main() {
 fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem};
     let open = MenuItem::with_id(app, "open", "打开控制面板", true, None::<&str>)?;
-    let console = MenuItem::with_id(app, "console", "打开控制台（浏览器）", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &console, &toggle, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
 
     let mut builder = tauri::tray::TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
@@ -149,11 +147,6 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
-            "console" => {
-                if let Err(e) = open_in_browser(&app.state::<GatewayInfo>().inner().url) {
-                    eprintln!("[desktop] 打开控制台失败: {e}");
-                }
-            }
             "toggle" => toggle_main_window(app),
             "quit" => {
                 // 托盘退出：级联终止网关子进程（RunEvent::Exit 收口）
@@ -265,45 +258,6 @@ fn set_desktop_config(
     Ok(cfg)
 }
 
-// ---------------------------------------------------------------- 控制台（浏览器次级入口）
-
-/// 在系统浏览器打开网关托管的 WebUI 控制台（管理面收为次级入口，主窗口是对话界面）
-#[tauri::command]
-fn open_console(app: tauri::AppHandle) -> Result<(), String> {
-    open_in_browser(&app.state::<GatewayInfo>().inner().url)
-}
-
-/// 系统默认浏览器打开 URL（零新依赖；Windows 经 cmd start 且抑制控制台闪窗）。
-/// 失败显式回传：静默吞掉会让「打不开控制台」无从诊断。
-fn open_in_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        Command::new("cmd")
-            .args(["/c", "start", "", url])
-            .creation_flags(0x0800_0000)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("打开浏览器失败: {e}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("打开浏览器失败: {e}"))
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("打开浏览器失败: {e}"))
-    }
-}
-
 // ---------------------------------------------------------------- 原生通知事件桥（11.2）
 
 /// WS 事件桥线程：订阅网关事件流，审批 / 定时推送 / 任务完成映射为系统原生通知
@@ -404,18 +358,11 @@ fn spawn_local_gateway(app: &tauri::AppHandle) -> Result<String, Box<dyn std::er
     let data_dir = desktop::data_dir().join("ExMachina");
     std::fs::create_dir_all(data_dir.join("data"))?;
 
-    // WebUI 构建产物随包捆绑（src-tauri/binaries/webui-dist/）：告知网关同端口托管，
-    // 否则窗口加载根路径 404（表现即「无法访问」）
-    let webui_dist = bin_dir.join("webui-dist");
-
     let mut cmd = Command::new(&gateway);
     cmd.arg("serve")
         .arg("--port")
         .arg(port.to_string())
         .env("EXM_DATA_DIR", data_dir.join("data"));
-    if webui_dist.join("index.html").is_file() {
-        cmd.env("EXM_WEBUI_DIST", &webui_dist);
-    }
     // Windows：网关是控制台子系统程序，GUI 进程无控制台可继承 → 系统会为其新开终端窗口；
     // CREATE_NO_WINDOW (0x0800_0000) 抑制弹窗（日志经事件桥与 WebUI 可见，无需终端）
     #[cfg(target_os = "windows")]

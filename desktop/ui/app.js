@@ -81,6 +81,8 @@ const S = {
   effort: (() => { try { return localStorage.getItem("exm.effort") ?? "default"; } catch { return "default"; } })(),
   // default=端点默认 | low | medium | high（模型推理预算，全局生效，本地记忆 + 启动时重设）
   images: [],          // data URL 附件
+  view: "chat",        // chat | settings（设置视图：模型/组/通道/定时/安全，直连环口 API）
+  settingsTab: "model",
   graph: null,         // TaskGraph（任务派发图：指挥体 → 子个体）
   reports: [],         // 子个体回执 {agent, summary, confidence, nodeId}
   workspace: "",       // 当前生效工作目录（干活的项目；空 = 全局根）
@@ -474,6 +476,8 @@ function msgHtml(msg) {
 }
 
 function renderStream(scroll) {
+  // 设置整页接管期间不触碰对话 DOM（返回对话时统一重渲染）
+  if (S.view === "settings") return;
   // 子代理会话视图：与主会话同款界面（流 + 输入区共用），内容过滤为该个体的对话
   if (S.unitView) { renderUnitStream(scroll); return; }
   // 已收束消息
@@ -530,7 +534,7 @@ function welcomeEl() {
   el.className = "welcome";
   el.innerHTML = `
     <h1>有什么可以帮你？</h1>
-    <p>对话交由当前对象（智能体或智能体组）协作完成；控制台可管理个体、模型与通道</p>
+    <p>对话交由当前对象（智能体或智能体组）协作完成；设置中可管理模型、个体与通道</p>
     <div class="suggest">
       <button data-q="帮我梳理一下这个项目的整体结构，给出模块说明">梳理项目结构，输出模块说明</button>
       <button data-q="写一个 Python 脚本：批量重命名当前目录下的图片文件，按日期编号">写一个批量重命名图片的脚本</button>
@@ -752,7 +756,349 @@ function renderRight() {
     el.addEventListener("click", () => openUnitView(el.dataset.agent)));
 }
 
-// ────────────────────────────── 输入区上下文芯片 ──────────────────────────────
+// ────────────────────────────── 设置视图（原生，直连环口 API） ──────────────────────────────
+// 桌面端不依赖任何 webui：模型与提供商 / 组与个体 / 通道 / 定时任务 / 安全 全部壳内直管。
+// 一切核心功能在 exm-core，桌面端与 webui、channel 一样只是连结核心的客户端。
+
+const SETTINGS_TABS = [["model", "模型"], ["group", "组与个体"], ["channel", "通道"], ["cron", "定时任务"], ["security", "安全"]];
+
+function showView(v) {
+  S.view = v;
+  updateTopbar();
+  // 设置是独立整页：接管整个窗口（对话区整体隐藏），返回时还原
+  $("settings-page").classList.toggle("hidden", v !== "settings");
+  $("app").classList.toggle("hidden", v === "settings");
+  if (v === "settings") renderSettings();
+  else renderView();
+}
+
+function renderView() {
+  if (S.view === "settings") renderSettings();
+  else renderStream(true);
+}
+
+function toast(msg, ok = true) {
+  const t = document.createElement("div");
+  t.className = `toast ${ok ? "ok" : "err"}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+function renderSettings() {
+  // 竖排导航
+  const tabs = $("sp-tabs");
+  tabs.innerHTML = "";
+  for (const [id, label] of SETTINGS_TABS) {
+    const b = document.createElement("button");
+    b.className = `set-tab${S.settingsTab === id ? " on" : ""}`;
+    b.textContent = label;
+    b.addEventListener("click", () => { S.settingsTab = id; renderSettings(); });
+    tabs.appendChild(b);
+  }
+  // 内容区
+  const body = $("sp-body");
+  body.innerHTML = "";
+  ({ model: renderSetModel, group: renderSetGroup, channel: renderSetChannel, cron: renderSetCron, security: renderSetSecurity }[S.settingsTab] ?? renderSetModel)(body);
+}
+
+// —— 表单小件 ——
+function mkField(label, input) {
+  const w = document.createElement("label");
+  w.className = "fld";
+  const l = document.createElement("span");
+  l.className = "fld-label";
+  l.textContent = label;
+  w.appendChild(l);
+  w.appendChild(input);
+  return w;
+}
+function mkInput(value, opts = {}) {
+  const i = document.createElement("input");
+  i.className = "pop-input";
+  if (opts.type) i.type = opts.type;
+  if (value != null) i.value = value;
+  i.placeholder = opts.placeholder ?? "";
+  return i;
+}
+function mkSelect(options, value) {
+  const s = document.createElement("select");
+  s.className = "pop-input";
+  for (const [v, t] of options) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = t;
+    if (v === value) o.selected = true;
+    s.appendChild(o);
+  }
+  return s;
+}
+function mkBtn(text, onclick, cls = "pop-save") {
+  const b = document.createElement("button");
+  b.className = cls;
+  b.textContent = text;
+  b.addEventListener("click", onclick);
+  return b;
+}
+function setCard(title) {
+  const c = document.createElement("div");
+  c.className = "set-card";
+  const h = document.createElement("div");
+  h.className = "set-card-title";
+  h.textContent = title;
+  c.appendChild(h);
+  return c;
+}
+async function settingsSave(promise, okMsg) {
+  try { await promise; toast(okMsg); return true; }
+  catch (e) { toast(String(e).slice(0, 160), false); return false; }
+}
+
+// —— 模型与提供商 ——
+function renderSetModel(body) {
+  const info = { active: S.activeProfileId, profiles: S.profiles };
+  const list = setCard("提供商档案（LLM）");
+  if (!S.profiles.length) list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "尚未配置提供商——新增档案并填写端点与 API Key 后即可对话。" }));
+  for (const p of S.profiles) {
+    const row = document.createElement("div");
+    row.className = "set-row";
+    row.innerHTML = `<div class="set-row-main"><b>${esc(p.name)}</b>${p.id === S.activeProfileId ? '<span class="tag-ok">✓ 生效</span>' : ""}
+      <div class="set-sub">${esc(p.baseUrl)} · ${esc(p.apiFormat || "openai")} · 模型 ${esc(p.model || "未指定")}</div></div>`;
+    const ops = document.createElement("div");
+    ops.className = "set-ops";
+    if (p.id !== S.activeProfileId) ops.appendChild(mkBtn("设为生效", async () => {
+      if (await settingsSave(req("/llm/active", { method: "PUT", body: JSON.stringify({ id: p.id }) }), "已切换生效档案")) await refreshContext(), renderSettings();
+    }, "set-btn"));
+    ops.appendChild(mkBtn("测连通", async () => {
+      const r = await req("/llm/test", { method: "POST", body: JSON.stringify({ id: p.id }) }).catch((e) => ({ error: String(e) }));
+      toast(r?.ok ? `连通正常（HTTP ${r.status ?? "mock"}）` : `失败：${r?.error || r?.message || "未知"}`, Boolean(r?.ok));
+    }, "set-btn"));
+    ops.appendChild(mkBtn("编辑", () => { profileForm(p); }, "set-btn"));
+    ops.appendChild(mkBtn("删除", async () => {
+      if (!confirm(`删除档案「${p.name}」？`)) return;
+      if (await settingsSave(req(`/llm/profiles/${p.id}`, { method: "DELETE" }), "已删除")) await refreshContext(), renderSettings();
+    }, "set-btn danger"));
+    row.appendChild(ops);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
+  body.appendChild(mkBtn("＋ 新增档案", () => profileForm(null)));
+  body.appendChild(profileFormSlot());
+  function profileFormSlot() { const d = document.createElement("div"); d.id = "profile-form"; return d; }
+  function profileForm(p) {
+    const slot = body.querySelector("#profile-form") || body.appendChild(profileFormSlot());
+    slot.innerHTML = "";
+    const c = setCard(p ? `编辑档案：${p.name}` : "新增档案");
+    const name = mkInput(p?.name ?? "", { placeholder: "如 DeepSeek / GLM" });
+    const baseUrl = mkInput(p?.baseUrl ?? "https://api.openai.com/v1");
+    const fmt = mkSelect([["openai", "OpenAI 兼容"], ["anthropic", "Anthropic"], ["gemini", "Gemini"]], p?.apiFormat || "openai");
+    const key = mkInput("", { type: "password", placeholder: p ? "留空沿用已配置 Key" : "sk-..." });
+    const model = mkInput(p?.model ?? "", { placeholder: "默认模型名，如 GLM-5.3-Flash" });
+    c.appendChild(mkField("名称", name));
+    c.appendChild(mkField("端点 Base URL", baseUrl));
+    c.appendChild(mkField("协议", fmt));
+    c.appendChild(mkField("API Key", key));
+    c.appendChild(mkField("默认模型", model));
+    const ops = document.createElement("div");
+    ops.className = "set-ops";
+    ops.appendChild(mkBtn("保存", async () => {
+      const payload = { id: p?.id, name: name.value.trim() || "未命名", baseUrl: baseUrl.value.trim(), apiFormat: fmt.value, model: model.value.trim() };
+      if (key.value.trim()) payload.apiKey = key.value.trim();
+      if (await settingsSave(req("/llm/profiles", { method: "POST", body: JSON.stringify(payload) }), "档案已保存")) { await refreshContext(); renderSettings(); }
+    }));
+    if (p) ops.appendChild(mkBtn("拉取模型清单", async () => {
+      const r = await req("/llm/models", { method: "POST", body: JSON.stringify({ id: p.id }) }).catch((e) => ({ error: String(e) }));
+      toast(r?.ok ? `端点可用模型 ${r.models?.length ?? 0} 个：${(r.models ?? []).slice(0, 5).join("、")}${(r.models?.length ?? 0) > 5 ? " …" : ""}` : `失败：${r?.error || r?.message || "未知"}`, Boolean(r?.ok));
+    }, "set-btn"));
+    c.appendChild(ops);
+    slot.appendChild(c);
+    slot.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
+// —— 组与个体 ——
+function renderSetGroup(body) {
+  const list = setCard("智能体组（项目协作单元）");
+  for (const g of S.groups) {
+    const row = document.createElement("div");
+    row.className = "set-row";
+    const active = S.target?.mode === "group" && (S.target.id ?? "default") === g.id;
+    row.innerHTML = `<div class="set-row-main"><b>${esc(g.name)}</b>${active ? '<span class="tag-ok">✓ 当前</span>' : g.builtin ? '<span class="tag-dim">内置</span>' : ""}
+      <div class="set-sub">${esc(g.workspace || "未设工作目录")} · 主智能体 ${esc(g.primary || "未指定")}</div>
+      <div class="set-agents" data-gid="${esc(g.id)}"></div></div>`;
+    const ops = document.createElement("div");
+    ops.className = "set-ops";
+    if (!active) ops.appendChild(mkBtn("设为当前", async () => {
+      if (await settingsSave(req("/groups/active", { method: "PUT", body: JSON.stringify({ id: g.id }) }), "已切换")) await refreshContext(), renderSettings();
+    }, "set-btn"));
+    ops.appendChild(mkBtn("工作目录", () => {
+      const input = mkInput(g.workspace || "", { placeholder: "/path/to/project" });
+      row.querySelector(".set-row-main").appendChild(mkField("工作目录", input));
+      input.after(mkBtn("保存目录", async () => {
+        if (await settingsSave(api.setGroupWorkspace(g.id, input.value.trim()), "工作目录已保存")) renderSettings();
+      }, "set-btn"));
+      input.focus();
+    }, "set-btn"));
+    if (!g.builtin) ops.appendChild(mkBtn("删除", async () => {
+      if (!confirm(`删除组「${g.name}」？`)) return;
+      if (await settingsSave(req(`/groups/${g.id}`, { method: "DELETE" }), "已删除")) await refreshContext(), renderSettings();
+    }, "set-btn danger"));
+    row.appendChild(ops);
+    list.appendChild(row);
+    // 组内个体（懒加载）
+    req(`/groups/${g.id}/agents`).then((agents) => {
+      const box = row.querySelector(".set-agents");
+      box.innerHTML = "";
+      for (const a of agents) {
+        const chip = document.createElement("span");
+        chip.className = "agent-chip";
+        const isPrimary = g.primary === a.identifier;
+        chip.innerHTML = `@${esc(a.identifier)}${isPrimary ? ' <i class="pri">主</i>' : ""}`;
+        if (!isPrimary) {
+          chip.style.cursor = "pointer";
+          chip.title = "设为组主智能体";
+          chip.addEventListener("click", async () => {
+            if (await settingsSave(req(`/groups/${g.id}/primary`, { method: "POST", body: JSON.stringify({ identifier: a.identifier }) }), `主智能体 → @${a.identifier}`)) renderSettings();
+          });
+        }
+        box.appendChild(chip);
+      }
+    }).catch(() => {});
+  }
+  body.appendChild(list);
+  const create = setCard("新建智能体组");
+  const name = mkInput("", { placeholder: "组名称，如 前端小组" });
+  create.appendChild(mkField("名称", name));
+  create.appendChild(mkBtn("创建", async () => {
+    if (!name.value.trim()) return toast("组名称不能为空", false);
+    if (await settingsSave(req("/groups", { method: "POST", body: JSON.stringify({ name: name.value.trim() }) }), "组已创建")) { await refreshContext(); renderSettings(); }
+  }));
+  body.appendChild(create);
+}
+
+// —— 通道 ——
+function renderSetChannel(body) {
+  const list = setCard("消息通道（Telegram / QQ / Discord…）");
+  req("/channels").then(async (channels) => {
+    const status = await req("/channels/status").catch(() => ({}));
+    if (!channels.length) list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "尚未配置通道——新增后智能体组可通过 IM 收发消息。" }));
+    for (const ch of channels) {
+      const st = status[ch.id];
+      const row = document.createElement("div");
+      row.className = "set-row";
+      row.innerHTML = `<div class="set-row-main"><b>${esc(ch.id)}</b><span class="tag-dim">${esc(ch.type || ch.platform || "")}</span>
+        ${ch.enabled ? "" : '<span class="tag-dim">已停用</span>'}
+        <div class="set-sub">${st ? `${st.state === "ok" ? "● 正常" : "● 异常"} ${esc(st.detail || "")}` : "无运行状态"}</div></div>`;
+      const ops = document.createElement("div");
+      ops.className = "set-ops";
+      ops.appendChild(mkBtn(ch.enabled ? "停用" : "启用", async () => {
+        if (await settingsSave(req(`/channels/${ch.id}`, { method: "PUT", body: JSON.stringify({ enabled: !ch.enabled }) }), ch.enabled ? "已停用" : "已启用")) renderSettings();
+      }, "set-btn"));
+      ops.appendChild(mkBtn("测试", async () => {
+        const r = await req(`/channels/${ch.id}/test`, { method: "POST", body: JSON.stringify({}) }).catch((e) => ({ error: String(e) }));
+        toast(r?.ok ? `连通正常${r.message ? `：${r.message}` : ""}` : `失败：${r?.error || r?.message || "未知"}`, Boolean(r?.ok));
+      }, "set-btn"));
+      ops.appendChild(mkBtn("删除", async () => {
+        if (!confirm(`删除通道「${ch.id}」？`)) return;
+        if (await settingsSave(req(`/channels/${ch.id}`, { method: "DELETE" }), "已删除")) renderSettings();
+      }, "set-btn danger"));
+      row.appendChild(ops);
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    body.appendChild(channelCreateForm());
+  }).catch((e) => body.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `通道加载失败：${e}` })));
+
+  function channelCreateForm() {
+    const c = setCard("新增通道");
+    const id = mkInput("", { placeholder: "唯一标识，如 tg-main" });
+    const platform = mkSelect([["telegram", "Telegram"], ["qqbot", "QQ 官方机器人"], ["napcat", "NapCat（QQ）"], ["discord", "Discord"], ["slack", "Slack"], ["matrix", "Matrix"]], "telegram");
+    const token = mkInput("", { type: "password", placeholder: "Bot Token" });
+    const secret = mkInput("", { type: "password", placeholder: "Secret（可选）" });
+    c.appendChild(mkField("标识", id));
+    c.appendChild(mkField("平台", platform));
+    c.appendChild(mkField("Token", token));
+    c.appendChild(mkField("Secret", secret));
+    c.appendChild(mkBtn("创建", async () => {
+      if (!id.value.trim()) return toast("通道标识不能为空", false);
+      const payload = { id: id.value.trim(), platform: platform.value, enabled: true };
+      if (token.value.trim()) payload.token = token.value.trim();
+      if (secret.value.trim()) payload.secret = secret.value.trim();
+      if (await settingsSave(req("/channels", { method: "POST", body: JSON.stringify(payload) }), "通道已创建")) renderSettings();
+    }));
+    return c;
+  }
+}
+
+// —— 定时任务 ——
+function renderSetCron(body) {
+  const list = setCard("定时任务");
+  req("/cron").then((jobs) => {
+    if (!jobs.length) list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "暂无定时任务——按 cron 表达式或单次时间推送提示词给当前组。" }));
+    for (const j of jobs) {
+      const row = document.createElement("div");
+      row.className = "set-row";
+      row.innerHTML = `<div class="set-row-main"><b>${esc(j.name)}</b>${j.enabled ? "" : '<span class="tag-dim">已停用</span>'}
+        <div class="set-sub">${esc(j.cron ? `cron: ${j.cron}` : `单次: ${j.at ?? ""}`)} · 上次 ${esc(j.lastStatus || "未运行")}</div>
+        <div class="set-sub">${esc((j.prompt ?? "").slice(0, 80))}</div></div>`;
+      const ops = document.createElement("div");
+      ops.className = "set-ops";
+      ops.appendChild(mkBtn(j.enabled ? "停用" : "启用", async () => {
+        if (await settingsSave(req(`/cron/${j.id}`, { method: "PUT", body: JSON.stringify({ enabled: !j.enabled }) }), j.enabled ? "已停用" : "已启用")) renderSettings();
+      }, "set-btn"));
+      ops.appendChild(mkBtn("立即执行", async () => {
+        if (await settingsSave(req(`/cron/${j.id}/run`, { method: "POST", body: JSON.stringify({}) }), "已触发")) renderSettings();
+      }, "set-btn"));
+      ops.appendChild(mkBtn("删除", async () => {
+        if (!confirm(`删除定时任务「${j.name}」？`)) return;
+        if (await settingsSave(req(`/cron/${j.id}`, { method: "DELETE" }), "已删除")) renderSettings();
+      }, "set-btn danger"));
+      row.appendChild(ops);
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    body.appendChild(cronCreateForm());
+  }).catch((e) => body.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `定时任务加载失败：${e}` })));
+
+  function cronCreateForm() {
+    const c = setCard("新增定时任务");
+    const name = mkInput("", { placeholder: "任务名称，如 每日站会摘要" });
+    const prompt = mkInput("", { placeholder: "推送给组的提示词" });
+    const cron = mkInput("", { placeholder: "cron 表达式，如 0 9 * * 1-5" });
+    c.appendChild(mkField("名称", name));
+    c.appendChild(mkField("提示词", prompt));
+    c.appendChild(mkField("cron 表达式", cron));
+    c.appendChild(mkBtn("创建", async () => {
+      if (!name.value.trim() || !prompt.value.trim()) return toast("名称与提示词必填", false);
+      const payload = { name: name.value.trim(), prompt: prompt.value.trim() };
+      if (cron.value.trim()) payload.cron = cron.value.trim();
+      if (await settingsSave(req("/cron", { method: "POST", body: JSON.stringify(payload) }), "定时任务已创建")) renderSettings();
+    }));
+    return c;
+  }
+}
+
+// —— 安全 ——
+function renderSetSecurity(body) {
+  const c = setCard("安全与审批");
+  req("/config").then(async (cfg) => {
+    const sec = cfg.security ?? {};
+    const authKey = mkInput("", { type: "password", placeholder: sec.authKey ? "已配置（留空沿用）" : "未配置" });
+    const approval = mkSelect([["off", "off — 不拦截"], ["risky", "risky — 拦截高危命令"], ["always", "always — 全部命令需审批"]], sec.execApproval || "off");
+    const allowlist = mkInput((sec.execAllowlist ?? []).join?.(",") ?? sec.execAllowlist ?? "", { placeholder: "命令前缀白名单，逗号分隔" });
+    const timeout = mkInput(sec.terminalTimeoutSecs ?? "", { placeholder: "秒" });
+    c.appendChild(mkField("后台访问密钥", authKey));
+    c.appendChild(mkField("终端命令审批", approval));
+    c.appendChild(mkField("命令前缀白名单", allowlist));
+    c.appendChild(mkField("终端超时（秒）", timeout));
+    c.appendChild(mkBtn("保存", async () => {
+      const security = { execApproval: approval.value, execAllowlist: allowlist.value.trim() };
+      if (authKey.value.trim()) security.authKey = authKey.value.trim();
+      if (String(timeout.value).trim()) security.terminalTimeoutSecs = Number(timeout.value);
+      if (await settingsSave(req("/config", { method: "PUT", body: JSON.stringify({ security }) }), "安全设置已保存")) renderSettings();
+    }));
+    body.appendChild(c);
+  }).catch((e) => body.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `配置加载失败：${e}` })));
+}
 // 工作目录 / 智能体·智能体组 / 模型 / 思考强度：底部工具条芯片 + 弹出菜单；
 // 附件：最左下角「＋」（图片，多模态 data URL 直传）
 
@@ -781,7 +1127,7 @@ function renderChips() {
   $("chip-target").innerHTML = t?.mode === "single"
     ? `<span class="chip-label">智能体</span>@${esc(t.name || t.id)}`
     : `<span class="chip-label">组</span>${esc(groupName(t?.id ?? "default"))}`;
-  // 生效模型：组/个体显式指定 > 生效档案的默认模型（与控制台「模型设置」一致）
+  // 生效模型：组/个体显式指定 > 生效档案的默认模型
   const shown = activeModelName();
   $("chip-model").innerHTML = `<span class="chip-label">模型</span><b>${esc(shown)}</b><span class="chip-effort">${esc(EFFORT_DISPLAY[S.effort] ?? "Default")}</span>`;
 }
@@ -1058,28 +1404,14 @@ function autosize() {
   input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
 }
 
-async function openConsole() {
-  // 桌面端：经壳命令调系统浏览器；浏览器调试环境（无 __TAURI__）回退 window.open
-  const invoke = window.__TAURI__?.core?.invoke;
-  if (invoke) {
-    try {
-      await invoke("open_console");
-      return;
-    } catch (e) {
-      console.error("[console] open_console 命令失败:", e);
-    }
-  }
-  const w = window.open(`${GW.url}/`, "_blank");
-  if (!w) alert(`无法打开控制台，请手动访问：${GW.url}/`);
-}
-
 async function init() {
   $("btn-back").addEventListener("click", exitUnitView);
+  $("sp-back").addEventListener("click", () => showView("chat"));
   $("btn-new").addEventListener("click", () => newSession().catch(alertErr));
   $("btn-send").addEventListener("click", send);
   $("btn-stop").addEventListener("click", () => S.sessionId && api.stop(S.sessionId).catch(alertErr));
   $("btn-side").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
-  $("btn-console").addEventListener("click", openConsole);
+  $("btn-settings").addEventListener("click", () => showView(S.view === "settings" ? "chat" : "settings"));
   $("btn-right").addEventListener("click", () => setRightOpen(!S.rightOpen));
   setRightOpen(S.rightOpen);
   const input = $("input");
@@ -1107,7 +1439,7 @@ async function init() {
     $("conn-text").textContent = health.mock ? "已连接（测试替身）" : "已连接";
   } catch { setConn(false); }
 
-  // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导控制台
+  // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导设置
   await refreshContext();
   // 思考强度本地记忆重设（网关重启后回到端点默认，此处恢复用户选择）
   if (S.effort !== "default") api.setEffort(S.effort).catch(() => {});
@@ -1117,8 +1449,8 @@ async function init() {
     const banner = $("banner");
     if (!llmReady) {
       banner.classList.remove("hidden");
-      banner.innerHTML = `<span>模型尚未配置——先在控制台填写提供商端点与 API Key，即可开始对话。</span><button class="banner-action" id="banner-console">打开控制台</button>`;
-      $("banner-console").addEventListener("click", openConsole);
+      banner.innerHTML = `<span>模型尚未配置——在设置中填写提供商端点与 API Key，即可开始对话。</span><button class="banner-action" id="banner-settings">去设置</button>`;
+      $("banner-settings").addEventListener("click", () => showView("settings"));
     }
   } catch { /* config 拉取失败不阻塞对话 */ }
 

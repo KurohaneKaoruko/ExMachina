@@ -17,7 +17,7 @@
         <nav id="session-list" aria-label="会话列表"></nav>
         <div class="side-foot">
           <div id="conn-status" class="conn"><span class="dot"></span><span id="conn-text">连接中…</span></div>
-          <button id="btn-console" class="side-link" title="在浏览器中打开管理控制台">⚙ 打开控制台</button>
+          <button id="btn-settings" class="side-link" title="模型 / 组与个体 / 通道 / 定时 / 安全">⚙ 设置</button>
         </div>
       </aside>
 
@@ -63,6 +63,15 @@
         <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span></div>
         <div id="rp-body"></div>
       </aside>
+    </div>
+    <!-- 设置（独立整页）：原生管理面，直连环口 API -->
+    <div id="settings-page" class="hidden">
+      <aside class="sp-nav">
+        <div class="sp-brand">EXMACHINA</div>
+        <button id="sp-back" class="sp-back">‹ 返回对话</button>
+        <nav id="sp-tabs"></nav>
+      </aside>
+      <main class="sp-main"><div id="sp-body"></div></main>
     </div>
     <script src="app.js"></script>
   </body>

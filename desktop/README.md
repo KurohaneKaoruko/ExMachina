@@ -13,7 +13,7 @@
 
 | 形态 | 命令 | 行为 |
 |------|------|------|
-| 本机模式 | `exmachina-desktop` | 拉起捆绑网关（空闲端口 + `%LOCALAPPDATA%/ExMachina` 数据目录），主窗口进入对话界面 |
+| 本机模式 | `exmachina-desktop` | 拉起捆绑网关（空闲端口 + `%LOCALAPPDATA%/ExMachina` 数据目录），主窗口进入对话界面；管理能力走原生设置 |
 | 远程模式 | `exmachina-desktop --remote http://host:4173` | 主窗口对话界面直连远程网关（服务器上的后台服务） |
 | 带密钥 | `--key <authKey>` | 密钥经初始化脚本注入 `window.__EXM_GATEWAY__`，免登录门 |
 
