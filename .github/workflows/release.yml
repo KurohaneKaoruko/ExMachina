@@ -143,6 +143,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force desktop/src-tauri/binaries | Out-Null
           Copy-Item target/release/exm-gateway.exe desktop/src-tauri/binaries/
+      - name: 捆绑 WebUI 产物（网关同端口托管）
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p desktop/src-tauri/binaries/webui-dist
+          cp -r webui/dist/. desktop/src-tauri/binaries/webui-dist/
+      - name: 捆绑 WebUI 产物 (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desktop/src-tauri/binaries/webui-dist | Out-Null
+          Copy-Item webui/dist/* desktop/src-tauri/binaries/webui-dist/ -Recurse -Force
       - name: Tauri build
         run: cd desktop && npm install && npx tauri build
       - name: 归档安装包
