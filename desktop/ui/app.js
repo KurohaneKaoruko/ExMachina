@@ -760,7 +760,7 @@ function renderRight() {
 // 桌面端不依赖任何 webui：模型与提供商 / 组与个体 / 通道 / 定时任务 / 安全 全部壳内直管。
 // 一切核心功能在 exm-core，桌面端与 webui、channel 一样只是连结核心的客户端。
 
-const SETTINGS_TABS = [["model", "模型"], ["group", "组与个体"], ["channel", "通道"], ["cron", "定时任务"], ["security", "安全"]];
+const SETTINGS_TABS = [["model", "模型"], ["group", "组与个体"], ["channel", "通道"], ["cron", "定时任务"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"]];
 
 function showView(v) {
   S.view = v;
@@ -799,7 +799,7 @@ function renderSettings() {
   // 内容区
   const body = $("sp-body");
   body.innerHTML = "";
-  ({ model: renderSetModel, group: renderSetGroup, channel: renderSetChannel, cron: renderSetCron, security: renderSetSecurity }[S.settingsTab] ?? renderSetModel)(body);
+  ({ model: renderSetModel, group: renderSetGroup, channel: renderSetChannel, cron: renderSetCron, memory: renderSetMemory, skills: renderSetSkills, audit: renderSetAudit, config: renderSetConfig }[S.settingsTab] ?? renderSetModel)(body);
 }
 
 // —— 表单小件 ——
@@ -883,6 +883,23 @@ function renderSetModel(body) {
   body.appendChild(list);
   body.appendChild(mkBtn("＋ 新增档案", () => profileForm(null)));
   body.appendChild(profileFormSlot());
+  // 能力模型槽位："档案ID" 或 "档案ID/模型名"；空 = 全局档案默认
+  const caps = setCard("能力模型槽位（语音 / 转写 / 视觉转述 / 嵌入）");
+  req("/llm/capabilities").then((cap) => {
+    const mk = (label, key) => {
+      const i = mkInput(cap[key] ?? "", { placeholder: "档案ID 或 档案ID/模型名（空 = 档案默认）" });
+      caps.appendChild(mkField(label, i));
+      return i;
+    };
+    const speech = mk("语音合成（TTS）", "speech");
+    const transcribe = mk("语音转写（STT）", "transcribe");
+    const vision = mk("视觉转述", "visionRelay");
+    const embedding = mk("语义检索嵌入", "embedding");
+    caps.appendChild(mkBtn("保存能力槽位", async () => {
+      if (await settingsSave(req("/llm/capabilities", { method: "PUT", body: JSON.stringify({ speech: speech.value.trim(), transcribe: transcribe.value.trim(), visionRelay: vision.value.trim(), embedding: embedding.value.trim() }) }), "能力槽位已保存")) renderSettings();
+    }));
+  }).catch(() => caps.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "能力槽位加载失败" })));
+  body.appendChild(caps);
   function profileFormSlot() { const d = document.createElement("div"); d.id = "profile-form"; return d; }
   function profileForm(p) {
     const slot = body.querySelector("#profile-form") || body.appendChild(profileFormSlot());
@@ -926,6 +943,7 @@ function renderSetGroup(body) {
     row.className = "set-row";
     const active = S.target?.mode === "group" && (S.target.id ?? "default") === g.id;
     row.innerHTML = `<div class="set-row-main"><b>${esc(g.name)}</b>${active ? '<span class="tag-ok">✓ 当前</span>' : g.builtin ? '<span class="tag-dim">内置</span>' : ""}
+      <div class="set-sub">${esc(g.description || "")}</div>
       <div class="set-sub">${esc(g.workspace || "未设工作目录")} · 主智能体 ${esc(g.primary || "未指定")}</div>
       <div class="set-agents" data-gid="${esc(g.id)}"></div></div>`;
     const ops = document.createElement("div");
@@ -947,24 +965,46 @@ function renderSetGroup(body) {
     }, "set-btn danger"));
     row.appendChild(ops);
     list.appendChild(row);
-    // 组内个体（懒加载）
+    // 组内个体：行式（设主 / 人格 / 系统提示词 / 移除）
     req(`/groups/${g.id}/agents`).then((agents) => {
       const box = row.querySelector(".set-agents");
       box.innerHTML = "";
       for (const a of agents) {
-        const chip = document.createElement("span");
-        chip.className = "agent-chip";
         const isPrimary = g.primary === a.identifier;
-        chip.innerHTML = `@${esc(a.identifier)}${isPrimary ? ' <i class="pri">主</i>' : ""}`;
-        if (!isPrimary) {
-          chip.style.cursor = "pointer";
-          chip.title = "设为组主智能体";
-          chip.addEventListener("click", async () => {
-            if (await settingsSave(req(`/groups/${g.id}/primary`, { method: "POST", body: JSON.stringify({ identifier: a.identifier }) }), `主智能体 → @${a.identifier}`)) renderSettings();
-          });
-        }
-        box.appendChild(chip);
+        const ar = document.createElement("div");
+        ar.className = "agent-row";
+        ar.innerHTML = `<span class="agent-name">@${esc(a.identifier)}</span><span class="agent-desc">${esc(a.name || "")} · ${esc(a.domain || "")}</span>
+          <span class="agent-ops">
+            ${isPrimary ? '<i class="pri">主</i>' : `<button class="set-btn" data-op="pri">设主</button>`}
+            <button class="set-btn" data-op="persona">人格</button>
+            <button class="set-btn" data-op="prompt">提示词</button>
+            <button class="set-btn danger" data-op="rm">移除</button>
+          </span>`;
+        const edit = document.createElement("div");
+        ar.appendChild(edit);
+        ar.querySelector('[data-op="pri"]')?.addEventListener("click", async () => {
+          if (await settingsSave(req(`/groups/${g.id}/primary`, { method: "POST", body: JSON.stringify({ identifier: a.identifier }) }), `主智能体 → @${a.identifier}`)) renderSettings();
+        });
+        ar.querySelector('[data-op="persona"]').addEventListener("click", () => personaCard(edit, a.identifier, { kind: "group-agent", gid: g.id }));
+        ar.querySelector('[data-op="prompt"]').addEventListener("click", () => promptCard(edit, { kind: "group-agent", gid: g.id, identifier: a.identifier }));
+        ar.querySelector('[data-op="rm"]').addEventListener("click", async () => {
+          if (!confirm(`从组移除 @${a.identifier}？`)) return;
+          if (await settingsSave(req(`/groups/${g.id}/agents/${a.identifier}`, { method: "DELETE" }), "已移除")) renderSettings();
+        });
+        box.appendChild(ar);
       }
+      // 组内新增个体
+      const add = document.createElement("div");
+      add.className = "agent-add";
+      const nameI = mkInput("", { placeholder: "名称" });
+      const idI = mkInput("", { placeholder: "标识（如 coder-1）" });
+      const domI = mkInput("", { placeholder: "负责域（可选）" });
+      add.appendChild(nameI); add.appendChild(idI); add.appendChild(domI);
+      add.appendChild(mkBtn("添加个体", async () => {
+        if (!nameI.value.trim() || !idI.value.trim()) return toast("名称与标识必填", false);
+        if (await settingsSave(req("/agents", { method: "POST", body: JSON.stringify({ name: nameI.value.trim(), identifier: idI.value.trim(), description: nameI.value.trim(), domain: domI.value.trim(), group: g.id }) }), "个体已添加")) renderSettings();
+      }, "set-btn"));
+      box.appendChild(add);
     }).catch(() => {});
   }
   body.appendChild(list);
@@ -980,6 +1020,87 @@ function renderSetGroup(body) {
     if (await settingsSave(req("/groups", { method: "POST", body: JSON.stringify(payload) }), "组已创建")) { await refreshContext(); renderSettings(); }
   }));
   body.appendChild(create);
+
+  // —— 智能体（单体）：独立于组的个体，可直接作为对话目标 ——
+  const singles = setCard("智能体（单体）");
+  const singlesBox = document.createElement("div");
+  singles.appendChild(singlesBox);
+  req("/singles").then(({ singles: list2 }) => {
+    for (const s of list2) {
+      const active = S.target?.mode === "single" && S.target.id === s.identifier;
+      const ar = document.createElement("div");
+      ar.className = "agent-row";
+      ar.innerHTML = `<span class="agent-name">@${esc(s.identifier)}</span><span class="agent-desc">${esc(s.name || "")} · ${esc(s.domain || "")}</span>
+        <span class="agent-ops">
+          ${active ? '<i class="pri">对话中</i>' : `<button class="set-btn" data-op="talk">对话</button>`}
+          <button class="set-btn" data-op="persona">人格</button>
+          <button class="set-btn" data-op="prompt">提示词</button>
+          <button class="set-btn danger" data-op="rm">删除</button>
+        </span>`;
+      ar.querySelector('[data-op="talk"]').addEventListener("click", async () => {
+        if (await settingsSave(req("/target", { method: "PUT", body: JSON.stringify({ mode: "single", id: s.identifier }) }), `对话目标 → @${s.identifier}`)) { await refreshContext(); renderSettings(); }
+      });
+      ar.querySelector('[data-op="persona"]').addEventListener("click", () => personaCard(singlesBox, s.identifier, { kind: "single" }));
+      ar.querySelector('[data-op="prompt"]').addEventListener("click", () => promptCard(singlesBox, { kind: "single", identifier: s.identifier }));
+      ar.querySelector('[data-op="rm"]').addEventListener("click", async () => {
+        if (!confirm(`删除智能体 @${s.identifier}？`)) return;
+        if (await settingsSave(req(`/singles/${s.identifier}`, { method: "DELETE" }), "已删除")) renderSettings();
+      });
+      singlesBox.appendChild(ar);
+    }
+    const add = document.createElement("div");
+    add.className = "agent-add";
+    const nameI = mkInput("", { placeholder: "名称" });
+    const idI = mkInput("", { placeholder: "标识（如 writer）" });
+    const domI = mkInput("", { placeholder: "负责域（可选）" });
+    add.appendChild(nameI); add.appendChild(idI); add.appendChild(domI);
+    add.appendChild(mkBtn("新建智能体", async () => {
+      if (!nameI.value.trim() || !idI.value.trim()) return toast("名称与标识必填", false);
+      if (await settingsSave(req("/singles", { method: "POST", body: JSON.stringify({ name: nameI.value.trim(), identifier: idI.value.trim(), description: nameI.value.trim(), domain: domI.value.trim() }) }), "智能体已创建")) renderSettings();
+    }, "set-btn"));
+    singlesBox.appendChild(add);
+  }).catch(() => {});
+  body.appendChild(singles);
+}
+
+// 人格（SOUL）编辑卡：组内个体走组作用域，单体走 singles 作用域
+function personaCard(container, identifier, { kind, gid }) {
+  container.innerHTML = "";
+  const c = setCard(`人格（SOUL）· @${identifier}`);
+  const ta = document.createElement("textarea");
+  ta.className = "pop-input";
+  ta.rows = 6;
+  const url = kind === "single" ? `/singles/${identifier}/persona` : `/agents/${identifier}/persona`;
+  req(url).then((r) => { ta.value = r.persona ?? r.default ?? ""; }).catch(() => {});
+  c.appendChild(ta);
+  const ops = document.createElement("div");
+  ops.className = "set-ops";
+  ops.appendChild(mkBtn("保存", async () => {
+    if (await settingsSave(req(url, { method: "PUT", body: JSON.stringify({ persona: ta.value }) }), "人格已保存")) container.innerHTML = "";
+  }, "set-btn"));
+  ops.appendChild(mkBtn("恢复默认", async () => {
+    if (await settingsSave(req(url, { method: "DELETE" }), "已恢复默认")) container.innerHTML = "";
+  }, "set-btn danger"));
+  c.appendChild(ops);
+  container.appendChild(c);
+}
+
+// 系统提示词编辑卡
+function promptCard(container, { kind, gid, identifier }) {
+  container.innerHTML = "";
+  const c = setCard(`系统提示词 · @${identifier}`);
+  const ta = document.createElement("textarea");
+  ta.className = "pop-input";
+  ta.rows = 6;
+  const url = kind === "single" ? `/singles/${identifier}/prompt` : `/groups/${gid}/agents/${identifier}/prompt`;
+  req(url).then((r) => { ta.value = r.prompt ?? ""; }).catch(() => {});
+  c.appendChild(ta);
+  c.appendChild(mkBtn("保存", async () => {
+    if (await settingsSave(req(url, { method: "PUT", body: JSON.stringify({ prompt: ta.value }) }), "提示词已保存")) container.innerHTML = "";
+  }, "set-btn"));
+  c.appendChild(ops_row());
+  function ops_row() { const d = document.createElement("div"); d.className = "set-ops"; return d; }
+  container.appendChild(c);
 }
 
 // —— 通道 ——
@@ -1108,25 +1229,209 @@ function renderSetCron(body) {
 }
 
 // —— 安全 ——
-function renderSetSecurity(body) {
-  const c = setCard("安全与审批");
-  req("/config").then(async (cfg) => {
-    const sec = cfg.security ?? {};
-    const authKey = mkInput("", { type: "password", placeholder: sec.authKey ? "已配置（留空沿用）" : "未配置" });
-    const approval = mkSelect([["off", "off — 不拦截"], ["risky", "risky — 拦截高危命令"], ["always", "always — 全部命令需审批"]], sec.execApproval || "off");
-    const allowlist = mkInput((sec.execAllowlist ?? []).join?.(",") ?? sec.execAllowlist ?? "", { placeholder: "命令前缀白名单，逗号分隔" });
-    const timeout = mkInput(sec.terminalTimeoutSecs ?? "", { placeholder: "秒" });
-    c.appendChild(mkField("后台访问密钥", authKey));
-    c.appendChild(mkField("终端命令审批", approval));
-    c.appendChild(mkField("命令前缀白名单", allowlist));
-    c.appendChild(mkField("终端超时（秒）", timeout));
-    c.appendChild(mkBtn("保存", async () => {
-      const security = { execApproval: approval.value, execAllowlist: allowlist.value.trim() };
-      if (authKey.value.trim()) security.authKey = authKey.value.trim();
-      if (String(timeout.value).trim()) security.terminalTimeoutSecs = Number(timeout.value);
-      if (await settingsSave(req("/config", { method: "PUT", body: JSON.stringify({ security }) }), "安全设置已保存")) renderSettings();
+// —— 记忆 ——
+function renderSetMemory(body) {
+  const stats = setCard("记忆库");
+  const statBox = document.createElement("div");
+  stats.appendChild(statBox);
+  const search = setCard("语义 / 词项检索");
+  const q = mkInput("", { placeholder: "检索记忆…" });
+  search.appendChild(mkField("查询", q));
+  search.appendChild(mkBtn("检索", () => {
+    req("/memory/search", { method: "POST", body: JSON.stringify({ query: q.value.trim(), limit: 8 }) }).then((r) => {
+      listBox.innerHTML = "";
+      const hits = r.hits ?? [];
+      if (!hits.length) listBox.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "无命中" }));
+      for (const h of hits) listBox.appendChild(memRow(h.entry, `得分 ${h.score.toFixed(2)}`));
+    }).catch((e) => toast(String(e), false));
+  }, "set-btn"));
+  body.appendChild(search);
+  const listBox = setCard("记忆条目");
+  body.appendChild(stats);
+  body.appendChild(listBox);
+  const add = setCard("新增记忆");
+  const title = mkInput("", { placeholder: "标题" });
+  const bodyI = mkInput("", { placeholder: "内容" });
+  const tags = mkInput("", { placeholder: "标签，逗号分隔（可选）" });
+  add.appendChild(mkField("标题", title));
+  add.appendChild(mkField("内容", bodyI));
+  add.appendChild(mkField("标签", tags));
+  add.appendChild(mkBtn("添加", async () => {
+    if (!title.value.trim() || !bodyI.value.trim()) return toast("标题与内容必填", false);
+    const payload = { kind: "fact", title: title.value.trim(), body: bodyI.value.trim() };
+    if (tags.value.trim()) payload.tags = tags.value.split(",").map((s) => s.trim()).filter(Boolean);
+    if (await settingsSave(req("/memory", { method: "POST", body: JSON.stringify(payload) }), "记忆已添加")) renderSettings();
+  }));
+  body.appendChild(add);
+
+  req("/memory/stats").then((s) => {
+    statBox.innerHTML = `<div class="set-sub">总计 ${s.memory.total} 条 · 置顶 ${s.memory.pinned} · 个体 ${s.memory.individual} / 共享 ${s.memory.shared} · 词项索引 ${s.memory.terms}</div>`;
+  }).catch(() => {});
+  const load = () => req("/memory?limit=50").then((entries) => {
+    listBox.innerHTML = "";
+    if (!entries.length) listBox.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "记忆库为空" }));
+    for (const e of entries) listBox.appendChild(memRow(e, null, () => load()));
+  }).catch((e) => listBox.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `加载失败：${e}` })));
+  load();
+}
+
+function memRow(e, badge, refresh) {
+  const row = document.createElement("div");
+  row.className = "set-row";
+  row.innerHTML = `<div class="set-row-main">
+    <b>${esc(e.title || "未命名")}</b>${e.pinned ? '<span class="tag-ok">📌 置顶</span>' : ""}<span class="tag-dim">${esc(e.kind || "")}</span>
+    <div class="set-sub">${esc((e.body || "").slice(0, 120))}</div>
+    ${badge ? `<div class="set-sub">${esc(badge)}</div>` : ""}</div>`;
+  const ops = document.createElement("div");
+  ops.className = "set-ops";
+  if (refresh) {
+    ops.appendChild(mkBtn(e.pinned ? "取消置顶" : "置顶", async () => {
+      if (await settingsSave(req(`/memory/${e.id}/pin`, { method: "POST", body: JSON.stringify({ pinned: !e.pinned }) }), e.pinned ? "已取消置顶" : "已置顶")) refresh();
+    }, "set-btn"));
+    ops.appendChild(mkBtn("删除", async () => {
+      if (await settingsSave(req(`/memory/${e.id}`, { method: "DELETE" }), "已删除")) refresh();
+    }, "set-btn danger"));
+  }
+  row.appendChild(ops);
+  return row;
+}
+
+// —— 技能 ——
+function renderSetSkills(body) {
+  const list = setCard("技能（触发词命中后注入指令）");
+  req("/skills").then((skills) => {
+    if (!skills.length) list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "暂无技能——命中触发词时向个体注入对应指令。" }));
+    for (const s of skills) {
+      const row = document.createElement("div");
+      row.className = "set-row";
+      row.innerHTML = `<div class="set-row-main"><b>${esc(s.name)}</b><span class="tag-dim">${esc(s.id)}</span>
+        <div class="set-sub">${esc(s.description || "")}</div>
+        <div class="set-sub">触发：${esc((s.triggers ?? []).join("、") || "—")}</div></div>`;
+      const ops = document.createElement("div");
+      ops.className = "set-ops";
+      ops.appendChild(mkBtn("删除", async () => {
+        if (!confirm(`删除技能「${s.name}」？`)) return;
+        if (await settingsSave(req(`/skills/${s.id}`, { method: "DELETE" }), "已删除")) renderSettings();
+      }, "set-btn danger"));
+      row.appendChild(ops);
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    const c = setCard("新增技能");
+    const id = mkInput("", { placeholder: "唯一 id，如 deploy-check" });
+    const name = mkInput("", { placeholder: "技能名称" });
+    const desc = mkInput("", { placeholder: "描述（可选）" });
+    const triggers = mkInput("", { placeholder: "触发词，逗号分隔" });
+    const instructions = document.createElement("textarea");
+    instructions.className = "pop-input"; instructions.rows = 4;
+    c.appendChild(mkField("ID", id));
+    c.appendChild(mkField("名称", name));
+    c.appendChild(mkField("描述", desc));
+    c.appendChild(mkField("触发词", triggers));
+    c.appendChild(mkField("指令内容", instructions));
+    c.appendChild(mkBtn("创建", async () => {
+      if (!id.value.trim() || !name.value.trim() || !instructions.value.trim()) return toast("ID / 名称 / 指令必填", false);
+      const payload = { id: id.value.trim(), name: name.value.trim(), description: desc.value.trim(), instructions: instructions.value, triggers: triggers.value.split(",").map((s) => s.trim()).filter(Boolean) };
+      if (await settingsSave(req("/skills", { method: "POST", body: JSON.stringify(payload) }), "技能已创建")) renderSettings();
     }));
     body.appendChild(c);
+  }).catch((e) => body.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `技能加载失败：${e}` })));
+}
+
+// —— 审计 ——
+function renderSetAudit(body) {
+  const list = setCard("工具审计（最近 50 条）");
+  req("/audit?limit=50").then(({ items }) => {
+    if (!items.length) list.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "暂无审计记录" }));
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "set-row";
+      const ok = Boolean(it.ok);
+      row.innerHTML = `<div class="set-row-main">
+        <span class="tool-name">${esc(String(it.tool ?? ""))}</span>
+        <span class="tool-status"><span class="${ok ? "ok" : "err"}">${ok ? "✓" : "✗"} ${(Number(it.duration_ms ?? it.durationMs ?? 0) / 1000).toFixed(1)}s</span></span>
+        <div class="set-sub">@${esc(String(it.agent_id ?? it.agentId ?? ""))} · ${esc(String(it.summary ?? "").slice(0, 100))}</div></div>`;
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+  }).catch((e) => body.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `审计加载失败：${e}` })));
+}
+
+// —— 配置（schema 驱动：安全/自动化/沙箱/Computer Use/搜索/记忆参数/钩子/限流 全覆盖）——
+const CONFIG_NESTED = ["memory", "security", "automation", "search", "sandbox", "browser", "hooks", "tools"];
+const CONFIG_TEXTAREA = ["automation.heartbeatPrompt", "security.execAllowlist", "tools.custom"];
+
+function renderSetConfig(body) {
+  const wrap = setCard("通用配置");
+  wrap.style.display = "flex";
+  wrap.style.gap = "14px";
+  wrap.style.alignItems = "flex-start";
+  const nav = document.createElement("div");
+  nav.className = "set-subnav";
+  const panel = document.createElement("div");
+  panel.style.flex = "1";
+  panel.style.minWidth = "0";
+  wrap.appendChild(nav);
+  wrap.appendChild(panel);
+  body.appendChild(wrap);
+
+  Promise.all([req("/config/schema"), req("/config")]).then(([schema, cfg]) => {
+    const groups = schema.groups ?? [];
+    const values = {};
+    for (const g of groups) for (const f of g.fields) {
+      const dot = f.key.indexOf(".");
+      values[f.key] = dot < 0 ? cfg[f.key] : (cfg[f.key.split(".")[0]] ?? {})[f.key.split(".")[1]];
+    }
+    let current = groups[0]?.key ?? "";
+    const setField = (k, v) => { values[k] = v; };
+    const renderPanel = () => {
+      const g = groups.find((x) => x.key === current);
+      panel.innerHTML = "";
+      if (!g) return;
+      const card = setCard(g.label);
+      for (const f of g.fields) {
+        const v = values[f.key];
+        let ctrl;
+        if (f.kind === "boolean") {
+          ctrl = mkSelect([["true", "开"], ["false", "关"]], String(v === undefined ? f.default === "true" : Boolean(v)));
+        } else if (CONFIG_TEXTAREA.includes(f.key)) {
+          ctrl = document.createElement("textarea");
+          ctrl.className = "pop-input"; ctrl.rows = 3;
+          ctrl.value = String(v ?? f.default ?? "");
+        } else {
+          ctrl = mkInput(v ?? f.default ?? "", { type: f.kind === "password" ? "password" : f.kind === "number" ? "number" : "text" });
+        }
+        ctrl.dataset.key = f.key;
+        ctrl.addEventListener("input", () => setField(f.key, ctrl.value));
+        ctrl.addEventListener("change", () => setField(f.key, ctrl.value));
+        card.appendChild(mkField(f.label + (f.help ? `（${f.help}）` : ""), ctrl));
+      }
+      card.appendChild(mkBtn("保存本组", async () => {
+        const body2 = {};
+        for (const [k, v] of Object.entries(values)) {
+          if (v === undefined) continue;
+          const dot = k.indexOf(".");
+          if (dot < 0) { if (v !== "") body2[k] = v; continue; }
+          const gg = k.slice(0, dot), ff = k.slice(dot + 1);
+          if (!CONFIG_NESTED.includes(gg)) { if (v !== "") body2[k] = v; continue; }
+          body2[gg] = { ...(body2[gg] ?? {}), [ff]: v };
+        }
+        if (await settingsSave(req("/config", { method: "PUT", body: JSON.stringify(body2) }), "配置已保存（即时生效）")) renderSettings();
+      }));
+      panel.appendChild(card);
+    };
+    const renderNav = () => {
+      nav.innerHTML = "";
+      for (const g of groups) {
+        const b = document.createElement("button");
+        b.className = `set-subnav-item${g.key === current ? " on" : ""}`;
+        b.textContent = g.label;
+        b.addEventListener("click", () => { current = g.key; renderNav(); renderPanel(); });
+        nav.appendChild(b);
+      }
+    };
+    renderNav();
+    renderPanel();
   }).catch((e) => body.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: `配置加载失败：${e}` })));
 }
 // 工作目录 / 智能体·智能体组 / 模型 / 思考强度：底部工具条芯片 + 弹出菜单；
