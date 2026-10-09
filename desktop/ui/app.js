@@ -760,7 +760,7 @@ function renderRight() {
 // 桌面端不依赖任何 webui：模型与提供商 / 组与个体 / 通道 / 定时任务 / 安全 全部壳内直管。
 // 一切核心功能在 exm-core，桌面端与 webui、channel 一样只是连结核心的客户端。
 
-const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single", "智能体"], ["channel", "通道"], ["cron", "定时任务"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"]];
+const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single", "智能体"], ["channel", "通道"], ["cron", "定时任务"], ["approval", "审批"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"], ["version", "版本"]];
 
 function showView(v) {
   S.view = v;
@@ -799,7 +799,7 @@ function renderSettings() {
   // 内容区
   const body = $("sp-body");
   body.innerHTML = "";
-  ({ model: renderSetModel, group: renderSetGroup, single: renderSetSingles, channel: renderSetChannel, cron: renderSetCron, memory: renderSetMemory, skills: renderSetSkills, audit: renderSetAudit, config: renderSetConfig }[S.settingsTab] ?? renderSetModel)(body);
+  ({ model: renderSetModel, group: renderSetGroup, single: renderSetSingles, channel: renderSetChannel, cron: renderSetCron, approval: renderSetApprovals, memory: renderSetMemory, skills: renderSetSkills, audit: renderSetAudit, config: renderSetConfig, version: renderSetVersion }[S.settingsTab] ?? renderSetModel)(body);
 }
 
 // —— 表单小件 ——
@@ -905,29 +905,93 @@ function renderSetModel(body) {
     const slot = body.querySelector("#profile-form") || body.appendChild(profileFormSlot());
     slot.innerHTML = "";
     const c = setCard(p ? `编辑档案：${p.name}` : "新增档案");
+    const PRESETS = [
+      ["", "厂商预设（可选）"],
+      ["openai|https://api.openai.com/v1|gpt-4o|openai", "OpenAI"],
+      ["anthropic|https://api.anthropic.com|claude-sonnet-4-5|anthropic", "Anthropic"],
+      ["gemini|https://generativelanguage.googleapis.com/v1beta|gemini-2.5-flash|gemini", "Google Gemini"],
+      ["azure|https://<resource>.openai.azure.com|<deployment>|azure", "Azure OpenAI"],
+      ["deepseek|https://api.deepseek.com/v1|deepseek-chat|openai", "DeepSeek"],
+      ["moonshot|https://api.moonshot.cn/v1|moonshot-v1-32k|openai", "Moonshot / Kimi"],
+      ["qwen|https://dashscope.aliyuncs.com/compatible-mode/v1|qwen-plus|openai", "Qwen 通义千问"],
+      ["zhipu|https://open.bigmodel.cn/api/paas/v4|glm-4-plus|openai", "Zhipu GLM"],
+      ["minimax|https://api.minimaxi.com/v1|MiniMax-M1|openai", "MiniMax"],
+      ["ollama|http://127.0.0.1:11434/v1|llama3.1|openai", "Ollama 本地"],
+    ];
+    const preset = mkSelect(PRESETS, "");
+    preset.addEventListener("change", () => {
+      if (!preset.value) return;
+      const [tag, url, model2, format] = preset.value.split("|");
+      baseUrl.value = url;
+      model.value = model2;
+      fmt.value = format;
+    });
     const name = mkInput(p?.name ?? "", { placeholder: "如 DeepSeek / GLM" });
     const baseUrl = mkInput(p?.baseUrl ?? "https://api.openai.com/v1");
-    const fmt = mkSelect([["openai", "OpenAI 兼容"], ["anthropic", "Anthropic"], ["gemini", "Gemini"]], p?.apiFormat || "openai");
-    const key = mkInput("", { type: "password", placeholder: p ? "留空沿用已配置 Key" : "sk-..." });
+    const fmt = mkSelect([["openai", "OpenAI 兼容"], ["anthropic", "Anthropic"], ["gemini", "Gemini"], ["azure", "Azure OpenAI"]], p?.apiFormat || "openai");
+    const keys = document.createElement("textarea");
+    keys.className = "pop-input"; keys.rows = 2;
+    keys.placeholder = p?.apiKeys?.length ? `已配置 ${p.apiKeys.length} 把（留空沿用）` : "API Key，每行一把（多 Key 自动负载均衡）";
     const model = mkInput(p?.model ?? "", { placeholder: "默认模型名，如 GLM-5.3-Flash" });
+    const profilesNow = S.profiles.filter((x) => x.id !== p?.id);
+    const fallback = mkSelect([["", "无回退（跟随候选链）"], ...profilesNow.map((x) => [x.id, `失败回退 → ${x.name}`])], p?.fallback ?? "");
+    c.appendChild(mkField("厂商预设", preset));
     c.appendChild(mkField("名称", name));
     c.appendChild(mkField("端点 Base URL", baseUrl));
     c.appendChild(mkField("协议", fmt));
-    c.appendChild(mkField("API Key", key));
+    c.appendChild(mkField("API Key（每行一把）", keys));
     c.appendChild(mkField("默认模型", model));
+    c.appendChild(mkField("失败回退", fallback));
+
+    // 模型清单管理：名称 + 视觉 + 语音 + 移除；可从端点拉取填充
+    const modelsState = (p?.models ?? []).map((m) => ({ ...m }));
+    const mBox = document.createElement("div");
+    const renderModels = () => {
+      mBox.innerHTML = "";
+      if (!modelsState.length) { mBox.appendChild(Object.assign(document.createElement("div"), { className: "set-hint", textContent: "模型清单为空——拉取端点清单或手动添加（视觉/语音影响多模态路由）" })); return; }
+      modelsState.forEach((m2, idx) => {
+        const row = document.createElement("div");
+        row.className = "agent-add";
+        const mi = mkInput(m2.model, { placeholder: "模型名" });
+        mi.addEventListener("input", () => { modelsState[idx].model = mi.value; });
+        const vision = mkSelect([["", "视觉?"], ["true", "有视觉"], ["false", "无视觉"]], String(m2.vision ?? ""));
+        vision.addEventListener("change", () => { modelsState[idx].vision = vision.value === "true"; });
+        const audio = mkSelect([["", "语音?"], ["true", "有语音"], ["false", "无语音"]], String(m2.audio ?? ""));
+        audio.addEventListener("change", () => { modelsState[idx].audio = audio.value === "true"; });
+        const rm = mkBtn("✕", () => { modelsState.splice(idx, 1); renderModels(); }, "set-btn danger");
+        row.appendChild(mi); row.appendChild(vision); row.appendChild(audio); row.appendChild(rm);
+        mBox.appendChild(row);
+      });
+    };
+    renderModels();
+    c.appendChild(mkField("模型清单", mBox));
+    const mops = document.createElement("div");
+    mops.className = "set-ops";
+    mops.appendChild(mkBtn("＋ 手动添加模型", () => { modelsState.push({ model: "", vision: false, audio: false }); renderModels(); }, "set-btn"));
+    mops.appendChild(mkBtn("从端点拉取", async () => {
+      const payload = { baseUrl: baseUrl.value.trim(), apiFormat: fmt.value };
+      if (p?.id) payload.id = p.id;
+      if (keys.value.trim()) payload.apiKey = keys.value.trim().split("\n")[0];
+      const r = await req("/llm/models", { method: "POST", body: JSON.stringify(payload) }).catch((e) => ({ error: String(e) }));
+      if (!r?.ok) return toast(`拉取失败：${r?.error || r?.message || "未知"}`, false);
+      for (const m2 of r.models ?? []) if (!modelsState.some((x) => x.model === m2)) modelsState.push({ model: m2, vision: false, audio: false });
+      renderModels();
+      toast(`端点返回 ${r.models.length} 个模型`);
+    }, "set-btn"));
+    c.appendChild(mops);
+
     const ops = document.createElement("div");
     ops.className = "set-ops";
     ops.appendChild(mkBtn("保存", async () => {
       const payload = { id: p?.id, name: name.value.trim() || "未命名", baseUrl: baseUrl.value.trim(), apiFormat: fmt.value, model: model.value.trim() };
-      if (key.value.trim()) payload.apiKey = key.value.trim();
+      if (keys.value.trim()) payload.apiKeys = keys.value.split("\n").map((s) => s.trim()).filter(Boolean);
+      if (fallback.value) payload.fallback = fallback.value;
+      if (modelsState.length && modelsState.every((m2) => m2.model.trim())) payload.models = modelsState.map((m2) => ({ model: m2.model.trim(), vision: Boolean(m2.vision), audio: Boolean(m2.audio) }));
       if (await settingsSave(req("/llm/profiles", { method: "POST", body: JSON.stringify(payload) }), "档案已保存")) { await refreshContext(); renderSettings(); }
     }));
-    if (p) ops.appendChild(mkBtn("拉取模型清单", async () => {
-      const r = await req("/llm/models", { method: "POST", body: JSON.stringify({ id: p.id }) }).catch((e) => ({ error: String(e) }));
-      if (!r?.ok) return toast(`失败：${r?.error || r?.message || "未知"}`, false);
-      // 清单入库：写入档案 models（模型选择器按供应商分组展示的就是这份）
-      const models = (r.models ?? []).map((m) => ({ model: m }));
-      if (await settingsSave(req("/llm/profiles", { method: "POST", body: JSON.stringify({ id: p.id, name: p.name, baseUrl: p.baseUrl, apiFormat: p.apiFormat, model: p.model, models }) }), `已拉取并保存 ${models.length} 个模型`)) { await refreshContext(); renderSettings(); }
+    if (p) ops.appendChild(mkBtn("测连通", async () => {
+      const r = await req("/llm/test", { method: "POST", body: JSON.stringify({ id: p.id }) }).catch((e) => ({ error: String(e) }));
+      toast(r?.ok ? `连通正常（HTTP ${r.status ?? "mock"}）` : `失败：${r?.error || r?.message || "未知"}`, Boolean(r?.ok));
     }, "set-btn"));
     c.appendChild(ops);
     slot.appendChild(c);
