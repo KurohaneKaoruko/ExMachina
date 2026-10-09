@@ -22,10 +22,12 @@ REST API / WebSocket / WebUI 共用一个端口；同时支持 `--remote` 直连
 # 1. 构建网关（release）
 cargo build -p exm-gateway --release
 
-# 2. 放置捆绑二进制
+# 2. 放置捆绑资源（网关二进制 + WebUI 构建产物）
+npm run build:webui                       # 仓库根执行，产出 webui/dist
 mkdir -p desktop/src-tauri/binaries
 cp target/release/exm-gateway.exe desktop/src-tauri/binaries/     # Windows
 # cp target/release/exm-gateway desktop/src-tauri/binaries/       # Linux / macOS
+cp -r webui/dist desktop/src-tauri/binaries/webui-dist            # 缺失时窗口无法访问（网关无 UI 可托管）
 
 # 3. 安装依赖并构建安装包（首次运行 tauri icon 生成图标）
 cd desktop
