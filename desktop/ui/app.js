@@ -783,12 +783,8 @@ function renderChips() {
     ? `<span class="chip-label">智能体</span>@${esc(t.name || t.id)}`
     : `<span class="chip-label">组</span>${esc(groupName(t?.id ?? "default"))}`;
   // 生效模型：组/个体显式指定 > 生效档案的默认模型（与控制台「模型设置」一致）
-  const mv = currentModelValue();
-  const activeProfile = S.profiles.find((p) => p.id === S.activeProfileId);
-  const shown = mv
-    ? (mv.includes("/") ? mv.split("/").pop() : (S.profiles.find((p) => p.id === mv)?.name ?? mv))
-    : (activeProfile?.model || activeProfile?.name || "默认");
-  $("chip-model").innerHTML = `<span class="chip-label">模型</span><b>${esc(shown)}</b>`;
+  const shown = activeModelName();
+  $("chip-model").innerHTML = `<span class="chip-label">模型</span><b>${esc(shown)}</b><span class="chip-effort">${esc(EFFORT_DISPLAY[S.effort] ?? "Default")}</span>`;
 }
 
 // —— 弹出菜单骨架：统一开合、点外即收 ——
@@ -804,7 +800,7 @@ function openPopover(build) {
 function popItem({ title, sub, current, onclick }) {
   const b = document.createElement("button");
   b.className = `pop-item${current ? " current" : ""}`;
-  b.innerHTML = `<span class="mark">${current ? "✓" : ""}</span><span style="min-width:0;overflow:hidden"><span>${esc(title)}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</span>`;
+  b.innerHTML = `<span style="min-width:0;overflow:hidden"><span>${esc(title)}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</span><span class="mark">${current ? "✓" : ""}</span>`;
   b.addEventListener("click", onclick);
   return b;
 }
@@ -926,32 +922,77 @@ function targetMenu(pop) {
   }
 }
 
+// 推理等级展示名（Default/Low/High/Max）与后端档位（default/low/medium/high）的映射
+const EFFORT_DISPLAY = { default: "Default", low: "Low", medium: "High", high: "Max" };
+const EFFORT_ORDER = ["default", "low", "medium", "high"];
+
 function modelMenu(pop) {
-  // 图二口径：模型 + 推理等级 两行式合并菜单
-  pop.appendChild(popTitle("模型（档案 / 档案内模型）"));
-  const current = currentModelValue();
-  pop.appendChild(popItem({ title: "跟随生效档案", sub: activeModelName(), current: !current, onclick: async () => { closePopover(); await setModel(""); } }));
-  for (const p of S.profiles) {
-    pop.appendChild(popItem({ title: p.name, sub: `${p.id} · 默认 ${p.model || "未指定"}`, current: current === p.id, onclick: async () => { closePopover(); await setModel(p.id); } }));
-    for (const m of p.models ?? []) {
-      const v = `${p.id}/${m.model}`;
-      pop.appendChild(popItem({ title: m.model, sub: `${p.name}${m.vision ? " · 视觉" : ""}${m.audio ? " · 语音" : ""}`, current: current === v, onclick: async () => { closePopover(); await setModel(v); } }));
+  // 图二口径：两行式入口（当前值 + ›），点击进入各自列表
+  pop.appendChild(popRow("模型", activeModelName(), () => openModelList(pop)));
+  pop.appendChild(popRow("推理等级", EFFORT_DISPLAY[S.effort] ?? "Default", () => openEffortList(pop)));
+}
+
+function popRow(label, value, onclick) {
+  const b = document.createElement("button");
+  b.className = "pop-row";
+  b.innerHTML = `<span>${esc(label)}</span><span class="val">${esc(value)}</span><span class="chev">›</span>`;
+  b.addEventListener("click", onclick);
+  return b;
+}
+
+// 图三：搜索 + 按供应商（档案）分组的模型清单
+function openModelList(pop) {
+  pop.innerHTML = "";
+  const search = document.createElement("input");
+  search.className = "pop-input";
+  search.placeholder = "搜索模型...";
+  pop.appendChild(search);
+  const list = document.createElement("div");
+  pop.appendChild(list);
+
+  const render = (q) => {
+    list.innerHTML = "";
+    const kw = (q ?? "").trim().toLowerCase();
+    const match = (s) => !kw || String(s ?? "").toLowerCase().includes(kw);
+    // 跟随生效档案（清除组/个体覆盖）
+    if (match("跟随生效档案")) {
+      list.appendChild(popItem({
+        title: "跟随生效档案", current: !currentModelValue(),
+        onclick: async () => { closePopover(); await setModel(""); },
+      }));
     }
-  }
-  pop.appendChild(popTitle("推理等级（全局生效）"));
-  const items = [
-    ["default", "端点默认", "不向模型下发推理强度参数"],
-    ["low", "低", "快速响应、节省 token（reasoning: low）"],
-    ["medium", "中", "平衡模式（reasoning: medium）"],
-    ["high", "高", "深度推理，复杂问题更稳（reasoning: high）"],
-  ];
-  for (const [v, title, sub] of items) {
+    for (const p of S.profiles) {
+      const rows = (p.models ?? []).length
+        ? (p.models ?? []).map((m) => ({ title: m.model, value: `${p.id}/${m.model}`, current: currentModelValue() === `${p.id}/${m.model}` }))
+        : [{ title: p.model || `${p.name}（默认）`, value: p.id, current: currentModelValue() === p.id }];
+      const hit = rows.filter((r) => match(r.title) || match(p.name));
+      if (!hit.length) continue;
+      const head = document.createElement("div");
+      head.className = "pop-title";
+      head.textContent = p.name;
+      list.appendChild(head);
+      for (const r of hit) {
+        list.appendChild(popItem({ title: r.title, current: r.current, onclick: async () => { closePopover(); await setModel(r.value); } }));
+      }
+    }
+  };
+  render("");
+  search.addEventListener("input", () => render(search.value));
+  search.addEventListener("keydown", (e) => e.stopPropagation());
+  setTimeout(() => search.focus(), 0);
+}
+
+// 图四：推理等级纯列表（Default/Low/High/Max）
+function openEffortList(pop) {
+  pop.innerHTML = "";
+  for (const v of EFFORT_ORDER) {
     pop.appendChild(popItem({
-      title, sub, current: S.effort === v,
+      title: EFFORT_DISPLAY[v], current: S.effort === v,
       onclick: () => {
         S.effort = v;
         try { localStorage.setItem("exm.effort", v); } catch { /* 忽略 */ }
         api.setEffort(v === "default" ? "" : v).catch(alertErr);
+        closePopover();
         renderChips();
       },
     }));
@@ -1019,11 +1060,18 @@ function autosize() {
 }
 
 async function openConsole() {
-  try {
-    await window.__TAURI__?.core?.invoke("open_console");
-  } catch {
-    window.open(GW.url, "_blank");
+  // 桌面端：经壳命令调系统浏览器；浏览器调试环境（无 __TAURI__）回退 window.open
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (invoke) {
+    try {
+      await invoke("open_console");
+      return;
+    } catch (e) {
+      console.error("[console] open_console 命令失败:", e);
+    }
   }
+  const w = window.open(`${GW.url}/`, "_blank");
+  if (!w) alert(`无法打开控制台，请手动访问：${GW.url}/`);
 }
 
 async function init() {

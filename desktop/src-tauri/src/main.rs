@@ -149,7 +149,11 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
-            "console" => open_in_browser(&app.state::<GatewayInfo>().inner().url),
+            "console" => {
+                if let Err(e) = open_in_browser(&app.state::<GatewayInfo>().inner().url) {
+                    eprintln!("[desktop] 打开控制台失败: {e}");
+                }
+            }
             "toggle" => toggle_main_window(app),
             "quit" => {
                 // 托盘退出：级联终止网关子进程（RunEvent::Exit 收口）
@@ -266,27 +270,37 @@ fn set_desktop_config(
 /// 在系统浏览器打开网关托管的 WebUI 控制台（管理面收为次级入口，主窗口是对话界面）
 #[tauri::command]
 fn open_console(app: tauri::AppHandle) -> Result<(), String> {
-    open_in_browser(&app.state::<GatewayInfo>().inner().url);
-    Ok(())
+    open_in_browser(&app.state::<GatewayInfo>().inner().url)
 }
 
-/// 系统默认浏览器打开 URL（零新依赖；Windows 经 cmd start 且抑制控制台闪窗）
-fn open_in_browser(url: &str) {
+/// 系统默认浏览器打开 URL（零新依赖；Windows 经 cmd start 且抑制控制台闪窗）。
+/// 失败显式回传：静默吞掉会让「打不开控制台」无从诊断。
+fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        let _ = Command::new("cmd")
+        Command::new("cmd")
             .args(["/c", "start", "", url])
             .creation_flags(0x0800_0000)
-            .spawn();
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开浏览器失败: {e}"))
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("open").arg(url).spawn();
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开浏览器失败: {e}"))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = Command::new("xdg-open").arg(url).spawn();
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开浏览器失败: {e}"))
     }
 }
 
