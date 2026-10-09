@@ -1,18 +1,21 @@
 # EXMACHINA 桌面端（Tauri v2）
 
-桌面端为**自带本地服务器**的单端口交付形态：捆绑的 `exm-gateway` 随应用启动，
-REST API / WebSocket / WebUI 共用一个端口；同时支持 `--remote` 直连远程网关（服务器上的后台服务）。
+桌面端为**对话优先**的交付形态：主窗口是壳内嵌的对话式界面（`ui/`，经 frontendDist 打进二进制，
+无独立构建步骤）——打开即对话：会话列表、流式回答、思维链/工具轨迹回看、审批内联裁决。
+捆绑的 `exm-gateway` 随应用启动充当后端（REST / WS / WebUI 同端口）；
+同时支持 `--remote` 直连远程网关（服务器上的后台服务）。
 
-> WebUI 由网关同端口托管，客户端「打开即连接」，无需在页面里配置服务器地址。
-> 移动端不需要单独 App：手机浏览器 / PWA 直接打开网关地址（桌面端的局域网地址或远程服务器地址）即为同源客户端。
+> WebUI 管理控制台（个体编成 / 模型与提供商 / 通道 / 定时任务）收为**次级入口**：
+> 托盘菜单「打开控制台（浏览器）」或对话页侧栏「⚙ 打开控制台」在系统浏览器中打开。
+> 移动端不需要单独 App：手机浏览器 / PWA 直接打开网关地址即为同源客户端。
 
 ## 启动形态
 
 | 形态 | 命令 | 行为 |
 |------|------|------|
-| 本机模式 | `exmachina-desktop` | 拉起捆绑网关（空闲端口 + `%LOCALAPPDATA%/ExMachina` 数据目录），打开窗口加载 `http://127.0.0.1:<port>` |
-| 远程模式 | `exmachina-desktop --remote http://host:4173` | 窗口直接加载远程网关（服务器上的后台服务） |
-| 带密钥 | `--key <authKey>` | 密钥经初始化脚本注入 localStorage，免登录门 |
+| 本机模式 | `exmachina-desktop` | 拉起捆绑网关（空闲端口 + `%LOCALAPPDATA%/ExMachina` 数据目录），主窗口进入对话界面；管理能力走原生设置 |
+| 远程模式 | `exmachina-desktop --remote http://host:4173` | 主窗口对话界面直连远程网关（服务器上的后台服务） |
+| 带密钥 | `--key <authKey>` | 密钥经初始化脚本注入 `window.__EXM_GATEWAY__`，免登录门 |
 
 ## 构建步骤
 
@@ -29,14 +32,15 @@ cp target/release/exm-gateway.exe desktop/src-tauri/binaries/     # Windows
 # cp target/release/exm-gateway desktop/src-tauri/binaries/       # Linux / macOS
 cp -r webui/dist desktop/src-tauri/binaries/webui-dist            # 缺失时窗口无法访问（网关无 UI 可托管）
 
-# 3. 安装依赖并构建安装包（首次运行 tauri icon 生成图标）
+# 3. 安装依赖并构建安装包
 cd desktop
 npm install
-npm run tauri icon path/to/icon-512.png   # 生成 src-tauri/icons/（仓库已附一份占位图标）
 npm run tauri build
 ```
 
 产物：`desktop/src-tauri/target/release/bundle/` 下的 NSIS 安装包（Windows）/ AppImage（Linux）/ DMG（macOS）。
+
+对话 UI 调试：浏览器直接打开 `desktop/ui/index.html?gw=http://127.0.0.1:<网关端口>`（`?gw=` 覆盖网关地址）。
 
 ## 设计说明
 

@@ -208,11 +208,14 @@ pub struct ChatRequest {
     pub key_hint: Option<String>,
     /// 原生 function calling：非空即随请求下发
     pub tools: Vec<ToolSpec>,
+    /// 模型思考强度（reasoning effort）：low | medium | high；None = 端点默认（不下发）。
+    /// 缺省回落进程级 `reasoning_effort()`（网关 /api/llm/effort 设置），请求级显式值优先。
+    pub reasoning: Option<String>,
 }
 
 impl ChatRequest {
     pub fn new(model: impl Into<String>, messages: Vec<ChatMessage>) -> Self {
-        ChatRequest { model: model.into(), messages, temperature: 0.2, max_tokens: None, key_hint: None, tools: Vec::new() }
+        ChatRequest { model: model.into(), messages, temperature: 0.2, max_tokens: None, key_hint: None, tools: Vec::new(), reasoning: None }
     }
 
     pub fn with_key_hint(mut self, hint: impl Into<String>) -> Self {
@@ -438,6 +441,31 @@ pub trait LlmProvider: Send + Sync {
 
 // ---------------------------------------------------------------- OpenAI 兼容
 
+// ---------------------------------------------------------------- 模型思考强度（reasoning effort）
+
+/// 进程级思考强度（None = 端点默认）：网关经 /api/llm/effort 设置后对全部 LLM 调用生效
+/// （指挥体规划、直答、子个体执行、工具回路共用）；请求级 `ChatRequest.reasoning` 显式值优先。
+static REASONING_EFFORT: parking_lot::RwLock<Option<String>> = parking_lot::RwLock::new(None);
+
+/// 设置全局思考强度；None 或空值 = 恢复端点默认。非法值归一为 medium。
+pub fn set_reasoning_effort(v: Option<&str>) {
+    let mut w = REASONING_EFFORT.write();
+    *w = v.map(normalize_effort).filter(|s| !s.is_empty());
+}
+
+/// 当前全局思考强度
+pub fn reasoning_effort() -> Option<String> {
+    REASONING_EFFORT.read().clone()
+}
+
+/// 合法值收敛：low | medium | high（其余一律 medium，防端点 400）
+fn normalize_effort(v: &str) -> String {
+    match v.trim().to_lowercase().as_str() {
+        "low" | "medium" | "high" => v.trim().to_lowercase(),
+        _ => "medium".into(),
+    }
+}
+
 pub struct OpenAiCompatibleProvider {
     base_url: String,
     /// API 协议：openai（默认，/chat/completions）| anthropic（/v1/messages）
@@ -627,6 +655,29 @@ impl OpenAiCompatibleProvider {
                 body
             }
         };
+        // 模型思考强度：请求级显式值优先，否则回落进程级设置；None = 端点默认不下发
+        let effort = req.reasoning.clone().or_else(reasoning_effort);
+        if let Some(effort) = effort {
+            let effort = normalize_effort(&effort);
+            match self.api_format.as_str() {
+                "anthropic" => {
+                    // extended thinking：budget 需 >1024 且 < max_tokens，故 max_tokens 相应抬升
+                    let budget: u32 = match effort.as_str() { "low" => 2048, "high" => 16384, _ => 8192 };
+                    base["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": budget });
+                    let mt = base["max_tokens"].as_u64().unwrap_or(1024).max((budget + 1024) as u64);
+                    base["max_tokens"] = serde_json::json!(mt);
+                }
+                "gemini" => {
+                    // Gemini 2.5 thinkingConfig：0=关闭，-1=动态；此处按档位给固定预算
+                    let budget: i64 = match effort.as_str() { "low" => 2048, "high" => 24576, _ => 8192 };
+                    base["generationConfig"]["thinkingConfig"] = serde_json::json!({ "thinkingBudget": budget });
+                }
+                _ => {
+                    // OpenAI 兼容：reasoning_effort（GPT-5 / o 系；不识别该字段的兼容端点通常忽略）
+                    base["reasoning_effort"] = serde_json::json!(effort);
+                }
+            }
+        }
         // 原生 function calling：按协议注入工具定义
         if !req.tools.is_empty() {
             match self.api_format.as_str() {
@@ -1623,4 +1674,53 @@ fn converge_text(user: &str) -> String {
         format!("- 输入摘要：{goal}"),
     ]
     .join("\n")
+}
+
+#[cfg(test)]
+mod reasoning_effort_tests {
+    use super::*;
+
+    #[test]
+    fn 思考强度按协议注入请求体() {
+        let p = OpenAiCompatibleProvider::with_format("http://x", vec![], "openai");
+        // 显式请求级值 → OpenAI 兼容 reasoning_effort
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+        req.reasoning = Some("high".into());
+        assert_eq!(p.body(&req, false)["reasoning_effort"], "high");
+        // 未设置且无全局 → 不下发（端点默认，兼容不支持该字段的实现）
+        let req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+        assert!(p.body(&req, false).get("reasoning_effort").is_none());
+        // 全局回落：请求未显式设置时取进程级
+        set_reasoning_effort(Some("low"));
+        let req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+        assert_eq!(p.body(&req, false)["reasoning_effort"], "low");
+        set_reasoning_effort(None);
+        let req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+        assert!(p.body(&req, false).get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn anthropic_注入thinking预算并抬升max_tokens() {
+        let p = OpenAiCompatibleProvider::with_format("http://x", vec![], "anthropic");
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+        req.reasoning = Some("medium".into());
+        let body = p.body(&req, false);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8192);
+        assert!(body["max_tokens"].as_u64().unwrap() > 8192, "max_tokens 必须大于 thinking 预算");
+        // low 档预算
+        req.reasoning = Some("low".into());
+        assert_eq!(p.body(&req, false)["thinking"]["budget_tokens"], 2048);
+    }
+
+    #[test]
+    fn gemini_注入thinkingconfig_非法值归一medium() {
+        let p = OpenAiCompatibleProvider::with_format("http://x", vec![], "gemini");
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+        req.reasoning = Some("high".into());
+        assert_eq!(p.body(&req, false)["generationConfig"]["thinkingConfig"]["thinkingBudget"], 24576);
+        // 非法值归一为 medium 而非透传（防不支持的自定义档位打 400）
+        assert_eq!(normalize_effort("ultrathink"), "medium");
+        assert_eq!(normalize_effort(" HIGH "), "high");
+    }
 }

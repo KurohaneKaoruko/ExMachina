@@ -1,14 +1,16 @@
 //! EXMACHINA 桌面端（Tauri v2 壳）—— 桌面集成（组 11）
 //!
-//! 与主流桌面交付形态一致：**桌面端自带本地服务器**（捆绑的 exm-gateway 随应用启动，
-//! WebUI 与 API 同端口），同时支持 `--remote <url>` 直连远程网关（服务器上的后台服务）。
+//! 桌面优先形态：**主窗口 = 壳内嵌的对话式 UI**（desktop/ui，经 frontendDist 嵌入二进制），
+//! 参考常见 agent 桌面客户端：打开即对话，会话列表 + 流式回答 + 审批内联裁决。
+//! 壳拉起捆绑的 exm-gateway 作为后端（REST/WS 同端口），全部管理能力（模型/组/通道/定时/
+//! 安全）由壳内原生设置视图直连环口 API 完成，**不依赖任何 webui**；亦支持 `--remote <url>`。
 //! 移动端无需单独 App：手机浏览器 / PWA 打开网关地址即为同源客户端。
 //!
 //! 启动形态：
-//! - `exmachina-desktop`                                          —— 拉起捆绑网关并打开窗口
+//! - `exmachina-desktop`                                          —— 拉起捆绑网关，主窗口进入对话界面
 //! - `exmachina-desktop --remote http://host:4173 --key <authKey>` —— 直连远程网关
 //!
-//! 密钥经 Tauri 初始化脚本写入 localStorage（exm.key），复用 WebUI 自身的登录门与鉴权层。
+//! 网关地址与密钥经 Tauri 初始化脚本注入 `window.__EXM_GATEWAY__`，对话 UI 据此直连环口。
 //!
 //! 组 11 桌面集成：
 //! - 系统托盘（11.1）：常驻托盘菜单（打开控制面板 / 显示隐藏 / 退出）；关窗默认驻留（可配置完全退出）；
@@ -56,6 +58,7 @@ fn main() {
     tauri::Builder::default()
         .manage(GatewayChild(Mutex::new(None)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -79,23 +82,20 @@ fn main() {
             let key_val = key.clone().unwrap_or_default();
             app.manage(GatewayInfo { url: url.clone(), key: key_val.clone() });
 
-            // 密钥注入 + 深链定位：document start 阶段写 localStorage（WebUI 的 api 层读取 exm.key）
-            let mut win = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::External(url.parse().map_err(|e| format!("无效的网关地址: {e}"))?),
-            )
-            .title("EXMACHINA · 多智能体系统")
-            .inner_size(1320.0, 860.0)
-            .min_inner_size(420.0, 360.0);
-            if !key_val.is_empty() {
-                let script = format!(
-                    "try {{ localStorage.setItem('exm.key', '{}'); }} catch (e) {{}}",
-                    key_val.replace('\'', "")
-                );
-                win = win.initialization_script(&script);
-            }
-            win.build()?;
+            // 主界面：壳内嵌的对话式 UI（desktop/ui，经 frontendDist 打进二进制），
+            // 网关只做后端（REST/WS）。网关地址与密钥经初始化脚本注入（window.__EXM_GATEWAY__），
+            // UI 据此直连环口；管理能力经原生设置视图完成（桌面端零 webui 依赖）。
+            let script = format!(
+                "window.__EXM_GATEWAY__ = {{ url: '{url}', key: '{key}' }};",
+                url = url.replace('\\', "\\\\").replace('\'', "\\'"),
+                key = key_val.replace('\\', "\\\\").replace('\'', "\\'"),
+            );
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+                .title("EXMACHINA · 多智能体系统")
+                .inner_size(1320.0, 860.0)
+                .min_inner_size(420.0, 360.0)
+                .initialization_script(&script)
+                .build()?;
 
             // 系统托盘（11.1）：常驻菜单 + 显隐 + 退出（退出级联终止网关子进程）
             build_tray(app.handle())?;
@@ -358,18 +358,11 @@ fn spawn_local_gateway(app: &tauri::AppHandle) -> Result<String, Box<dyn std::er
     let data_dir = desktop::data_dir().join("ExMachina");
     std::fs::create_dir_all(data_dir.join("data"))?;
 
-    // WebUI 构建产物随包捆绑（src-tauri/binaries/webui-dist/）：告知网关同端口托管，
-    // 否则窗口加载根路径 404（表现即「无法访问」）
-    let webui_dist = bin_dir.join("webui-dist");
-
     let mut cmd = Command::new(&gateway);
     cmd.arg("serve")
         .arg("--port")
         .arg(port.to_string())
         .env("EXM_DATA_DIR", data_dir.join("data"));
-    if webui_dist.join("index.html").is_file() {
-        cmd.env("EXM_WEBUI_DIST", &webui_dist);
-    }
     // Windows：网关是控制台子系统程序，GUI 进程无控制台可继承 → 系统会为其新开终端窗口；
     // CREATE_NO_WINDOW (0x0800_0000) 抑制弹窗（日志经事件桥与 WebUI 可见，无需终端）
     #[cfg(target_os = "windows")]

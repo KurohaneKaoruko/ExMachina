@@ -711,6 +711,166 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// 与子个体单独对话（桌面端子代理会话）：复用个体执行回路（工具循环/人格与派发执行一致），
+    /// 上下文携带最近的派发单契约；流式经 unit.token / unit.thinking 通道，回复落库 role=unit。
+    /// 操作者可在子代理会话界面直接与该个体对话，无需经过指挥体编排。
+    pub async fn unit_direct_round(
+        self: &Arc<Self>,
+        session_id: &str,
+        agent_identifier: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        // 解析个体：组内子个体优先，其次独立单体
+        let def = self
+            .registry
+            .agents_in_group(&self.registry.active_group())
+            .into_iter()
+            .find(|d| d.identifier == agent_identifier)
+            .or_else(|| self.registry.single(agent_identifier))
+            .ok_or_else(|| anyhow::anyhow!("未找到个体: {agent_identifier}"))?;
+
+        // 人格：个体提示词 + SOUL + 单独对话身份说明（区别于派发执行的收束格式）
+        let mut system_prompt = self
+            .registry
+            .load_prompt(&def.prompt_file)
+            .unwrap_or_else(|_| format!("# {}\n\n你是组内子个体，独立、专业地与操作者对话。", def.name));
+        let soul = self
+            .registry
+            .single_persona(&def.identifier)
+            .ok()
+            .unwrap_or_else(|| LocalRegistry::DEFAULT_PERSONA.to_string());
+        system_prompt.push_str(&format!("\n\n## SOUL（人格）\n{soul}"));
+        system_prompt.push_str(&format!(
+            "\n\n## 身份\n你是「{}」（@{}，负责域：{}）。当前是操作者与你的单独对话，不是派发执行：直接、具体地回答，不要输出任务收束格式。个体说明：{}",
+            def.name, def.identifier, def.domain, def.description
+        ));
+
+        // 最近派发单：任务契约（目标/验收）作为你的工作上下文一并携带
+        if let Ok(evs) = self.store.list_events(session_id) {
+            let dispatch = evs.into_iter().rev().find(|e| {
+                e.get("type").and_then(|v| v.as_str()) == Some("dispatch")
+                    && e.get("to").and_then(|v| v.as_str()) == Some(agent_identifier)
+            });
+            if let Some(p) = dispatch.and_then(|e| e.get("payload").cloned()) {
+                let goal = p.get("goal").and_then(|v| v.as_str()).unwrap_or_default();
+                if !goal.is_empty() {
+                    let mut ctx = format!("\n\n## 指挥体最近派发给你的任务\n目标：{goal}");
+                    let acc: Vec<String> = p
+                        .get("acceptance")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    if !acc.is_empty() {
+                        ctx.push_str(&format!("\n验收：{}", acc.join("；")));
+                    }
+                    system_prompt.push_str(&ctx);
+                }
+            }
+        }
+
+        // 本轮输入落库（与 handle_user_message 同口径，要求标签）
+        self.store.add_message(
+            session_id,
+            MessageRole::User,
+            None,
+            vec![Statement::new(SpeechTag::要求, text)],
+        )?;
+
+        // 历史窗口：User→user；Orchestrator→assistant（标注来源）；本个体→assistant；其余个体跳过
+        let rows = self.store.list_messages(session_id, 40)?;
+        let mut history: Vec<ChatMessage> = Vec::new();
+        for m in rows {
+            let content = m
+                .statements
+                .iter()
+                .map(|s| s.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if content.trim().is_empty() {
+                continue;
+            }
+            match m.role {
+                MessageRole::User => history.push(ChatMessage::user(content)),
+                MessageRole::Orchestrator => {
+                    history.push(ChatMessage::assistant(format!("【指挥体】{content}")))
+                }
+                MessageRole::Unit if m.agent_id.as_deref() == Some(agent_identifier) => {
+                    history.push(ChatMessage::assistant(content))
+                }
+                _ => {}
+            }
+        }
+        if history.last().map(|m| m.role != "user").unwrap_or(true) {
+            history.push(ChatMessage::user(text.to_string()));
+        }
+
+        // 多模态：视觉转述可用则转写注入，否则原图直附（能力不可用并注记忽略）
+        let images = crate::image_stash::take(session_id);
+        if !images.is_empty() {
+            let last = history.last_mut();
+            match self.relay_images(&images).await {
+                Some(desc) => {
+                    if let Some(m) = last {
+                        m.content.push_str(&format!(
+                            "\n\n## 图片内容（由视觉转述模型转写，原始图片未直接下发）\n{desc}"
+                        ));
+                    }
+                }
+                None => {
+                    if let Some(m) = last {
+                        m.images = images;
+                    }
+                }
+            }
+        }
+
+        // 过程分轨：以派发执行同通道流式（前端子代理会话视图直接复用）
+        let em = self.clone();
+        let aid = agent_identifier.to_string();
+        let sid = session_id.to_string();
+        let on_delta = move |delta: StreamDelta| match delta {
+            StreamDelta::Thinking(t) => {
+                crate::round_trace::push_thinking(&sid, &t);
+                em.emit(&sid, "unit.thinking", serde_json::json!({ "agentId": aid, "delta": t }));
+            }
+            StreamDelta::Text(t) => {
+                em.emit(&sid, "unit.token", serde_json::json!({ "agentId": aid, "delta": t }));
+            }
+        };
+
+        let chain = self.unit_chain_for(&def);
+        let final_text = self
+            .unit_runtime
+            .chat_execute(
+                &def,
+                system_prompt,
+                history,
+                session_id,
+                chain,
+                true,
+                on_delta,
+            )
+            .await?;
+
+        let (thinking, tool_calls) = crate::round_trace::drain(session_id);
+        let statements = vec![Statement::report(final_text)];
+        self.store.add_message_full(
+            session_id,
+            MessageRole::Unit,
+            Some(agent_identifier),
+            statements.clone(),
+            thinking,
+            tool_calls,
+        )?;
+        // 收尾事件：子代理会话视图据此结束实时态
+        self.emit(
+            session_id,
+            "unit.finished",
+            serde_json::json!({ "agentId": agent_identifier, "statements": statements }),
+        );
+        Ok(())
+    }
+
     async fn run_round(self: &Arc<Self>, session_id: &str, text: &str) -> anyhow::Result<()> {
         // 单体模式:直接工具循环(常见单 agent 应用同款),不进规划/派发语义
         if self.registry.single_mode() {
