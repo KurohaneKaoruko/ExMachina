@@ -907,7 +907,10 @@ function renderSetModel(body) {
     }));
     if (p) ops.appendChild(mkBtn("拉取模型清单", async () => {
       const r = await req("/llm/models", { method: "POST", body: JSON.stringify({ id: p.id }) }).catch((e) => ({ error: String(e) }));
-      toast(r?.ok ? `端点可用模型 ${r.models?.length ?? 0} 个：${(r.models ?? []).slice(0, 5).join("、")}${(r.models?.length ?? 0) > 5 ? " …" : ""}` : `失败：${r?.error || r?.message || "未知"}`, Boolean(r?.ok));
+      if (!r?.ok) return toast(`失败：${r?.error || r?.message || "未知"}`, false);
+      // 清单入库：写入档案 models（模型选择器按供应商分组展示的就是这份）
+      const models = (r.models ?? []).map((m) => ({ model: m }));
+      if (await settingsSave(req("/llm/profiles", { method: "POST", body: JSON.stringify({ id: p.id, name: p.name, baseUrl: p.baseUrl, apiFormat: p.apiFormat, model: p.model, models }) }), `已拉取并保存 ${models.length} 个模型`)) { await refreshContext(); renderSettings(); }
     }, "set-btn"));
     c.appendChild(ops);
     slot.appendChild(c);
@@ -967,10 +970,14 @@ function renderSetGroup(body) {
   body.appendChild(list);
   const create = setCard("新建智能体组");
   const name = mkInput("", { placeholder: "组名称，如 前端小组" });
+  const desc = mkInput("", { placeholder: "一句话描述（可选）" });
   create.appendChild(mkField("名称", name));
+  create.appendChild(mkField("描述", desc));
   create.appendChild(mkBtn("创建", async () => {
     if (!name.value.trim()) return toast("组名称不能为空", false);
-    if (await settingsSave(req("/groups", { method: "POST", body: JSON.stringify({ name: name.value.trim() }) }), "组已创建")) { await refreshContext(); renderSettings(); }
+    const payload = { name: name.value.trim() };
+    if (desc.value.trim()) payload.description = desc.value.trim();
+    if (await settingsSave(req("/groups", { method: "POST", body: JSON.stringify(payload) }), "组已创建")) { await refreshContext(); renderSettings(); }
   }));
   body.appendChild(create);
 }
@@ -1012,17 +1019,37 @@ function renderSetChannel(body) {
     const c = setCard("新增通道");
     const id = mkInput("", { placeholder: "唯一标识，如 tg-main" });
     const platform = mkSelect([["telegram", "Telegram"], ["qqbot", "QQ 官方机器人"], ["napcat", "NapCat（QQ）"], ["discord", "Discord"], ["slack", "Slack"], ["matrix", "Matrix"]], "telegram");
-    const token = mkInput("", { type: "password", placeholder: "Bot Token" });
-    const secret = mkInput("", { type: "password", placeholder: "Secret（可选）" });
     c.appendChild(mkField("标识", id));
     c.appendChild(mkField("平台", platform));
-    c.appendChild(mkField("Token", token));
-    c.appendChild(mkField("Secret", secret));
+    // 平台相关字段动态渲染：qqbot → appId/appSecret；napcat → url/token；其余 → token
+    const dyn = document.createElement("div");
+    c.appendChild(dyn);
+    const rebuild = () => {
+      dyn.innerHTML = "";
+      const pf = platform.value;
+      if (pf === "qqbot") {
+        dyn.appendChild(mkField("AppID", mkInput("", { placeholder: "QQ 机器人 AppID" })));
+        dyn.appendChild(mkField("AppSecret", mkInput("", { type: "password", placeholder: "AppSecret" })));
+      } else if (pf === "napcat") {
+        dyn.appendChild(mkField("服务地址", mkInput("", { placeholder: "http://127.0.0.1:3000" })));
+        dyn.appendChild(mkField("Token", mkInput("", { type: "password" })));
+      } else {
+        dyn.appendChild(mkField("Bot Token", mkInput("", { type: "password" })));
+      }
+    };
+    platform.addEventListener("change", rebuild);
+    rebuild();
     c.appendChild(mkBtn("创建", async () => {
       if (!id.value.trim()) return toast("通道标识不能为空", false);
       const payload = { id: id.value.trim(), platform: platform.value, enabled: true };
-      if (token.value.trim()) payload.token = token.value.trim();
-      if (secret.value.trim()) payload.secret = secret.value.trim();
+      const inputs = [...dyn.querySelectorAll(".pop-input")];
+      if (platform.value === "qqbot") {
+        payload.config = { appId: inputs[0]?.value.trim() ?? "", appSecret: inputs[1]?.value.trim() ?? "" };
+      } else if (platform.value === "napcat") {
+        payload.config = { url: inputs[0]?.value.trim() ?? "", token: inputs[1]?.value.trim() ?? "" };
+      } else if (inputs[0]?.value.trim()) {
+        payload.token = inputs[0].value.trim();
+      }
       if (await settingsSave(req("/channels", { method: "POST", body: JSON.stringify(payload) }), "通道已创建")) renderSettings();
     }));
     return c;
@@ -1064,13 +1091,16 @@ function renderSetCron(body) {
     const name = mkInput("", { placeholder: "任务名称，如 每日站会摘要" });
     const prompt = mkInput("", { placeholder: "推送给组的提示词" });
     const cron = mkInput("", { placeholder: "cron 表达式，如 0 9 * * 1-5" });
+    const at = mkInput("", { placeholder: "单次执行时间（可选，ISO 格式，填了则忽略 cron）" });
     c.appendChild(mkField("名称", name));
     c.appendChild(mkField("提示词", prompt));
     c.appendChild(mkField("cron 表达式", cron));
+    c.appendChild(mkField("单次时间", at));
     c.appendChild(mkBtn("创建", async () => {
       if (!name.value.trim() || !prompt.value.trim()) return toast("名称与提示词必填", false);
       const payload = { name: name.value.trim(), prompt: prompt.value.trim() };
       if (cron.value.trim()) payload.cron = cron.value.trim();
+      if (at.value.trim()) payload.at = at.value.trim();
       if (await settingsSave(req("/cron", { method: "POST", body: JSON.stringify(payload) }), "定时任务已创建")) renderSettings();
     }));
     return c;
@@ -1146,7 +1176,9 @@ function popItem({ title, sub, current, onclick }) {
   const b = document.createElement("button");
   b.className = `pop-item${current ? " current" : ""}`;
   b.innerHTML = `<span style="min-width:0;overflow:hidden"><span>${esc(title)}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</span><span class="mark">${current ? "✓" : ""}</span>`;
-  b.addEventListener("click", onclick);
+  // stopPropagation：子菜单切换会重建浮窗内容，原 target 脱离容器后
+  // 冒泡到 document 的关闭监听会被误判为「点在外面」而直接关浮窗
+  b.addEventListener("click", (e) => { e.stopPropagation(); onclick(e); });
   return b;
 }
 
@@ -1281,7 +1313,7 @@ function popRow(label, value, onclick) {
   const b = document.createElement("button");
   b.className = "pop-row";
   b.innerHTML = `<span>${esc(label)}</span><span class="val">${esc(value)}</span><span class="chev">›</span>`;
-  b.addEventListener("click", onclick);
+  b.addEventListener("click", (e) => { e.stopPropagation(); onclick(e); });
   return b;
 }
 
@@ -1407,6 +1439,13 @@ function autosize() {
 async function init() {
   $("btn-back").addEventListener("click", exitUnitView);
   $("sp-back").addEventListener("click", () => showView("chat"));
+  // 自绘标题栏窗口控制（仅桌面端；浏览器调试隐藏按钮）
+  if (window.__TAURI__) {
+    $("tb-btns").classList.remove("hidden");
+    $("tb-min").addEventListener("click", () => window.__TAURI__.core.invoke("min_window"));
+    $("tb-max").addEventListener("click", () => window.__TAURI__.core.invoke("max_window"));
+    $("tb-close").addEventListener("click", () => window.__TAURI__.core.invoke("close_window"));
+  }
   $("btn-new").addEventListener("click", () => newSession().catch(alertErr));
   $("btn-send").addEventListener("click", send);
   $("btn-stop").addEventListener("click", () => S.sessionId && api.stop(S.sessionId).catch(alertErr));

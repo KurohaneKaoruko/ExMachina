@@ -72,7 +72,10 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             get_desktop_config,
-            set_desktop_config
+            set_desktop_config,
+            min_window,
+            max_window,
+            close_window
         ])
         .setup(move |app| {
             let url: String = match remote {
@@ -92,6 +95,7 @@ fn main() {
             );
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
                 .title("EXMACHINA · 多智能体系统")
+                .decorations(false)
                 .inner_size(1320.0, 860.0)
                 .min_inner_size(420.0, 360.0)
                 .initialization_script(&script)
@@ -212,6 +216,27 @@ fn register_shortcut(app: &tauri::AppHandle, combo: &str) {
 #[tauri::command]
 fn get_desktop_config() -> desktop::DesktopConfig {
     desktop::DesktopConfig::load()
+}
+
+// 自绘标题栏的窗口控制按钮（decorations=false，零 ACL 依赖走自有命令）
+#[tauri::command]
+fn min_window(w: tauri::Window) {
+    let _ = w.minimize();
+}
+
+#[tauri::command]
+fn max_window(w: tauri::Window) {
+    if w.is_maximized().unwrap_or(false) {
+        let _ = w.unmaximize();
+    } else {
+        let _ = w.maximize();
+    }
+}
+
+#[tauri::command]
+fn close_window(w: tauri::Window) {
+    // 走 CloseRequested 事件：默认隐藏驻留托盘（exit_on_close 时真退出）
+    let _ = w.close();
 }
 
 /// 保存桌面配置：快捷键改绑即时重注册；冲突返回提示（不落盘失败配置的快捷键行为）
@@ -358,11 +383,18 @@ fn spawn_local_gateway(app: &tauri::AppHandle) -> Result<String, Box<dyn std::er
     let data_dir = desktop::data_dir().join("ExMachina");
     std::fs::create_dir_all(data_dir.join("data"))?;
 
+    // 默认工作区 = 用户数据目录下的 workspace/（干活的项目根），
+    // 绝不落在安装目录：agent 的终端/文件工具默认以此为根，搞不坏应用自身
+    let workspace = data_dir.join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+
     let mut cmd = Command::new(&gateway);
     cmd.arg("serve")
         .arg("--port")
         .arg(port.to_string())
-        .env("EXM_DATA_DIR", data_dir.join("data"));
+        .env("EXM_DATA_DIR", data_dir.join("data"))
+        .env("EXM_WORKSPACE_ROOT", &workspace)
+        .current_dir(&workspace);
     // Windows：网关是控制台子系统程序，GUI 进程无控制台可继承 → 系统会为其新开终端窗口；
     // CREATE_NO_WINDOW (0x0800_0000) 抑制弹窗（日志经事件桥与 WebUI 可见，无需终端）
     #[cfg(target_os = "windows")]

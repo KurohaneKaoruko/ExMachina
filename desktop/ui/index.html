@@ -7,11 +7,19 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
+    <header id="titlebar" data-tauri-drag-region>
+      <span class="tb-brand" data-tauri-drag-region>EXMACHINA</span>
+      <div class="tb-btns hidden" id="tb-btns">
+        <button id="tb-min" title="最小化">─</button>
+        <button id="tb-max" title="最大化 / 还原">▢</button>
+        <button id="tb-close" title="关闭（驻留托盘）">✕</button>
+      </div>
+    </header>
     <div id="app">
       <!-- 侧栏：会话列表（可收起） -->
       <aside id="sidebar">
         <div class="side-head">
-          <div class="brand">EXMACHINA</div>
           <button id="btn-new" class="btn-new" title="开始新对话">＋ 新对话</button>
         </div>
         <nav id="session-list" aria-label="会话列表"></nav>
@@ -67,7 +75,6 @@
     <!-- 设置（独立整页）：原生管理面，直连环口 API -->
     <div id="settings-page" class="hidden">
       <aside class="sp-nav">
-        <div class="sp-brand">EXMACHINA</div>
         <button id="sp-back" class="sp-back">‹ 返回对话</button>
         <nav id="sp-tabs"></nav>
       </aside>
