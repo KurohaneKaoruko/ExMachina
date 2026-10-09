@@ -105,7 +105,12 @@
           </span>
         </header>
         <div id="cp-editor-empty" class="cp-editor-empty">在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
-        <textarea id="cp-editor" class="hidden" spellcheck="false"></textarea>
+        <!-- 编辑器三明治：行号列（左）/ 当前行高亮条（底）/ 文本层（顶）；滚动由 JS 同步 -->
+        <div id="cp-editor-wrap" class="hidden">
+          <div id="cp-curline" aria-hidden="true" class="hidden"></div>
+          <div id="cp-lines" aria-hidden="true"></div>
+          <textarea id="cp-editor" spellcheck="false" wrap="off"></textarea>
+        </div>
       </main>
       <aside class="cp-right">
         <div id="cp-tabs" class="cp-tabs">

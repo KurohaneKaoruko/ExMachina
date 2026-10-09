@@ -83,7 +83,16 @@ button { font-family: inherit; cursor: pointer; }
   margin-bottom: 2px; border-left: 2px solid transparent;
 }
 .session-item:hover { background: var(--panel); }
-.session-item.active { background: var(--panel); border-left-color: var(--accent); }
+/* 当前会话：更强的方位感（左侧强调条 + 内描边 + 标题提亮） */
+.session-item.active {
+  background: linear-gradient(90deg, rgba(124, 140, 255, 0.12), rgba(124, 140, 255, 0.02) 75%);
+  border-left-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(124, 140, 255, 0.16);
+}
+.session-item.active .session-title { color: var(--accent-2); font-weight: 600; }
+.session-item.active .session-preview { color: var(--text-dim); }
+/* 当前会话运行中：标题前小转圈 */
+.session-run .spinner { width: 10px; height: 10px; border-width: 1.5px; vertical-align: -1px; margin-right: 5px; }
 .session-title {
   font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 50px;
 }
@@ -589,6 +598,14 @@ button { font-family: inherit; cursor: pointer; }
 .tk-acc div { padding: 1px 0; }
 .tk-acc div::before { content: "□ "; color: var(--text-faint); }
 
+/* SVG 连线 DAG：容器横向滚动兜底；连线层垫底，节点卡绝对定位其上 */
+.tk-dag-wrap { overflow-x: auto; padding-bottom: 6px; }
+.tk-dag { position: relative; }
+.tk-dag-edges { position: absolute; top: 0; left: 0; z-index: 0; }
+.tk-dag-edges .tk-edge { transition: opacity 0.15s; }
+.tk-dag-edges .tk-edge:hover { opacity: 1; stroke-width: 2.5; }
+.tk-dnode { position: absolute; width: 252px; margin-bottom: 0; z-index: 1; }
+
 .ledger-goal {
   border: 1px solid rgba(124, 140, 255, 0.35); background: rgba(124, 140, 255, 0.06);
   color: var(--text); font-size: 13px; padding: 10px 12px; margin-bottom: 10px; white-space: pre-wrap;
@@ -624,6 +641,16 @@ button { font-family: inherit; cursor: pointer; }
 .cp-tree-item:hover { background: var(--panel); color: var(--text); }
 .cp-tree-item.on { color: var(--accent-2); background: rgba(124, 140, 255, 0.08); border-left-color: var(--accent-2); }
 .cp-tree-item .tw { width: 11px; min-width: 11px; text-align: center; color: var(--text-faint); font-size: 10px; }
+/* 类型图标：目录 ▤ / 文件 ▪（纯文本字形，无图片资源） */
+.cp-tree-item .fico { width: 13px; min-width: 13px; text-align: center; color: var(--text-faint); font-size: 10px; }
+.cp-tree-item:hover .fico, .cp-tree-item.on .fico { color: var(--text-dim); }
+/* 变更状态色点：A 新增绿 / M 修改黄 / D 删除红 / R·C·T 紫 */
+.cp-tree-item .fdot { width: 6px; min-width: 6px; height: 6px; }
+.fdot.st-A { background: var(--ok); }
+.fdot.st-M { background: var(--warn); }
+.fdot.st-D { background: var(--err); }
+.fdot.st-R, .fdot.st-C, .fdot.st-T { background: #c4b5fd; }
+.fdot.st-U, .fdot.st-X, .fdot.st-B { background: var(--err); }
 .cp-tree-item .fname { overflow: hidden; text-overflow: ellipsis; }
 .cp-tree-item .fmark { margin-left: auto; font-size: 10px; font-family: Consolas, monospace; padding-right: 4px; }
 .st-dirty { color: var(--accent-2); }
@@ -647,10 +674,26 @@ button { font-family: inherit; cursor: pointer; }
 .cp-chip-accent { color: var(--accent-2); border-color: rgba(55, 224, 255, 0.35); }
 .cp-chip-warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
 .cp-editor-ops { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
+/* 编辑器三明治：行号列（左，overflow:hidden 编程滚动）/ 当前行高亮条（底）/ 文本层（顶，透明底） */
+#cp-editor-wrap { position: relative; flex: 1; min-height: 0; background: #101216; }
+#cp-lines {
+  position: absolute; top: 0; left: 0; bottom: 0; width: 52px; overflow: hidden; z-index: 2;
+  padding: 14px 10px 14px 0; background: #12141a; border-right: 1px solid var(--border);
+  color: var(--text-faint); font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  font-size: 13px; line-height: 20px; text-align: right; white-space: pre;
+  user-select: none; -webkit-user-select: none; pointer-events: none;
+}
+#cp-curline {
+  position: absolute; left: 52px; right: 0; height: 20px; z-index: 0; pointer-events: none;
+  background: rgba(124, 140, 255, 0.09);
+  border-top: 1px solid rgba(124, 140, 255, 0.16); border-bottom: 1px solid rgba(124, 140, 255, 0.16);
+}
 #cp-editor {
-  flex: 1; width: 100%; background: #101216; color: #d7dce5; border: none; outline: none; resize: none;
-  padding: 14px 16px; font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
-  font-size: 13px; line-height: 1.6; tab-size: 4;
+  position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0;
+  background: transparent; color: #d7dce5; border: none; outline: none; resize: none;
+  padding: 14px 16px 14px 64px;
+  font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  font-size: 13px; line-height: 20px; tab-size: 2; white-space: pre; overflow: auto;
 }
 .cp-editor-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -673,6 +716,23 @@ button { font-family: inherit; cursor: pointer; }
 .cp-changes-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
 .cp-branch { color: var(--accent-2); font-family: Consolas, monospace; }
 .cp-changes-count { margin-left: auto; color: var(--text-faint); font-size: 11.5px; }
+.cp-changes-count .add { color: var(--ok); }
+.cp-changes-count .del { color: var(--err); }
+/* 批量操作行：暂存全部 / 全部丢弃 */
+.cp-bulk { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; }
+.cp-bulk-hint { font-size: 11px; color: var(--text-faint); }
+/* 变更列表按状态分组 */
+.cp-group-head {
+  display: flex; align-items: center; gap: 7px; margin: 10px 2px 5px;
+  font-size: 11px; color: var(--text-faint); letter-spacing: 0.06em; user-select: none;
+}
+.cp-group-head .cp-fst { min-width: 14px; }
+.cp-group-count { margin-left: auto; background: var(--panel-2); padding: 0 6px; line-height: 15px; font-size: 10.5px; }
+/* 单文件 +n/−n 行数统计 */
+.cp-fstats { margin-left: auto; font-family: Consolas, monospace; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+.cp-fstats .add { color: var(--ok); }
+.cp-fstats .del { color: var(--err); margin-left: 5px; }
+.cp-fstats .trunc { color: var(--text-faint); margin-left: 4px; }
 .cp-file-row { border: 1px solid var(--border); background: var(--panel); margin-bottom: 6px; }
 .cp-file-top { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; font-size: 12px; min-width: 0; }
 .cp-file-top:hover { background: var(--panel-2); }
@@ -714,3 +774,11 @@ button { font-family: inherit; cursor: pointer; }
 /* 禁用态按钮（编辑器保存 / 重载等） */
 .set-btn:disabled { opacity: 0.4; cursor: default; }
 .set-btn:disabled:hover { border-color: var(--border); color: var(--text-dim); background: var(--panel-2); }
+
+/* 按钮统一 loading 态（mkBtn 挂 .btn-busy）：半透明禁点 + 尾随小转圈 */
+.btn-busy { pointer-events: none; opacity: 0.55; }
+.btn-busy::after {
+  content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 6px; vertical-align: -1px;
+  border: 1.5px solid currentColor; border-top-color: transparent;
+  animation: spin 0.9s linear infinite;
+}

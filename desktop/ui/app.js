@@ -144,6 +144,7 @@ function wsConnect() {
     wsBackoff = 0;
     setConn(true);
     if (!reconnected) return;
+    void refreshApprovalsBadge(); // 重连补偿的第一拍：先校准跨会话审批角标
     // 断连补偿：重拉消息 + 任务图 + 在途判定，补齐丢失事件
     void (async () => {
       try {
@@ -177,8 +178,15 @@ function wsConnect() {
 }
 
 function handleEvent(evt) {
-  // 审批角标先于会话过滤：通道发起的审批不属于当前会话也要亮
-  if (evt.type === "approval.required" || evt.type === "approval.resolved") refreshApprovalsBadge();
+  // 审批角标先于会话过滤：通道发起的审批不属于当前会话也要亮（事件驱动即时刷新，轮询仅兜底）
+  if (evt.type === "approval.required" || evt.type === "approval.resolved") {
+    refreshApprovalsBadge();
+    // 审批落地（代执行 push/丢弃等）可能改动工作区：编码页开着就顺手刷新变更与 Git 面板
+    if (evt.type === "approval.resolved" && S.view === "code") {
+      void refreshChanges();
+      void refreshGitOverview();
+    }
+  }
   if (evt.sessionId !== S.sessionId) return;
   const p = evt.payload ?? {};
   const live = S.live;
@@ -425,6 +433,7 @@ function setRunning(on) {
   stop.classList.toggle("hidden", !on);
   // 复位「停止中…」态：收束（finished/error）或空闲兜底时按钮必须可预期
   if (!on) { stop.disabled = false; stop.textContent = "■ 停止"; }
+  renderSidebar(); // 当前会话行的运行态小转圈跟随亮/灭
 }
 
 function renderSidebar() {
@@ -459,10 +468,11 @@ function renderSidebar() {
 
 function sessionEl(s) {
   const item = document.createElement("div");
-  item.className = `session-item${s.id === S.sessionId ? " active" : ""}`;
+  const isActive = s.id === S.sessionId;
+  item.className = `session-item${isActive ? " active" : ""}`;
   item.dataset.sid = s.id; // 行内重命名按 id 定位 DOM
   item.innerHTML = `
-    <div class="session-title">${esc(s.title || "未命名会话")}</div>
+    <div class="session-title">${isActive && S.running ? '<span class="session-run"><span class="spinner"></span></span>' : ""}${esc(s.title || "未命名会话")}</div>
     <div class="session-preview">${esc(s.lastMessagePreview ?? "")}</div>
     <span class="session-acts"><button class="session-act" data-op="rename" title="重命名">✎</button><button class="session-act danger" data-op="del" title="删除会话">✕</button></span>`;
   item.addEventListener("click", () => selectSession(s.id));
@@ -801,6 +811,8 @@ function renderRight() {
 const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single", "智能体"], ["channel", "通道"], ["cron", "定时任务"], ["approval", "审批"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"], ["version", "版本"]];
 
 function showView(v) {
+  // 编码页有未保存修改时，切走前先确认（切文件在 openFile、换目录在 applyWorkspace 各自拦截）
+  if (S.view === "code" && v !== "code" && !confirmDiscardDirty("离开编码页")) return;
   S.view = v;
   updateTopbar();
   // 独立整页（设置 / 编码 / 任务）接管整个窗口，chat 恢复三栏对话
@@ -883,7 +895,14 @@ function mkBtn(text, onclick, cls = "pop-save") {
   const b = document.createElement("button");
   b.className = cls;
   b.textContent = text;
-  b.addEventListener("click", onclick);
+  // 统一 loading 态：async 处理器执行期间挂 .btn-busy（转圈 + 禁点），结束自动摘除
+  b.addEventListener("click", (...args) => {
+    const r = onclick(...args);
+    if (r && typeof r.finally === "function") {
+      b.classList.add("btn-busy");
+      r.finally(() => b.classList.remove("btn-busy"));
+    }
+  });
   return b;
 }
 function setCard(title) {
@@ -1778,6 +1797,7 @@ function rememberWorkspace(path) {
 }
 
 async function applyWorkspace(path) {
+  if (!confirmDiscardDirty("切换工作目录")) return; // 编码页有未保存修改时先确认
   try {
     const r = await api.setWorkspace(path);
     S.workspace = String(r?.workspace ?? "");
@@ -1944,10 +1964,16 @@ async function addFiles(files) {
 // 口径：审批单跨会话存在（通道发起的不在当前会话流里）——角标靠轮询 + WS 事件即时刷新
 
 async function refreshApprovalsBadge() {
+  // 序号防乱序：required/resolved 连发时，过期响应不回写角标（初值 0，避免 NaN 恒不等）
+  const seq = (refreshApprovalsBadge.seq = (refreshApprovalsBadge.seq ?? 0) + 1);
   try {
     const items = await api.approvals("pending", 50);
+    if (seq !== refreshApprovalsBadge.seq) return;
     S.approvalsPending = Array.isArray(items) ? items.length : 0;
-  } catch { S.approvalsPending = 0; }
+  } catch {
+    if (seq !== refreshApprovalsBadge.seq) return;
+    S.approvalsPending = 0;
+  }
   const b = $("approvals-badge");
   b.textContent = S.approvalsPending > 50 ? "50+" : String(S.approvalsPending);
   b.classList.toggle("hidden", !S.approvalsPending);
@@ -2105,7 +2131,7 @@ function renderTasksPage(graph, session) {
   const body = $("tp-body");
   body.innerHTML = "";
   const nodes = graph?.nodes ?? [];
-  // —— 任务图：依赖深度缩进 + 状态色标（连线以缩进层级示意）——
+  // —— 任务图：SVG 连线 DAG（依赖深度分层 + 状态色贝塞尔连线），点节点直聊子代理 ——
   const graphCard = setCard(`任务图 · ${nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length} 完成` : "空"}`);
   graphCard.appendChild(Object.assign(document.createElement("div"), {
     className: "tk-legend",
@@ -2116,12 +2142,95 @@ function renderTasksPage(graph, session) {
       className: "set-hint",
       textContent: "本会话还没有任务图——指挥体把目标拆解派发给子个体后，节点与状态会在这里实时呈现。",
     }));
+  } else {
+    renderTaskDag(graphCard, nodes);
   }
-  const ordered = orderedNodes(nodes);
-  for (const item of ordered) graphCard.appendChild(taskNodeEl(item, nodes));
   body.appendChild(graphCard);
   // —— 任务台账：goal / 验收 / 证据 / 风险 分区渲染 ——
   body.appendChild(ledgerCard(session));
+}
+
+// —— SVG 连线 DAG ——
+// 布局：节点按依赖深度分列（orderedNodes 给出 depth），同层纵向堆叠；
+// 连线：依赖节点右缘 → 依赖者左缘的三次贝塞尔，颜色取依赖节点状态色。
+const DAG_NODE_W = 252;  // 节点卡宽（.tk-dnode 同步）
+const DAG_GAP_X = 46;    // 层间距
+const DAG_GAP_Y = 16;    // 同层节点纵间距
+
+function renderTaskDag(container, nodes) {
+  const items = orderedNodes(nodes);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  // 分层（depth 连续自 0 起；forEach 天然跳过稀疏空洞）
+  const layers = [];
+  for (const it of items) (layers[it.depth] ??= []).push(it);
+  const wrap = document.createElement("div");
+  wrap.className = "tk-dag-wrap";
+  const dag = document.createElement("div");
+  dag.className = "tk-dag";
+  wrap.appendChild(dag);
+  container.appendChild(wrap);
+  // 先挂载再量高：卡片高度随内容（objective / 验收条数）自适应
+  const els = new Map();
+  const pos = new Map();
+  for (const it of items) {
+    const el = dagNodeEl(it, nodes);
+    dag.appendChild(el);
+    els.set(it.n.id, el);
+  }
+  const maxDepth = Math.max(0, ...items.map((i) => i.depth));
+  const width = (maxDepth + 1) * DAG_NODE_W + maxDepth * DAG_GAP_X;
+  let height = 0;
+  layers.forEach((list, d) => {
+    let y = 0;
+    for (const it of list) {
+      const h = els.get(it.n.id).offsetHeight;
+      pos.set(it.n.id, { x: d * (DAG_NODE_W + DAG_GAP_X), y, h });
+      y += h + DAG_GAP_Y;
+    }
+    height = Math.max(height, y - DAG_GAP_Y);
+  });
+  for (const [id, p] of pos) {
+    const el = els.get(id);
+    el.style.left = `${p.x}px`;
+    el.style.top = `${p.y}px`;
+  }
+  height = Math.max(height, 0);
+  dag.style.width = `${width}px`;
+  dag.style.height = `${height}px`;
+  dag.insertBefore(dagEdgesSvg(nodes, byId, pos, width, height), dag.firstChild);
+}
+
+// 连线层：依赖 → 依赖者，三次贝塞尔（水平进出、垂直过渡），状态色 + 悬停提示
+function dagEdgesSvg(nodes, byId, pos, width, height) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "tk-dag-edges");
+  svg.setAttribute("width", String(Math.max(width, 1)));
+  svg.setAttribute("height", String(Math.max(height, 1)));
+  for (const n of nodes) {
+    const tp = pos.get(n.id);
+    if (!tp) continue;
+    for (const dep of n.dependsOn ?? []) {
+      const sp = pos.get(dep);
+      const src = byId.get(dep);
+      if (!sp || !src) continue; // 缺失依赖（被撤销的轮次等）安全跳过
+      const x1 = sp.x + DAG_NODE_W, y1 = sp.y + sp.h / 2;
+      const x2 = tp.x, y2 = tp.y + tp.h / 2;
+      const bend = Math.max(24, (x2 - x1) / 2);
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", TASK_ST_COLOR[String(src.status ?? "pending")] ?? "var(--text-faint)");
+      path.setAttribute("stroke-width", "1.5");
+      path.setAttribute("opacity", "0.72");
+      path.setAttribute("class", "tk-edge");
+      const tip = document.createElementNS(NS, "title");
+      tip.textContent = `${src.title || dep} → ${n.title || n.objective || n.id}`;
+      path.appendChild(tip);
+      svg.appendChild(path);
+    }
+  }
+  return svg;
 }
 
 // 依赖深度（拓扑层级）：依赖者比被依赖者深一层；环路与缺失依赖安全兜底
@@ -2143,11 +2252,10 @@ function orderedNodes(nodes) {
     .sort((a, b) => (a.depth - b.depth) || (a.i - b.i)); // 浅层在前，同层保持原始顺序
 }
 
-function taskNodeEl({ n, depth }, nodes) {
+function dagNodeEl({ n }, nodes) {
   const byId = new Map(nodes.map((x) => [x.id, x]));
   const el = document.createElement("div");
-  el.className = `tk-node st-${esc(n.status ?? "pending")}`;
-  el.style.marginLeft = `${Math.min(depth, 6) * 22}px`; // 依赖缩进；超深层截断防溢出
+  el.className = `tk-node tk-dnode st-${esc(n.status ?? "pending")}`;
   if (n.agentIdentifier) el.dataset.agent = n.agentIdentifier;
   const deps = (n.dependsOn ?? []).map((d) => byId.get(d)?.title ?? d);
   el.innerHTML = `
@@ -2292,14 +2400,23 @@ function treeItem(e, depth) {
   item.className = `cp-tree-item${S.code.file?.path === e.path ? " on" : ""}`;
   item.style.paddingLeft = `${10 + depth * 14}px`;
   item.title = e.path;
-  item.innerHTML = `<span class="tw">${e.dir ? (open ? "▾" : "▸") : "·"}</span><span class="fname">${esc(e.name)}</span>
+  item.innerHTML = `<span class="tw">${e.dir ? (open ? "▾" : "▸") : ""}</span><span class="fico">${e.dir ? "▤" : "▪"}</span>`
+    + `${mark ? `<span class="fdot st-${esc(mark)}" title="变更：${esc(CHANGE_STATUS_LABELS[mark] ?? mark)}"></span>` : ""}`
+    + `<span class="fname">${esc(e.name)}</span>
     <span class="fmark">${dirty ? `<span class="st-dirty">●</span>` : mark ? `<span class="st-${esc(mark)}">${esc(mark)}</span>` : ""}</span>`;
   item.addEventListener("click", () => (e.dir ? toggleDir(e) : openFile(e.path)));
   return item;
 }
 
+// 未保存修改统一拦截口径：dirty 时弹确认，返回 false 表示用户选择留下
+function confirmDiscardDirty(action = "离开") {
+  const f = S.code.file;
+  if (!f?.dirty) return true;
+  return confirm(`「${f.path}」有未保存修改，${action}将丢弃。继续？`);
+}
+
 async function openFile(path) {
-  if (S.code.file?.dirty && S.code.file.path !== path && !confirm(`「${S.code.file.path}」有未保存修改，放弃并打开新文件？`)) return;
+  if (S.code.file?.dirty && S.code.file.path !== path && !confirmDiscardDirty("打开新文件")) return;
   try {
     const r = await api.fsFile(path);
     const content = String(r.content ?? "");
@@ -2320,9 +2437,51 @@ function renderEditor() {
   const ta = $("cp-editor");
   const f = S.code.file;
   $("cp-editor-empty").classList.toggle("hidden", Boolean(f));
-  ta.classList.toggle("hidden", !f);
-  if (f) ta.value = f.content;
+  $("cp-editor-wrap").classList.toggle("hidden", !f);
+  if (f) {
+    ta.value = f.content;
+    renderGutter(true);
+    syncEditorScroll();
+  } else {
+    $("cp-curline").classList.add("hidden");
+  }
   renderEditorState();
+}
+
+// —— 行号列 / 当前行 ——
+// 口径：textarea wrap="off"（不软换行），逻辑行与可视行一一对应，
+// 行高等于 CSS 的 20px；行号列用 overflow:hidden + scrollTop 跟随文本层滚动。
+const EDITOR_LINE_H = 20;
+const EDITOR_PAD_TOP = 14;
+let gutterLines = -1;
+
+function renderGutter(force) {
+  const count = $("cp-editor").value.split("\n").length;
+  if (!force && count === gutterLines) return;
+  gutterLines = count;
+  const parts = [];
+  for (let i = 1; i <= count; i++) parts.push(i);
+  $("cp-lines").textContent = parts.join("\n");
+  syncEditorScroll();
+}
+
+function syncEditorScroll() {
+  const ta = $("cp-editor");
+  $("cp-lines").scrollTop = ta.scrollTop; // overflow:hidden 也可编程滚动
+  positionCurLine();
+}
+
+// 当前行高亮条：按光标所在逻辑行定位（可视区外则隐藏）
+function positionCurLine() {
+  const ta = $("cp-editor");
+  const bar = $("cp-curline");
+  if (!S.code.file) { bar.classList.add("hidden"); return; }
+  const line = ta.value.slice(0, ta.selectionStart).split("\n").length - 1;
+  const top = EDITOR_PAD_TOP + line * EDITOR_LINE_H - ta.scrollTop;
+  const viewH = $("cp-editor-wrap").clientHeight;
+  if (top < 0 || top > viewH - EDITOR_LINE_H) { bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  bar.style.top = `${top}px`;
 }
 
 // 头部状态（路径 / 未保存 / 截断 / 大小 + 按钮可用性）：输入高频触发，保持轻量
@@ -2342,8 +2501,48 @@ function renderEditorState() {
 function onEditorInput() {
   const f = S.code.file;
   if (!f) return;
-  f.dirty = $("cp-editor").value !== f.content;
+  const ta = $("cp-editor");
+  f.dirty = ta.value !== f.content;
+  renderGutter();
+  positionCurLine();
   renderEditorState();
+}
+
+// —— Tab 缩进：光标处插入两空格；选区跨行时整块缩进 / Shift+Tab 反向去缩进 ——
+const EDITOR_INDENT = "  ";
+
+// 返回是否发生了编辑（调用方据此决定要不要 preventDefault 拦下焦点切换）
+function editorIndent(shift) {
+  const ta = $("cp-editor");
+  if (!S.code.file) return false;
+  const value = ta.value;
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  if (s === e && !shift) {
+    execEditorInsert(EDITOR_INDENT); // execCommand 走原生 undo 栈并触发 input 事件
+    return true;
+  }
+  const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+  let lineEnd = value.indexOf("\n", e);
+  if (lineEnd < 0) lineEnd = value.length;
+  const block = value.slice(lineStart, lineEnd);
+  const next = (shift ? block.split("\n").map((ln) => ln.replace(/^ {1,2}/, "")).join("\n")
+    : block.split("\n").map((ln) => EDITOR_INDENT + ln).join("\n"));
+  if (next === block) return false; // 无可去缩进：放行默认 Tab 行为（移动焦点）
+  ta.setSelectionRange(lineStart, lineEnd);
+  if (!execEditorInsert(next)) { ta.setSelectionRange(s, e); return false; }
+  ta.setSelectionRange(lineStart, lineStart + next.length);
+  return true;
+}
+
+// 插入文本并保持输入事件链（dirty / 行号 / 状态条联动）；execCommand 不可用时降级手动拼接
+function execEditorInsert(text) {
+  const ta = $("cp-editor");
+  try {
+    if (document.execCommand("insertText", false, text)) return true;
+  } catch { /* 老内核降级 */ }
+  ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
 }
 
 async function saveFile() {
@@ -2368,6 +2567,23 @@ async function refreshChanges() {
   if (S.view === "code") { renderChangesPanel(); renderTree(); }
 }
 
+// 变更状态字母 → 中文（git status --porcelain 单字母口径；未知状态原样展示）
+const CHANGE_STATUS_LABELS = {
+  A: "新增", M: "修改", D: "删除", R: "重命名", C: "复制",
+  T: "类型变更", U: "冲突", X: "未知", B: "损坏",
+};
+
+// 统一 diff 文本的行数统计（+/−；跳过 +++/--- 文件头；truncated 时为下界）
+function diffStats(text) {
+  let add = 0, del = 0;
+  for (const ln of String(text ?? "").split(/\r?\n/)) {
+    if (ln.startsWith("+++") || ln.startsWith("---")) continue;
+    if (ln.startsWith("+")) add++;
+    else if (ln.startsWith("-")) del++;
+  }
+  return { add, del };
+}
+
 function renderChangesPanel() {
   const box = $("cp-changes");
   const c = S.code.changes;
@@ -2377,20 +2593,48 @@ function renderChangesPanel() {
   }
   const files = c.files ?? [];
   const isGit = c.source === "git";
-  let html = `<div class="cp-changes-head"><span>${isGit ? "分支" : "检查点口径（非 git 仓库）"}</span><span class="cp-branch">${esc(c.branch || "—")}</span><span class="cp-changes-count">${files.length} 个文件</span></div>`;
+  const totals = files.reduce((acc, f) => {
+    const st = diffStats(f.diff?.text);
+    return { add: acc.add + st.add, del: acc.del + st.del };
+  }, { add: 0, del: 0 });
+  let html = `<div class="cp-changes-head"><span>${isGit ? "分支" : "检查点口径（非 git 仓库）"}</span><span class="cp-branch">${esc(c.branch || "—")}</span>`
+    + `<span class="cp-changes-count">${files.length} 个文件${totals.add || totals.del ? ` · <span class="add">+${totals.add}</span> <span class="del">−${totals.del}</span>` : ""}</span></div>`;
+  // 批量操作：仅 git 口径提供（暂存全部直发；全部丢弃走审批闸门）
+  if (isGit && files.length) {
+    html += `<div class="cp-bulk">
+      <button class="set-btn" id="cp-stage-all" title="git add -- .">＋ 暂存全部</button>
+      <button class="set-btn danger" id="cp-discard-all" title="生成 git checkout -- . 审批单">↩ 全部丢弃</button>
+      <span class="cp-bulk-hint">丢弃为破坏性操作，需经「待审批」放行</span>
+    </div>`;
+  }
   if (!files.length) {
     html += `<div class="cp-hint">工作区暂无未提交变更。<br/>AI 个体或你在此编辑保存后，文件差异会集中展示在这里。</div>`;
   }
+  // 按状态分组（A 新增 / M 修改 / D 删除 …），组内保持原始顺序
+  const groups = new Map();
   for (const f of files) {
-    const diffText = f.diff?.text ? diffHtml(f.diff.text) + (f.diff.truncated ? `\n<span class="d-hunk">… diff 过长已截断</span>` : "") : "";
-    html += `<div class="cp-file-row" data-path="${esc(f.path)}">
+    const key = String(f.status ?? "?");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  for (const [status, group] of groups) {
+    html += `<div class="cp-group-head"><span class="cp-fst st-${esc(status)}">${esc(status)}</span>${esc(CHANGE_STATUS_LABELS[status] ?? status)}<span class="cp-group-count">${group.length}</span></div>`;
+    for (const f of group) {
+      const diffText = f.diff?.text ? diffHtml(f.diff.text) + (f.diff.truncated ? `\n<span class="d-hunk">… diff 过长已截断</span>` : "") : "";
+      const stats = diffStats(f.diff?.text);
+      const statHtml = f.diff?.text && (stats.add || stats.del)
+        ? `<span class="cp-fstats"><span class="add">+${stats.add}</span><span class="del">−${stats.del}</span>${f.diff.truncated ? `<span class="trunc">…</span>` : ""}</span>`
+        : "";
+      html += `<div class="cp-file-row" data-path="${esc(f.path)}">
       <div class="cp-file-top">
         <span class="cp-fst st-${esc(f.status)}">${esc(f.status)}${f.staged ? "*" : ""}</span>
         <span class="cp-file-path2" title="${esc(f.path)}">${esc(f.path)}</span>
+        ${statHtml}
         ${isGit ? `<span class="cp-file-ops"><button class="set-btn" data-op="${f.staged ? "unstage" : "stage"}" data-path="${esc(f.path)}">${f.staged ? "取消暂存" : "暂存"}</button><button class="set-btn danger" data-op="discard" data-path="${esc(f.path)}">丢弃</button></span>` : ""}
       </div>
       ${diffText ? `<pre class="cp-diff hidden">${diffText}</pre>` : (!f.diff && !f.staged ? `<pre class="cp-diff hidden" data-untracked="${esc(f.path)}"><span class="d-hunk">未跟踪文件 —— 展开加载全文</span></pre>` : "")}
     </div>`;
+    }
   }
   if (isGit) {
     html += `<div class="cp-commit">
@@ -2414,6 +2658,11 @@ function renderChangesPanel() {
     if (op === "discard" && !confirm(`丢弃「${path}」的未提交修改？将生成审批单。`)) return;
     runGitOp({ op, path }, op === "stage" ? "已暂存" : op === "unstage" ? "已取消暂存" : "已生成丢弃审批单");
   }));
+  $("cp-stage-all")?.addEventListener("click", () => runGitOp({ op: "stage", path: "." }, "已暂存全部变更"));
+  $("cp-discard-all")?.addEventListener("click", () => {
+    if (!confirm("丢弃全部未提交修改？将生成审批单「git checkout -- .」等待放行（不影响未跟踪的新文件）。")) return;
+    runGitOp({ op: "discard", path: "." }, "已生成全部丢弃审批单");
+  });
   box.querySelector("#cp-commit-btn")?.addEventListener("click", () => {
     const msg = box.querySelector("#cp-commit-msg").value.trim();
     if (!msg) return toast("提交信息不能为空", false);
@@ -2686,12 +2935,17 @@ async function init() {
   $("cp-reload").addEventListener("click", () => {
     const f = S.code.file;
     if (!f) return;
-    if (f.dirty && !confirm("放弃未保存修改并重新加载？")) return;
+    if (f.dirty && !confirmDiscardDirty("重新加载")) return;
     openFile(f.path);
   });
   $("cp-editor").addEventListener("input", onEditorInput);
+  // 行号列 / 当前行跟随：滚动同步 + 光标移动（点击 / 按键）重定位
+  $("cp-editor").addEventListener("scroll", syncEditorScroll);
+  for (const ev of ["click", "keyup", "focus"]) $("cp-editor").addEventListener(ev, positionCurLine);
   $("cp-editor").addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveFile(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveFile(); return; }
+    // Tab 缩进（Shift+Tab 反缩进）；未发生编辑时不拦默认行为
+    if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && editorIndent(e.shiftKey)) e.preventDefault();
   });
   $("cp-tabs").querySelectorAll(".cp-tab").forEach((b) => b.addEventListener("click", () => {
     S.code.rightTab = b.dataset.tab;
@@ -2735,8 +2989,9 @@ async function init() {
 
   // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导设置
   await refreshContext();
-  // 待审批角标：启动即拉一次，之后 60s 轮询兜底（WS 事件负责即时性）
+  // 待审批角标：启动即拉一次；即时性走 WS 事件 + 窗口聚焦校准，60s 轮询仅作兜底
   void refreshApprovalsBadge();
+  window.addEventListener("focus", () => void refreshApprovalsBadge());
   setInterval(() => void refreshApprovalsBadge(), 60000);
   // 思考强度本地记忆重设（网关重启后回到端点默认，此处恢复用户选择）
   if (S.effort !== "default") api.setEffort(S.effort).catch(() => {});
