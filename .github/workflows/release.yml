@@ -91,10 +91,18 @@ jobs:
           Copy-Item webui/dist bundle/webui-dist -Recurse
           Copy-Item README.md bundle/; Copy-Item docs bundle/docs -Recurse
           Compress-Archive -Path bundle/* -DestinationPath ${{ matrix.artifact }}
+      - name: 产物附加版本号
+        shell: bash
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          for f in exmachina-*.zip exmachina-*.tar.gz; do
+            [ -e "$f" ] || continue
+            mv "$f" "${f%.*}-$TAG.${f##*.}"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: server-${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          path: exmachina-*
 
   # ── 桌面端：tauri 壳(自带本地网关,单端口交付) ──────────────────────────────
   desktop:
@@ -158,10 +166,16 @@ jobs:
             Linux)   cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "${{ matrix.artifact }}" ;;
             macOS)   cp desktop/src-tauri/target/release/bundle/dmg/*.dmg           "${{ matrix.artifact }}" ;;
           esac
+      - name: 产物附加版本号
+        shell: bash
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          f="${{ matrix.artifact }}"
+          mv "$f" "${f%.*}-$TAG.${f##*.}"
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}
-          path: ${{ matrix.artifact }}
+          path: exmachina-*
 
   # ── 发布：打 tag + 汇总全平台产物发 GitHub Release ─────────────────────────────
   publish:
