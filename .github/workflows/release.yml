@@ -63,6 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 工具链安装（重试，防 rustup CDN 抖动）
+        shell: bash
         run: |
           for i in 1 2 3 4 5; do
             rustup toolchain install stable --profile minimal --no-self-update && break
@@ -128,6 +129,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 工具链安装（重试，防 rustup CDN 抖动）
+        shell: bash
         run: |
           for i in 1 2 3 4 5; do
             rustup toolchain install stable --profile minimal --no-self-update && break
