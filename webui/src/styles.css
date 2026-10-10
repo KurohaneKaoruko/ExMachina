@@ -2344,3 +2344,110 @@ input, textarea { caret-color: var(--accent); }
 @media (max-width: 860px) {
   .telemetry-bar { display: none; }
 }
+
+/* ============ HUD 强化层（品牌增量：页头刻度 / 侧栏品牌刻度 / 空态捕获环） ============
+   只新增选择器与容器，不改动任何既有类：页头底缘、侧栏品牌区底缘补一截「图纸标尺」，
+   空态则在其固有四弧徽记外再套一圈缓慢自转的径向刻度 —— 让「系统在线、此处暂无量」
+   可感。刻度一律用硬停渐变画出离散线段（与全站「纯色线段」画笔一致，不产生色彩过渡），
+   环形用 mask 裁出，不引入 border-radius 圆角。 */
+
+/* ── 页头底缘刻度收尾：与既有左侧起笔线共存（起笔线从 52px 起，标尺接在其后） ── */
+.page-head::after {
+  content: "";
+  position: absolute;
+  left: 52px; right: 0; bottom: 0; height: 4px;
+  background: repeating-linear-gradient(90deg, var(--tick-color) 0 1px, transparent 1px 6px);
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+/* ── 侧栏品牌区底缘刻度（.brand 的 ::after 已用作起笔短线，此处用 ::before 走底缘） ── */
+.brand::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0; height: 4px;
+  background: repeating-linear-gradient(90deg, var(--tick-color) 0 1px, transparent 1px 6px);
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+/* ── 空态捕获框：固有徽记 + 外圈径向刻度（自转） + 四向准星刻线 ── */
+.capture-frame {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--text);
+}
+/* 径向刻度环：repeating-conic-gradient 的硬停 = 离散纯色线段；mask 裁出环带（无圆角声明） */
+.capture-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-conic-gradient(from 0deg, var(--tick-color) 0deg 0.62deg, transparent 0.62deg 6deg);
+  -webkit-mask: radial-gradient(circle at 50% 50%,
+    transparent 0 calc(50% - 11px), #000 calc(50% - 11px) calc(50% - 3px), transparent calc(50% - 3px));
+  mask: radial-gradient(circle at 50% 50%,
+    transparent 0 calc(50% - 11px), #000 calc(50% - 11px) calc(50% - 3px), transparent calc(50% - 3px));
+  opacity: 0.62;
+  animation: cap-spin 76s linear infinite;
+}
+/* 四向准星刻线：贴在框的四端中点，指示「捕获轴」 */
+.capture-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(var(--accent) 0 0) no-repeat top center / 1px 9px,
+    linear-gradient(var(--accent) 0 0) no-repeat bottom center / 1px 9px,
+    linear-gradient(var(--accent) 0 0) no-repeat left center / 9px 1px,
+    linear-gradient(var(--accent) 0 0) no-repeat right center / 9px 1px;
+  opacity: 0.42;
+  pointer-events: none;
+}
+@keyframes cap-spin { to { transform: rotate(360deg); } }
+
+/* 品牌空态：徽记包进捕获框（各面板共用；尺寸只比徽记外扩一圈，不显著改变空态高度） */
+.brand-empty-figure { width: 124px; height: 124px; }
+
+/* 读数语义色：空态读数行与底边遥测条同口径（键青值白，状态转语义色） */
+.readout .v.ok { color: var(--green); }
+.readout .v.warn { color: var(--amber); }
+.readout .v.err { color: var(--red); }
+
+/* ── 对话空态：目标捕获盘（当前会话无消息且未运行时） ── */
+.chat-acquire {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 30px 16px 40px;
+  text-align: center;
+}
+.chat-acquire-figure { width: 248px; height: 248px; color: var(--accent); }
+.chat-acquire-figure .emblem { opacity: 0.9; }
+.chat-acquire-title {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 0.2em;
+  color: var(--text-hi);
+  text-transform: uppercase;
+}
+.chat-acquire-desc {
+  margin-top: 8px;
+  max-width: 460px;
+  font-size: 12px;
+  line-height: 1.85;
+  color: var(--muted);
+}
+.chat-acquire-readouts {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  justify-content: center;
+}

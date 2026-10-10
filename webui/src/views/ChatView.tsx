@@ -16,6 +16,7 @@ import { copyText } from "../components/Markdown";
 import { UsageBar } from "../components/UsageBar";
 import { SkeletonList } from "../components/SkeletonList";
 import { TurnOps } from "../components/HistoryOps";
+import { Emblem } from "../components/Emblem";
 import type { ChatMessage } from "../types";
 
 function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: number; ops?: React.ReactNode; orchLabel?: string }): React.ReactElement {
@@ -542,6 +543,21 @@ export function ChatView(): React.ReactElement {
           </Card>
         ))}
         <div className="chat-scroll">
+          {/* 空态：当前会话尚无消息且未在运行 —— 目标捕获盘（与桌面端空态同源母题） */}
+          {renderMessages.length === 0 && !running && (
+            <div className="chat-acquire">
+              <span className="capture-frame chat-acquire-figure">
+                <Emblem size={132} />
+              </span>
+              <div className="chat-acquire-title">{t("chat.acquireTitle")}</div>
+              <div className="chat-acquire-desc">{t("chat.acquireDesc")}</div>
+              <div className="chat-acquire-readouts">
+                <span className="readout"><span className="k">TGT</span><span className="v">{orchLabel}</span></span>
+                <span className="readout"><span className="k">GROUP</span><span className="v">{activeMeta?.name ?? activeGroup}</span></span>
+                <span className="readout"><span className="k">LINK</span><span className={`v ${wsConnected ? "ok" : "err"}`}>{wsConnected ? "ONLINE" : "RECONN"}</span></span>
+              </div>
+            </div>
+          )}
           {renderMessages.map(({ m, turn }) => (
             <MessageBubble
               key={m.id}

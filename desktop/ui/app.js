@@ -599,7 +599,43 @@ function loadChromeVersion() {
   req("/version").then((v) => {
     chromeVer = v?.version ?? "";
     renderChrome();
+    renderNavFoot();
   }).catch(() => {});
+}
+
+// ─────────────────── 整页 HUD 页头（设置 / 任务两个独立整页） ───────────────────
+// 独立整页此前直接堆内容卡片，缺「页」一级的框架语汇；这里补通栏读数带与左导航品牌区，
+// 读数键 / 值一律与底边遥测条同一套写法（[KEY] VALUE）。
+function pageHudHTML(title, en, readouts) {
+  const rs = (readouts ?? [])
+    .map(([k, v, cls]) =>
+      `<span class="readout"><span class="k">${esc(k)}</span><span class="v${cls ? ` ${cls}` : ""}">${esc(v)}</span></span>`)
+    .join("");
+  return (
+    `<span class="ph-mark">${brandMark("", 15)}</span>` +
+    `<span class="ph-title">${esc(title)}</span>` +
+    `<span class="ph-en">${esc(en)}</span>` +
+    `<span class="ph-rule"></span>` +
+    `<span class="ph-readouts">${rs}</span>`
+  );
+}
+
+/** 左导航品牌区（设置 / 任务两页共用），sub 为副标（如 SETTINGS / TASKS） */
+function navBrandHTML(sub) {
+  return (
+    `${brandMark("", 18)}` +
+    `<span class="sp-brand-text"><span class="sp-brand-name">EXMACHINA</span>` +
+    `<span class="sp-brand-sub">${esc(sub)}</span></span>`
+  );
+}
+
+/** 左导航底部版次读数：两页共用一份内容 */
+function renderNavFoot() {
+  const html = `<span class="readout"><span class="k">VER</span><span class="v">${esc(chromeVer || "dev")}</span></span>`;
+  for (const id of ["sp-foot", "tp-foot"]) {
+    const el = $(id);
+    if (el) el.innerHTML = html;
+  }
 }
 
 function setRunning(on) {
@@ -979,6 +1015,16 @@ function renderRight() {
   const units = Object.entries(S.live.units);
   const unitThink = Object.entries(S.live.unitThinking);
   $("rp-count").textContent = nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length}` : "";
+  // 头部读数：节点 / 运行中 / 子个体流 —— 与底边遥测条同语汇
+  const rpR = $("rp-readouts");
+  if (rpR) {
+    const liveN = nodes.filter((n) => ["dispatched", "running", "syncing", "arbitrating"].includes(n.status)).length;
+    rpR.innerHTML = nodes.length || units.length || unitThink.length
+      ? `<span class="readout"><span class="k">NODES</span><span class="v">${nodes.length}</span></span>` +
+        `<span class="readout"><span class="k">LIVE</span><span class="v${liveN ? " warn" : ""}">${liveN}</span></span>` +
+        `<span class="readout"><span class="k">UNIT</span><span class="v">${units.length}</span></span>`
+      : "";
+  }
   if (!nodes.length && !units.length && !unitThink.length && !S.reports.length) {
     body.innerHTML = `<div class="rp-empty"><div class="empty-mark">${brandMark("", 34)}</div><div>本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示；点击个体卡可进入其会话</div></div>`;
     rightSig = "";
@@ -1091,6 +1137,20 @@ function toast(msg, ok = true) {
 }
 
 function renderSettings() {
+  // 页头读数带：当前分类在全部类目中的序号 + 会话 / 链路读数（与底边遥测条同语汇）
+  const idx = SETTINGS_TABS.findIndex(([id]) => id === S.settingsTab);
+  const hud = $("sp-hud");
+  if (hud) {
+    hud.innerHTML = pageHudHTML("设置", "SETTINGS CONSOLE", [
+      ["SEC", `${String(Math.max(idx, 0) + 1).padStart(2, "0")}/${String(SETTINGS_TABS.length).padStart(2, "0")}`],
+      ["VIEW", SETTINGS_TABS[Math.max(idx, 0)]?.[1] ?? "—"],
+      ["SESS", String(S.sessions.length).padStart(2, "0")],
+      ["LINK", S.connected ? "ONLINE" : "RECONN", S.connected ? "ok" : "err"],
+    ]);
+  }
+  const brand = $("sp-brand");
+  if (brand) brand.innerHTML = navBrandHTML("settings");
+  renderNavFoot();
   // 竖排导航
   const tabs = $("sp-tabs");
   tabs.innerHTML = "";
@@ -2387,6 +2447,17 @@ const TASK_ST_COLOR = {
 const TASK_LEGEND = [["pending", "待派发"], ["running", "执行中"], ["done", "完成"], ["blocked", "受阻"], ["failed", "失败"]];
 
 function enterTasks() {
+  const brand = $("tp-brand");
+  if (brand) brand.innerHTML = navBrandHTML("tasks");
+  renderNavFoot();
+  const hud = $("tp-hud");
+  if (hud) {
+    hud.innerHTML = pageHudHTML("任务视图", "TASK GRAPH & LEDGER", [
+      ["NODES", "--"],
+      ["STATE", "SYNC…", "warn"],
+      ["SESS", String(S.sessions.length).padStart(2, "0")],
+    ]);
+  }
   $("tp-body").innerHTML = `<div class="loading-hint"><span class="mark-spin mark-accent">${brandMark("", 22)}</span><span>加载任务图与台账…</span></div>`;
   refreshTasks();
 }
@@ -2405,6 +2476,22 @@ function renderTasksPage(graph, session) {
   const body = $("tp-body");
   body.innerHTML = "";
   const nodes = graph?.nodes ?? [];
+  const doneN = nodes.filter((n) => n.status === "done").length;
+  const liveN = nodes.filter((n) => ["dispatched", "running", "syncing", "arbitrating"].includes(n.status)).length;
+  const failN = nodes.filter((n) => n.status === "failed").length;
+  // 页头读数带：节点 / 完成 / 运行 / 失败 —— 打开任务视图即可一眼读数
+  const hud = $("tp-hud");
+  if (hud) {
+    hud.innerHTML = pageHudHTML("任务视图", "TASK GRAPH & LEDGER", [
+      ["NODES", String(nodes.length).padStart(2, "0")],
+      ["DONE", `${String(doneN).padStart(2, "0")}/${String(nodes.length).padStart(2, "0")}`, nodes.length && doneN === nodes.length ? "ok" : ""],
+      ["LIVE", String(liveN).padStart(2, "0"), liveN ? "warn" : ""],
+      ["FAIL", String(failN).padStart(2, "0"), failN ? "err" : ""],
+    ]);
+  }
+  const brand = $("tp-brand");
+  if (brand) brand.innerHTML = navBrandHTML("tasks");
+  renderNavFoot();
   // —— 任务图：SVG 连线 DAG（依赖深度分层 + 状态色贝塞尔连线），点节点直聊子代理 ——
   const graphCard = setCard(`任务图 · ${nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length} 完成` : "空"}`);
   graphCard.appendChild(Object.assign(document.createElement("div"), {
@@ -2828,6 +2915,22 @@ function renderEditorState() {
     ${f.truncated ? `<span class="cp-chip cp-chip-warn">超过 200KB 已截断展示</span>` : ""}
     ${f.binary ? `<span class="cp-chip cp-chip-warn">非 UTF-8 内容</span>` : ""}
     <span class="cp-chip">${esc(fmtSize(f.size))}</span>`;
+  // 统计读数：行 / 字符 / 编码 / 修改态（有未保存改动时 MOD 转警示色）
+  const stats = $("cp-stats");
+  if (stats) {
+    if (!f) {
+      stats.innerHTML = "";
+    } else {
+      const text = $("cp-editor")?.value ?? f.content ?? "";
+      const lines = text ? text.split("\n").length : 0;
+      stats.innerHTML =
+        `<span class="cp-stat"><i>LN</i><b>${lines}</b></span>` +
+        `<span class="cp-stat"><i>CH</i><b>${text.length}</b></span>` +
+        `<span class="cp-stat"><i>ENC</i><b>${f.binary ? "BIN" : "UTF-8"}</b></span>` +
+        `<span class="cp-stat"><i>BYTES</i><b>${esc(fmtSize(f.size) || "0 B")}</b></span>` +
+        (f.dirty ? `<span class="cp-stat dirty"><i>MOD</i><b>●</b></span>` : "");
+    }
+  }
   // 截断 / 二进制（readonly）禁存：写回会把不完整内容覆盖到完整文件上
   $("cp-save").disabled = !f || f.readonly || !f.dirty;
   $("cp-reload").disabled = !f;

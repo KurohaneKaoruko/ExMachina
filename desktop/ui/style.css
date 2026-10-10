@@ -1250,6 +1250,87 @@ body::before {
 }
 .welcome-readout .readout .v { color: var(--text-dim); }
 
+/* ═══════════════════ HUD 整页层（设置 / 编码 / 任务 三个独立整页） ═══════════════════
+   三个整页此前只有内容卡片直接堆叠，缺少「页」这一级的框架语汇。此层补上：通栏页头
+   读数带、左导航品牌区与版次读数、编辑器统计读数、执行面板读数 —— 与对话页共用同一套
+   读数 / 刻度 / 角框语言，读数语汇与底边遥测条逐字一致。 */
+
+/* ── 通栏页头读数带：贴滚动容器顶缘常驻（sticky），底缘接一截标尺 ── */
+.page-hud {
+  position: sticky; top: 0; z-index: 6;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 24px 9px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--hud-line-strong);
+}
+.page-hud::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 5px;
+  background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 6px);
+  opacity: 0.45; pointer-events: none;
+}
+.page-hud .ph-mark { display: inline-flex; color: var(--accent); flex: none; }
+.page-hud .ph-mark svg { display: block; }
+.page-hud .ph-title { font-size: 13px; font-weight: 600; letter-spacing: 0.14em; color: var(--text); white-space: nowrap; }
+.page-hud .ph-en {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 2px;
+  color: var(--text-faint); text-transform: uppercase; white-space: nowrap;
+}
+/* 中段弹性标尺：把页名与右侧读数簇分开，同时充当刻度引导线 */
+.page-hud .ph-rule {
+  flex: 1; min-width: 24px; height: 5px;
+  background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 6px);
+  opacity: 0.4;
+}
+.page-hud .ph-readouts { display: flex; align-items: center; gap: 14px; flex: none; }
+.page-hud .readout { font-size: 11px; }
+.page-hud .readout .k { font-size: 9.5px; }
+
+/* ── 设置页左导航：品牌区（顶）+ 版次读数（底） ── */
+.sp-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; color: var(--accent); }
+.sp-brand svg { display: block; flex: none; }
+.sp-brand-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sp-brand-name { font-size: 12px; font-weight: 700; letter-spacing: 0.16em; color: var(--text); }
+.sp-brand-sub {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 1.6px;
+  color: var(--text-faint); text-transform: uppercase;
+}
+.sp-nav-rule {
+  height: 5px; margin: 0 -12px 12px;
+  background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 6px);
+  opacity: 0.38;
+}
+.sp-foot {
+  margin-top: auto; padding-top: 10px; border-top: 1px solid var(--hud-line);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.sp-foot .readout { font-size: 11px; }
+.sp-foot .readout .k { font-size: 9.5px; }
+/* ── 编码页：编辑器统计读数（行 / 字符 / 编码 / 大小） ── */
+.cp-stats {
+  display: flex; align-items: center; gap: 11px; flex: none;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cp-stats .cp-stat { display: inline-flex; align-items: baseline; gap: 4px; }
+.cp-stats .cp-stat i {
+  font-style: normal; font-size: 9px; letter-spacing: 1.2px;
+  color: var(--accent); opacity: 0.72; text-transform: uppercase;
+}
+.cp-stats .cp-stat b { font-weight: 500; color: var(--text-dim); }
+.cp-stats .cp-stat.dirty i { color: var(--warn); opacity: 1; }
+/* 侧栏工作区标题下的刻度收尾 */
+.cp-side-head { position: relative; }
+.cp-side-head::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 4px;
+  background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 6px);
+  opacity: 0.35; pointer-events: none;
+}
+
+/* ── 右栏执行面板：头部读数（与底边遥测条同语汇） ── */
+.rp-readouts { display: flex; align-items: center; gap: 12px; }
+.rp-readouts .readout { font-size: 10.5px; }
+.rp-readouts .readout .k { font-size: 9px; }
+
 /* ── 动效降级：系统开启「减少动态效果」时全部动画与过渡趋于瞬时 ── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

@@ -90,7 +90,7 @@
 
       <!-- 右栏：子个体执行面板（任务派发图 + 各子个体实时流） -->
       <aside id="rightpanel">
-        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span><button id="rp-full" class="rp-full" title="整页任务视图（任务图 + 台账）">任务视图 ›</button></div>
+        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span><span id="rp-readouts" class="rp-readouts"></span><button id="rp-full" class="rp-full" title="整页任务视图（任务图 + 台账）">任务视图 ›</button></div>
         <div id="rp-body"></div>
       </aside>
     </div>
@@ -99,10 +99,16 @@
     <!-- 设置（独立整页）：原生管理面，直连环口 API -->
     <div id="settings-page" class="hidden">
       <aside class="sp-nav">
+        <div class="sp-brand" id="sp-brand"></div>
+        <div class="sp-nav-rule"></div>
         <button id="sp-back" class="sp-back">‹ 返回对话</button>
         <nav id="sp-tabs"></nav>
+        <div class="sp-foot" id="sp-foot"></div>
       </aside>
-      <main class="sp-main"><div id="sp-body"></div></main>
+      <main class="sp-main">
+        <div class="page-hud" id="sp-hud"></div>
+        <div id="sp-body"></div>
+      </main>
     </div>
 
     <!-- 编码（独立整页）：文件树 + 编辑器 + 变更/Git 面板，直连 fs / git 环口 -->
@@ -117,6 +123,7 @@
         <header class="cp-editor-head">
           <span id="cp-file-path" class="cp-file-path">未打开文件</span>
           <span id="cp-file-state" class="cp-file-state"></span>
+          <span id="cp-stats" class="cp-stats"></span>
           <span class="cp-editor-ops">
             <button id="cp-reload" class="set-btn">重新加载</button>
             <button id="cp-save" class="set-btn">保存（Ctrl+S）</button>
@@ -147,11 +154,17 @@
     <!-- 任务（独立整页）：当前会话任务图 + 台账 -->
     <div id="tasks-page" class="hidden">
       <aside class="sp-nav">
+        <div class="sp-brand" id="tp-brand"></div>
+        <div class="sp-nav-rule"></div>
         <button id="tp-back" class="sp-back">‹ 返回对话</button>
         <div class="tp-nav-title">任务视图</div>
         <div class="tp-nav-sub">当前会话的任务图（graph 接口 + graph.updated 推送）与任务台账（goal / 验收 / 证据 / 风险）</div>
+        <div class="sp-foot" id="tp-foot"></div>
       </aside>
-      <main class="sp-main"><div id="tp-body"></div></main>
+      <main class="sp-main">
+        <div class="page-hud" id="tp-hud"></div>
+        <div id="tp-body"></div>
+      </main>
     </div>
 
     <!-- 通用模态：会话操作（重命名 / 分叉 / 撤销 / 归档）等轻量交互 -->

@@ -115,6 +115,8 @@ export const zh = {
   "chat.deleteConfirm": "删除该会话及其全部记录？",
   "chat.noMatch": "无匹配会话",
   "chat.noSessions": "尚无会话",
+  "chat.acquireTitle": "等待指令",
+  "chat.acquireDesc": "在下方输入第一条消息，当前交互目标会接单并拆解执行；需要多人协同时切到智能体组，让指挥体派发给子个体。",
   "chat.wsDown": "与网关的实时连接断开，重连中…",
   "chat.thinking": "思考",
   "chat.approvalTitle": "待人工审批",

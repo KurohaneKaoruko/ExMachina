@@ -117,6 +117,8 @@ export const en: Partial<Dict> = {
   "chat.deleteConfirm": "Delete this session and all its records?",
   "chat.noMatch": "No matching sessions",
   "chat.noSessions": "No sessions yet",
+  "chat.acquireTitle": "Awaiting instructions",
+  "chat.acquireDesc": "Type your first message below — the current target takes the job and breaks it down. Switch to a group target to let the orchestrator dispatch to sub-agents.",
   "chat.wsDown": "Realtime gateway channel lost, reconnecting…",
   "chat.thinking": "Thinking",
   "chat.approvalTitle": "Awaiting approval",
