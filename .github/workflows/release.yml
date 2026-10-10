@@ -197,8 +197,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ needs.version.outputs.tag }}" -m "release ${{ needs.version.outputs.tag }}" "${{ github.sha }}"
-          git push origin "${{ needs.version.outputs.tag }}"
+          git tag -a "${{ needs.version.outputs.tag }}" -m "release ${{ needs.version.outputs.tag }}" "${{ github.sha }}" || echo "tag 已存在，跳过创建"
+          git push origin "refs/tags/${{ needs.version.outputs.tag }}" || echo "远端 tag 已存在，跳过推送（Release 将挂到既有 tag）"
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:

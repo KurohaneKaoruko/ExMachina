@@ -1,38 +1,41 @@
 /* ============================================================
-   EXMACHINA · 神机主题（DEUS EX MACHINA）—— 扁平化科技感
-   纯黑底 #000 / 纯白字 #fff / 纯色硬朗组件
+   EXMACHINA · 神机主题（DEUS EX MACHINA）— HUD/FUI 皮肤 × 扁平硬朗底盘
+   纯黑底 / 细青线几何结构 / 四角 L 形角框 / 方括号技术注记 / 等宽大写小号标签
    ------------------------------------------------------------
-   硬朗纪律（全覆盖，此前柔光方案作废）：
-   1) 禁用一切渐变填充 —— 填充全为纯色
-   2) 层次只靠纯黑阶（#000 / #0a0a0a / #111）+ 1px 实线边框（#2a2a2a 或低透明纯白）
-   3) 直角（borderRadius = 0）+ 扁平填充；无柔光阴影、无 blur 辉光
-   4) 强调色为纯色且按语义取用：#00e5ff 青 / #7c8cff 蓝 / #00e676 绿 / #ff1744 红 / #ffea00 黄
-   5) 动效保留：transform/opacity 微交互、stagger 入场、视图切换过渡
+   色彩纪律（纯黑底，纪律优先，全部纯色填充，零渐变零辉光）：
+   1) 线条层级 = 暗青 #0a4a4d（结构线）→ #0e6e6e（强调线）→ #00e5ff（高亮/交互）
+   2) 文字 = 纯白主体 + 青色技术注记 + 灰 #8a9aa0 辅助
+   3) 点缀 = 红 #ff1744（警示/错误）、黄 #ffea00（高亮 chip/重要状态）
+   面板语汇：面板不用完整 1px 边框框死 —— 四角画 L 形短线（伪元素），
+   面板本体仅极淡底色；行/条目级元素保留 1px 细线。悬浮层（弹窗/下拉）实线框。
+   可读性底线：中文正文保持无衬线正常排版，等宽大写只用于注记类元素。
    ============================================================ */
 :root {
   --bg: #000000;
-  --bg-panel: #0a0a0a;
-  --bg-raise: #111111;
-  --line: #2a2a2a;
-  --line-strong: #3d3d3d;
+  --bg-panel: #020c0e;
+  --bg-raise: #04161a;
+  --line: #0a4a4d;
+  --line-strong: #0e6e6e;
   --accent: #00e5ff;
   --accent-rgb: 0, 229, 255;
-  --accent-dim: rgba(var(--accent-rgb), 0.14);
+  --accent-dim: rgba(var(--accent-rgb), 0.12);
   --accent-08: rgba(var(--accent-rgb), 0.08);
-  --accent-04: rgba(var(--accent-rgb), 0.05);
-  --accent-30: rgba(var(--accent-rgb), 0.35);
+  --accent-04: rgba(var(--accent-rgb), 0.04);
+  --accent-30: rgba(var(--accent-rgb), 0.3);
   --blue: #7c8cff;
   --amber: #ffea00;
   --green: #00e676;
   --red: #ff1744;
-  --text: #ffffff;
+  --text: #d9e4e7;
   --text-hi: #ffffff;
-  --muted: #a6a6a6;
-  --muted-dim: #666666;
+  --muted: #8a9aa0;
+  --muted-dim: #5a6a72;
   --mono: "JetBrains Mono", "Cascadia Code", ui-monospace, "SF Mono", Consolas, monospace;
 
-  /* 图纸刻度（SVG 用）：低透明纯白 */
-  --tick-color: rgba(255, 255, 255, 0.28);
+  /* 图纸刻度（SVG/伪元素用）与坐标网格：低透明青 */
+  --tick-color: rgba(var(--accent-rgb), 0.34);
+  --grid-size: 40px;
+  --grid-color: rgba(var(--accent-rgb), 0.028);
 }
 
 /* 主题色覆盖（html[data-theme]，选择持久化于 localStorage）：全部纯色 */
@@ -45,10 +48,42 @@
 html, body, #root { height: 100%; margin: 0; }
 
 body {
-  background: var(--bg);
+  background:
+    /* 纵横坐标网格：细青线，工程图纸底（硬停重复渐变 = 纯色线段，非色彩过渡） */
+    repeating-linear-gradient(90deg, var(--grid-color) 0 1px, transparent 1px var(--grid-size)),
+    repeating-linear-gradient(0deg, var(--grid-color) 0 1px, transparent 1px var(--grid-size)),
+    var(--bg);
   color: var(--text);
   /* 等宽数字：所有读数对齐，程序感来源之一 */
   font-variant-numeric: tabular-nums;
+}
+
+/* 扫描线（静态）：极淡 CRT 质感 */
+#root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.013) 0 1px, transparent 1px 3px);
+  z-index: 999;
+}
+
+/* 扫描线（动态）：一条极淡光带缓慢扫过全屏（HUD 侦察感；reduced-motion 全局降级见文末） */
+#root::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 9vh;
+  pointer-events: none;
+  z-index: 998;
+  background: repeating-linear-gradient(0deg, rgba(var(--accent-rgb), 0.016) 0 1px, transparent 1px 4px);
+  animation: hud-sweep 12s linear infinite;
+}
+@keyframes hud-sweep {
+  from { transform: translateY(-12vh); }
+  to { transform: translateY(112vh); }
 }
 
 /* 滚动条：细轨道 + 纯色滑块 */
@@ -228,38 +263,51 @@ body {
 
 /* ============ HUD 面板（角标框）：1.5px 纯色直角刻线 ============ */
 .hud { position: relative; }
-.hud::before, .hud::after {
+/* HUD 面板 = 四角 L 形角框：每个伪元素是一条通宽窄带，用多层 background 各画一块
+   纯色矩形（linear-gradient(C 0 0) 是「整块纯色」的画笔，硬停无色彩过渡），
+   上下两条带合出四只 L 角（2px 厚 × 12px 长） */
+.hud::before,
+.hud::after {
   content: "";
   position: absolute;
-  width: 12px; height: 12px;
+  left: 0;
+  right: 0;
+  height: 12px;
   pointer-events: none;
   z-index: 3;
 }
 .hud::before {
-  top: -1px; left: -1px;
-  border-top: 1.5px solid var(--accent);
-  border-left: 1.5px solid var(--accent);
+  top: 0;
+  background:
+    linear-gradient(var(--accent) 0 0) no-repeat left top / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat left top / 2px 12px,
+    linear-gradient(var(--accent) 0 0) no-repeat right top / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat right top / 2px 12px;
 }
 .hud::after {
-  bottom: -1px; right: -1px;
-  border-bottom: 1.5px solid var(--accent);
-  border-right: 1.5px solid var(--accent);
+  bottom: 0;
+  background:
+    linear-gradient(var(--accent) 0 0) no-repeat left bottom / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat left bottom / 2px 12px,
+    linear-gradient(var(--accent) 0 0) no-repeat right bottom / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat right bottom / 2px 12px;
 }
 
-/* antd 卡片统一压成硬朗面板：直角 + 1px 边框 + 纯色填充 */
+/* antd 卡片统一压成 HUD 面板：无整框（!important 压过 antd 运行时注入样式）、
+   极淡青底，四角由 .hud 角框承担 */
 .ant-card {
-  border-radius: 0;
-  border-color: var(--line);
+  border-radius: 0 !important;
+  border: none !important;
   background: var(--bg-panel);
 }
 .ant-card .ant-card-head {
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line) !important;
   border-radius: 0;
   min-height: 42px;
   padding-inline: 14px;
   background: transparent;
 }
-/* 卡片标题前的小节标记 */
+/* 卡片标题前的「::」技术注记符 */
 .ant-card .ant-card-head-title {
   position: relative;
   font-size: 13.5px;
@@ -267,13 +315,11 @@ body {
   overflow: visible;
 }
 .ant-card .ant-card-head-title::before {
-  content: "";
-  display: inline-block;
-  width: 3px;
-  height: 13px;
+  content: "::";
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--accent);
   margin-right: 8px;
-  vertical-align: -2px;
-  background: var(--accent);
 }
 .ant-table { border-radius: 0; background: transparent; }
 .ant-table-thead > tr > th {
@@ -281,7 +327,7 @@ body {
   font-size: 11px;
   letter-spacing: 1.5px;
   text-transform: uppercase;
-  background: var(--bg-raise) !important;
+  background: rgba(var(--accent-rgb), 0.04) !important;
   border-bottom: 1px solid var(--line-strong) !important;
   position: relative;
 }
@@ -301,14 +347,49 @@ body {
   border-radius: 0;
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.08em;
   border-color: var(--line-strong);
 }
-.ant-btn { border-radius: 0; }
-.ant-btn-primary { font-weight: 600; }
-.ant-btn-default:not(:disabled):hover { border-color: var(--accent-30); }
+/* 按钮：方角 chip 式 —— 等宽大写小号 + 字距；次级 hover 反色（青底黑字），主按钮纯青填充黑字 */
+.ant-btn { border-radius: 0; font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; }
+.ant-btn-sm { font-size: 11px; letter-spacing: 0.08em; }
+.ant-btn-primary:not(.ant-btn-dangerous) {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #000 !important;
+  font-weight: 600;
+}
+.ant-btn-primary:not(.ant-btn-dangerous):not(:disabled):hover {
+  background: #86f0ff !important;
+  border-color: #86f0ff !important;
+  color: #000 !important;
+}
+.ant-btn-default:not(.ant-btn-dangerous) {
+  background: transparent !important;
+  border-color: var(--line-strong) !important;
+  color: var(--text) !important;
+}
+.ant-btn-default:not(.ant-btn-dangerous):not(:disabled):hover {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #000 !important;
+}
+/* 输入框：去整框，仅底线；聚焦变青 + 底线微光；等宽字 */
 .ant-input, .ant-input-affix-wrapper, .ant-select-selector, .ant-input-number {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid var(--line-strong) !important;
   border-radius: 0 !important;
+  box-shadow: none !important;
+  font-family: var(--mono);
+}
+.ant-input:focus,
+.ant-input-affix-wrapper:focus,
+.ant-input-affix-wrapper-focused,
+.ant-input-number-focused,
+.ant-select-focused .ant-select-selector {
+  border-bottom-color: var(--accent) !important;
+  box-shadow: 0 1px 0 0 rgba(var(--accent-rgb), 0.45) !important;
 }
 .ant-modal-content, .ant-drawer-content { border-radius: 0; }
 .ant-modal-header { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
@@ -351,8 +432,17 @@ body {
   margin: 0;
   font-size: 17px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
   color: var(--text-hi);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.page-title::before {
+  content: "▸";
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent);
 }
 .page-en {
   font-family: var(--mono);
@@ -393,9 +483,12 @@ body {
 .hi { color: var(--text-hi); }
 
 /* 数据读数：等宽 + 标签前缀 */
+/* 数据读数：[KEY] VALUE 技术注记形态 —— 键青值白，方括号由伪元素补 */
 .readout { display: inline-flex; align-items: baseline; gap: 6px; font-family: var(--mono); font-size: 12px; }
-.readout .k { color: var(--muted-dim); font-size: 10.5px; letter-spacing: 1.4px; text-transform: uppercase; }
-.readout .v { color: var(--accent); }
+.readout .k { color: var(--accent); font-size: 10.5px; letter-spacing: 1.4px; text-transform: uppercase; opacity: 0.9; }
+.readout .k::before { content: "["; opacity: 0.7; }
+.readout .k::after { content: "]"; opacity: 0.7; }
+.readout .v { color: var(--text-hi); }
 
 /* ============ 对话 ============ */
 /* gap：主对话区与会话栏的呼吸间距（row-reverse 下 gap 同样生效） */
@@ -493,6 +586,17 @@ body {
   font-weight: 600;
   color: var(--text-hi);
   letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 标题前的十字准星 */
+.console-title::before {
+  content: "+";
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--accent);
 }
 .console-sep {
   width: 1px;
@@ -548,7 +652,10 @@ body {
 .tl-sync::before { background: var(--green); }
 .tl-arbitration::before { background: var(--amber); }
 .tl-error::before { background: var(--red); }
-.live-card { border-style: dashed; background: var(--accent-04) !important; }
+.live-card {
+  border: 1px dashed var(--line-strong) !important;
+  background: var(--accent-04) !important;
+}
 .live-pre {
   white-space: pre-wrap; word-break: break-all;
   max-height: 260px; overflow: auto;
@@ -892,8 +999,8 @@ body {
 /* ============ 组总览与会话管理 ============ */
 .overview-chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
 .chip {
-  border: 1px solid var(--line);
-  background: var(--bg-raise);
+  border: 1px solid var(--line-strong);
+  background: rgba(var(--accent-rgb), 0.03);
   padding: 9px 16px;
   min-width: 88px;
   text-align: center;
@@ -1096,24 +1203,22 @@ body {
   justify-content: center;
   background: var(--bg);
 }
-/* 登录页四角测量标记 */
-.login-wrap::before,
-.login-wrap::after {
+/* 登录页四角 L 形角框（外扩 22px 站位；单伪元素 8 层纯色块） */
+.login-wrap::before {
   content: "";
   position: absolute;
-  width: 26px; height: 26px;
+  inset: 22px;
   pointer-events: none;
   z-index: 3;
-}
-.login-wrap::before {
-  top: 22px; left: 22px;
-  border-top: 1px solid var(--line-strong);
-  border-left: 1px solid var(--line-strong);
-}
-.login-wrap::after {
-  bottom: 22px; right: 22px;
-  border-bottom: 1px solid var(--line-strong);
-  border-right: 1px solid var(--line-strong);
+  background:
+    linear-gradient(var(--accent-30) 0 0) no-repeat left top / 26px 1px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat left top / 1px 26px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat right top / 26px 1px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat right top / 1px 26px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat left bottom / 26px 1px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat left bottom / 1px 26px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat right bottom / 26px 1px,
+    linear-gradient(var(--accent-30) 0 0) no-repeat right bottom / 1px 26px;
 }
 .login-core { position: relative; z-index: 2; text-align: center; width: 420px; }
 /* 四弧纹样：纯白线条，入场浮升 */
@@ -1769,7 +1874,7 @@ body {
 .chat-shell { gap: 12px; }
 .cap-grid { gap: 6px 12px; }
 .cap-card { margin-top: 10px; }
-.ant-card .ant-card-body { padding: 12px; }
+.ant-card .ant-card-body { padding: 12px !important; }
 .ant-card .ant-card-head { min-height: 38px; }
 .ant-modal .ant-form-item { margin-bottom: 14px; }
 
@@ -1844,9 +1949,9 @@ input, textarea { caret-color: var(--accent); }
   border-radius: 0;
 }
 
-/* 卡片悬停：边框微亮（网格卡片统一反馈） */
-.skill-grid > .ant-card { transition: border-color 0.15s ease; }
-.skill-grid > .ant-card:hover { border-color: var(--accent-30); }
+/* 卡片悬停：极淡青底反馈（网格卡片统一；整框已移除，反馈走底色+位移） */
+.skill-grid > .ant-card { transition: background 0.15s ease; }
+.skill-grid > .ant-card:hover { background: rgba(var(--accent-rgb), 0.045); }
 
 /* 表格行悬停反馈（plain-table 与 antd 表格统一） */
 .plain-table tbody tr { transition: background 0.12s ease; }
@@ -2083,7 +2188,7 @@ input, textarea { caret-color: var(--accent); }
 
 @media (max-width: 480px) {
   .app-content { padding: 10px 10px 14px; }
-  .ant-card .ant-card-body { padding: 10px; }
+  .ant-card .ant-card-body { padding: 10px !important; }
   .usage-body { max-height: 240px; }
   .nexus-link-row { flex-wrap: wrap; }
   .nexus-link-row .nexus-endpoint { max-width: 100%; }
