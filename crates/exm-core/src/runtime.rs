@@ -83,12 +83,14 @@ impl AgentRuntime {
         let mut usage_completion: u64 = 0;
         let mut last_model = String::new();
         // 原生 function calling：按白名单生成工具 schema + 该个体可见的 MCP 工具
-        // （web_search / computer 仅在后端就绪时下发——不承诺不存在的能力）
-        let mut specs = crate::tools::ToolGateway::tool_specs(
+        // （web_search / computer 仅在后端就绪时下发——不承诺不存在的能力；
+        //   文件记忆模式下 memory_write/link 必然失败，同样不下发）
+        let mut specs = crate::tools::ToolGateway::tool_specs_gated(
             &order.tool_allowlist,
             self.tools.search_ready(),
             self.tools.browser_ready(),
             self.tools.computer_ready(),
+            self.tools.memory_deep(),
         );
         // 声明式自定义工具（按 agents 可见性）与 MCP 第三方工具一并下发
         specs.extend(self.tools.custom_specs_for(&def.identifier));
@@ -261,11 +263,14 @@ impl AgentRuntime {
         let mut usage_completion: u64 = 0;
         let mut last_model = String::new();
 
-        let mut specs = crate::tools::ToolGateway::tool_specs(
+        // 原生 function calling：按白名单生成工具 schema + 该个体可见的 MCP 工具
+        // （后端未就绪 / 模式不支持的工具不下发——不承诺不存在的能力）
+        let mut specs = crate::tools::ToolGateway::tool_specs_gated(
             &def.tools,
             self.tools.search_ready(),
             self.tools.browser_ready(),
             self.tools.computer_ready(),
+            self.tools.memory_deep(),
         );
         specs.extend(self.tools.custom_specs_for(&def.identifier));
         specs.extend(self.tools.mcp().tool_snapshot_for(&def.identifier));

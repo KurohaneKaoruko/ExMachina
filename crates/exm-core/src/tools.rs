@@ -525,12 +525,23 @@ pub async fn execute_shell_with(
             let err_lock = err_buf.lock();
             let partial = String::from_utf8_lossy(&out_lock);
             let partial_err = String::from_utf8_lossy(&err_lock);
+            // 截断必须显式声明：半截输出若无标记，模型会把不完整结果当完整结论
+            const PARTIAL_CAP: usize = 2000;
+            const PARTIAL_ERR_CAP: usize = 1000;
+            let partial_total = partial.chars().count();
             let mut msg = format!(
                 "命令超时（{timeout_secs}s）已终止；终止前输出：\n{}",
-                partial.chars().take(2000).collect::<String>()
+                partial.chars().take(PARTIAL_CAP).collect::<String>()
             );
+            if partial_total > PARTIAL_CAP {
+                msg.push_str(&format!("\n…（已截断：终止前输出共 {partial_total} 字符，仅保留前 {PARTIAL_CAP}）"));
+            }
             if !partial_err.trim().is_empty() {
-                msg.push_str(&format!("\n[stderr] {}", partial_err.chars().take(1000).collect::<String>()));
+                let err_total = partial_err.chars().count();
+                msg.push_str(&format!("\n[stderr] {}", partial_err.chars().take(PARTIAL_ERR_CAP).collect::<String>()));
+                if err_total > PARTIAL_ERR_CAP {
+                    msg.push_str(&format!("\n…（stderr 已截断：共 {err_total} 字符）"));
+                }
             }
             ToolResult::err(msg)
         }
@@ -543,14 +554,57 @@ pub async fn execute_shell_with(
             if let Some(t) = err_task {
                 let _ = t.await;
             }
-            let text = String::from_utf8_lossy(&out_buf.lock()).to_string();
-            let err = String::from_utf8_lossy(&err_buf.lock()).to_string();
-            let mut text = text.chars().take(8000).collect::<String>();
-            if !err.trim().is_empty() {
-                text.push_str("\n[stderr] ");
-                text.push_str(&err.chars().take(2000).collect::<String>());
+            let raw_out = String::from_utf8_lossy(&out_buf.lock()).to_string();
+            let raw_err = String::from_utf8_lossy(&err_buf.lock()).to_string();
+            // 截断必须显式声明：半截输出若无标记，模型会把不完整结果当完整结论
+            // （典型误判：测试/构建日志尾部被切，把半路输出读成「成功」）
+            const OUT_CAP: usize = 8000;
+            const ERR_CAP: usize = 2000;
+            let out_total = raw_out.chars().count();
+            let mut text: String = raw_out.chars().take(OUT_CAP).collect();
+            if out_total > OUT_CAP {
+                text.push_str(&format!("\n…（输出已截断：仅保留前 {OUT_CAP} 字符，共 {out_total} 字符；完整输出可用重定向落盘后 read）"));
             }
-            ToolResult { ok: status.success(), output: text, error: None, images: Vec::new() }
+            if !raw_err.trim().is_empty() {
+                let err_total = raw_err.chars().count();
+                text.push_str("\n[stderr] ");
+                text.push_str(&raw_err.chars().take(ERR_CAP).collect::<String>());
+                if err_total > ERR_CAP {
+                    text.push_str(&format!("\n…（stderr 已截断：共 {err_total} 字符）"));
+                }
+            }
+            if status.success() {
+                ToolResult { ok: true, output: text, error: None, images: Vec::new() }
+            } else {
+                // 失败必须可诊断：退出码与输出摘要必须进 error——
+                // 回灌层（runtime::tool_feedback）与事件/审计摘要只取 error 字段，
+                // 只置 ok=false 而 error 留空的话，模型与用户看到的失败原因就是一句空话。
+                // output 保留全文：审批代执行等老调用方仍按 output 取输出（向后兼容）。
+                let code = status.code().unwrap_or(-1);
+                let out_tail: String = {
+                    let chars: Vec<char> = raw_out.chars().collect();
+                    let start = chars.len().saturating_sub(2000);
+                    chars[start..].iter().collect()
+                };
+                let mut reason = format!("命令失败（退出码 {code}）");
+                if out_tail.trim().is_empty() && raw_err.trim().is_empty() {
+                    reason.push_str("；无任何输出");
+                } else {
+                    reason.push_str("；输出摘要：\n");
+                    if !out_tail.trim().is_empty() {
+                        reason.push_str(&out_tail);
+                    }
+                    if !raw_err.trim().is_empty() {
+                        let err_tail: String = {
+                            let chars: Vec<char> = raw_err.chars().collect();
+                            let start = chars.len().saturating_sub(1000);
+                            chars[start..].iter().collect()
+                        };
+                        reason.push_str(&format!("\n[stderr 尾部] {err_tail}"));
+                    }
+                }
+                ToolResult { ok: false, output: text, error: Some(reason), images: Vec::new() }
+            }
         }
     }
 }
@@ -635,6 +689,13 @@ pub struct ToolGateway {
     custom: Vec<crate::config::CustomTool>,
     /// 记忆库（memory_read/write/link 三工具的受控入口；组隔离在工具层强制）
     memory: Option<Arc<crate::memory::MemoryStore>>,
+    /// 深层记忆开关（config.memory.enabled）。false = 文件记忆模式：
+    /// memory_read 改读 memory.md（与规划注入同源），memory_write/link 拒绝并引导。
+    /// 为什么写工具要拒绝而非照写数据库：文件记忆模式下规划面只注入 memory.md，
+    /// 写进数据库的知识永远不会被召回（写入黑洞）——静默成功比失败更伤。
+    memory_deep: bool,
+    /// memory.md 路径（文件记忆模式的读取源；与 orchestrator 注入用同一路径与同一 8000 字符上限）
+    memory_md_path: Option<PathBuf>,
 }
 
 impl ToolGateway {
@@ -663,6 +724,9 @@ impl ToolGateway {
             mcp: crate::mcp::McpRegistry::shared(),
             custom: Vec::new(),
             memory: None,
+            // 默认深层记忆开启 = 历史行为（未接线 memory 模式的调用方零感知）
+            memory_deep: true,
+            memory_md_path: None,
         }
     }
 
@@ -670,6 +734,19 @@ impl ToolGateway {
     pub fn with_memory(mut self, memory: Arc<crate::memory::MemoryStore>) -> Self {
         self.memory = Some(memory);
         self
+    }
+
+    /// 注入记忆模式（config.memory.enabled + memory_md_path）。
+    /// `deep=false` 进入文件记忆模式：三工具口径与规划注入对齐（read 读 md、write/link 拒绝并引导）。
+    pub fn with_memory_mode(mut self, deep: bool, md_path: PathBuf) -> Self {
+        self.memory_deep = deep;
+        self.memory_md_path = Some(md_path);
+        self
+    }
+
+    /// 深层记忆是否开启（工具 schema 下发口径用）
+    pub fn memory_deep(&self) -> bool {
+        self.memory_deep
     }
 
     /// 注入联网搜索后端配置（未配置时 web_search 不下发给模型）
@@ -1163,6 +1240,27 @@ impl ToolGateway {
         specs
     }
 
+    /// 同 [`Self::tool_specs`]，额外按记忆模式收敛 schema：文件记忆模式下
+    /// memory_write / memory_link 必然失败，不下发（与 web_search/browser 的
+    /// 「后端未就绪不承诺」同一口径）；memory_read 保留——读 memory.md 仍有意义。
+    pub fn tool_specs_gated(
+        allowlist: &[ToolName],
+        search_ready: bool,
+        browser_ready: bool,
+        computer_ready: bool,
+        memory_deep: bool,
+    ) -> Vec<crate::provider::ToolSpec> {
+        let mut specs = Self::tool_specs(allowlist, search_ready, browser_ready, computer_ready);
+        if !memory_deep {
+            let drop: Vec<&str> = [ToolName::MemoryWrite, ToolName::MemoryLink]
+                .iter()
+                .map(|t| t.key())
+                .collect();
+            specs.retain(|s| !drop.contains(&s.name.as_str()));
+        }
+        specs
+    }
+
     /// 执行内置工具（按枚举）：白名单外拒绝 → preTool 钩子（可拦截）→ 执行 → 结果落盘 → postTool 钩子 → 审计
     pub async fn execute(
         &self,
@@ -1416,10 +1514,14 @@ impl ToolGateway {
 
     /// memory_read：组内检索（主智能体全层视角 = 群体 + 所有个体私有；个体 = 私有 + 群体）。
     /// 组隔离在工具层强制：范围恒为「激活组 + 全局条目」，其他组条目不可见。
+    /// 文件记忆模式（深层记忆关闭）：回落 memory.md 全文——与规划注入同源，口径一致。
     fn tool_memory_read(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
         let Some(memory) = &self.memory else {
             return ToolResult::err("记忆系统未接入（内部装配缺失）");
         };
+        if !self.memory_deep {
+            return self.file_memory_read();
+        }
         let Some(query) = args.get("query").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
             return ToolResult::err("query 不能为空");
         };
@@ -1463,11 +1565,39 @@ impl ToolGateway {
         }
     }
 
+    /// 文件记忆模式的 memory_read：返回 memory.md 内容（与规划注入同源、同一 8000 字符上限）。
+    /// 为什么不查数据库：文件记忆模式下规划面只注入 memory.md——
+    /// 工具看到的与规划看到的不一致，本身就是行为分裂。
+    fn file_memory_read(&self) -> ToolResult {
+        let Some(path) = &self.memory_md_path else {
+            return ToolResult::err("记忆系统未接入（内部装配缺失）");
+        };
+        match std::fs::read_to_string(path) {
+            Ok(md) if !md.trim().is_empty() => {
+                let total = md.chars().count();
+                let trimmed: String = md.chars().take(8000).collect();
+                let note = if total > 8000 {
+                    format!("\n…（已截断：memory.md 共 {total} 字符，仅保留前 8000）")
+                } else {
+                    String::new()
+                };
+                ToolResult::ok(format!("文件记忆（memory.md，深层记忆已关闭）：\n{trimmed}{note}"))
+            }
+            Ok(_) => ToolResult::ok("memory.md 为空：文件记忆模式下尚无记忆内容。"),
+            Err(_) => ToolResult::ok("memory.md 不存在：文件记忆模式下尚无记忆内容。"),
+        }
+    }
+
     /// memory_write：写入组内记忆（哈希去重由 MemoryStore 承担）；来源标注智能体自写（source=agent）
     fn tool_memory_write(&self, agent_id: &str, args: &serde_json::Value) -> ToolResult {
         let Some(memory) = &self.memory else {
             return ToolResult::err("记忆系统未接入（内部装配缺失）");
         };
+        if !self.memory_deep {
+            return ToolResult::err(
+                "深层记忆已关闭（文件记忆模式）：写进数据库的记忆不会被规划召回。请改为直接维护 memory.md（filesystem write 可达），或建议用户在设置中开启深层记忆。",
+            );
+        }
         let Some(kind) = args.get("kind").and_then(|v| v.as_str()).and_then(crate::memory::MemoryKind::parse) else {
             return ToolResult::err("kind 须为 fact/decision/preference/evidence/digest/lesson 之一");
         };
@@ -1507,6 +1637,11 @@ impl ToolGateway {
         let Some(memory) = &self.memory else {
             return ToolResult::err("记忆系统未接入（内部装配缺失）");
         };
+        if !self.memory_deep {
+            return ToolResult::err(
+                "深层记忆已关闭（文件记忆模式）：记忆关联属于深层记忆库特性。可改为直接在 memory.md 中以文字标注关联。",
+            );
+        }
         let gid = self.registry.active_group();
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("link");
         match op {
@@ -1519,7 +1654,13 @@ impl ToolGateway {
                     .unwrap_or(5)
                     .max(1);
                 let hits = if query.is_empty() {
-                    memory.recent(limit, Some(&gid))
+                    // 空查询列示与检索同一套分层口径：个体只见「自己私有 + 群体」，
+                    // 主智能体全层可见——recent 全量版不设防，不能在这里直接用
+                    if self.is_primary(agent_id) {
+                        memory.recent_in_layer(None, limit, Some(&gid))
+                    } else {
+                        memory.recent_in_layer(Some(agent_id), limit, Some(&gid))
+                    }
                 } else if self.is_primary(agent_id) {
                     memory.recall_all(query, limit, Some(&gid), None)
                 } else {
@@ -1910,7 +2051,9 @@ impl ToolGateway {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(400).clamp(1, 5000) as usize;
-        let max_chars = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(24000) as usize;
+        // maxChars 与 limit 同口径设上限：模型传超大值（1e9）不应绕过单次读取的预算
+        // （默认 24000，硬上限 100000；再大的内容请分段读）
+        let max_chars = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(24_000).clamp(1, 100_000) as usize;
         let p = match self.resolve_safe(path) {
             Ok(p) => p,
             Err(e) => return ToolResult::err(e.to_string()),
@@ -1937,6 +2080,10 @@ impl ToolGateway {
             return ToolResult::ok(format!("（空文件，0 行）{path}"));
         }
         let start = (offset - 1).min(total);
+        // 越界 offset 给出可行动的提示而非「已显示第 无 行」：模型下一跳就能自己纠正
+        if start >= total {
+            return ToolResult::ok(format!("{path}：共 {total} 行，offset={offset} 已超出文件末尾；请用 offset≤{total}"));
+        }
         let mut out = String::new();
         let mut used = 0usize;
         let mut end = start;
@@ -3461,6 +3608,139 @@ mod memory_tool_tests {
         assert!(!no_body.ok, "缺 body 应拒绝");
         let _ = std::fs::remove_dir_all(&r.dir);
     }
+
+    // ---------------- 文件记忆模式（memory.enabled=false）行为一致性 ----------------
+
+    /// 装配成文件记忆模式（深层记忆关闭）：memory.md 与 orchestrator 规划注入同路径
+    fn file_mode(md_content: Option<&str>) -> TestRig {
+        let mut r = rig();
+        let md_path = r.dir.join("memory.md");
+        match md_content {
+            Some(c) => std::fs::write(&md_path, c).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(&md_path);
+            }
+        }
+        r.gw.memory_deep = false;
+        r.gw.memory_md_path = Some(md_path);
+        r
+    }
+
+    #[test]
+    fn 文件记忆模式_读取回落memory_md() {
+        let r = file_mode(Some("# 记忆\n- 用中文汇报"));
+        let out = r.gw.tool_memory_read("orch-1", &serde_json::json!({ "query": "任意" }));
+        assert!(out.ok, "{}", out.error.unwrap_or_default());
+        assert!(out.output.contains("用中文汇报"), "应返回 memory.md 内容：{}", out.output);
+        assert!(out.output.contains("深层记忆已关闭"), "应标注文件记忆模式：{}", out.output);
+
+        // 无文件：友好提示而非报错（文件模式下空记忆是正常态）
+        let r2 = file_mode(None);
+        let out2 = r2.gw.tool_memory_read("orch-1", &serde_json::json!({ "query": "任意" }));
+        assert!(out2.ok, "{}", out2.error.unwrap_or_default());
+        assert!(out2.output.contains("尚无记忆内容"), "{}", out2.output);
+
+        // 超长 memory.md：与规划注入同一 8000 字符上限并声明截断
+        let r3 = file_mode(Some("长".repeat(20_000).as_str()));
+        let out3 = r3.gw.tool_memory_read("orch-1", &serde_json::json!({}));
+        assert!(out3.ok);
+        assert!(out3.output.contains("已截断"), "超长 md 应声明截断");
+
+        let _ = std::fs::remove_dir_all(&r.dir);
+        let _ = std::fs::remove_dir_all(&r2.dir);
+        let _ = std::fs::remove_dir_all(&r3.dir);
+    }
+
+    #[test]
+    fn 文件记忆模式_写入关联拒绝并引导() {
+        let r = file_mode(Some("已有内容"));
+        let args = serde_json::json!({ "kind": "fact", "title": "t", "body": "b" });
+        let w = r.gw.tool_memory_write("orch-1", &args);
+        assert!(!w.ok, "文件记忆模式下写库应拒绝（规划面不召回 = 写入黑洞）");
+        assert!(w.error.unwrap_or_default().contains("文件记忆模式"), "错误应引导用户：");
+
+        let l = r.gw.tool_memory_link("orch-1", &serde_json::json!({ "op": "list" }));
+        assert!(!l.ok, "文件记忆模式下关联应拒绝");
+        // 拒绝是真拒绝：数据库确实没被写入
+        assert_eq!(r.gw.memory.as_ref().unwrap().list(None, 10).unwrap().len(), 0);
+
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn 文件记忆模式_schema不下发写与关联() {
+        let primary = def("orch-1", Tier::Orchestrator, &[ToolName::Read]);
+        let allow = ToolGateway::runtime_allowlist(&primary, Some(&group_meta("orch-1", true)));
+        // 深层开启：三工具照常下发（兼容口径不变）
+        let deep = ToolGateway::tool_specs_gated(&allow, false, false, false, true);
+        assert!(deep.iter().any(|s| s.name == "memory_write"));
+        assert!(deep.iter().any(|s| s.name == "memory_link"));
+        // 文件模式：write/link 不承诺（必然失败的工具不下发），read 保留（读 md 有意义）
+        let file = ToolGateway::tool_specs_gated(&allow, false, false, false, false);
+        assert!(file.iter().any(|s| s.name == "memory_read"), "memory_read 保留");
+        assert!(!file.iter().any(|s| s.name == "memory_write"), "文件模式不下发 memory_write");
+        assert!(!file.iter().any(|s| s.name == "memory_link"), "文件模式不下发 memory_link");
+    }
+
+    #[test]
+    fn 列示空查询_分层不越权() {
+        let r = rig();
+        // unit-1 的私有记忆 + 一条群体记忆；unit-1 编成里显式授权三工具由 def() 提供
+        let mut draft = crate::memory::MemoryDraft::new(crate::memory::MemoryKind::Lesson, "unit私有", "只属于 unit-1");
+        draft.agent_id = Some("unit-1".into());
+        r.gw.memory.as_ref().unwrap().remember(&draft).unwrap();
+        r.gw
+            .memory
+            .as_ref()
+            .unwrap()
+            .remember(&crate::memory::MemoryDraft::new(crate::memory::MemoryKind::Fact, "群体事实", "无归属共享").group("t"))
+            .unwrap();
+
+        // 个体空查询列示：见群体，不见他人（主智能体 orch-1）尚未写私有 → 只验不泄漏
+        let out = r.gw.tool_memory_link("unit-1", &serde_json::json!({ "op": "list", "query": "" }));
+        assert!(out.ok, "{}", out.error.unwrap_or_default());
+        assert!(out.output.contains("群体事实"), "个体列示应含群体条目：{}", out.output);
+
+        // 主智能体再写一条私有；unit-1 的空查询列示不得看到
+        let mut o = crate::memory::MemoryDraft::new(crate::memory::MemoryKind::Fact, "orch私有", "只属于 orch-1");
+        o.agent_id = Some("orch-1".into());
+        r.gw.memory.as_ref().unwrap().remember(&o).unwrap();
+        let out2 = r.gw.tool_memory_link("unit-1", &serde_json::json!({ "op": "list", "query": "" }));
+        assert!(
+            !out2.output.contains("orch私有"),
+            "个体空查询列示不得泄漏主智能体私有记忆：{}",
+            out2.output
+        );
+        // 主智能体全层视角：双方私有都可见
+        let out3 = r.gw.tool_memory_link("orch-1", &serde_json::json!({ "op": "list", "query": "" }));
+        assert!(out3.output.contains("orch私有") && out3.output.contains("unit私有"), "主智能体全层列示：{}", out3.output);
+
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn 读取_offset越界与maxChars上限() {
+        let r = rig();
+        let p = r.dir.join("sample.txt");
+        std::fs::write(&p, "l1\nl2\nl3\n").unwrap();
+
+        let ok = r.gw.tool_read(&serde_json::json!({ "path": "sample.txt" }));
+        assert!(ok.ok, "{}", ok.error.unwrap_or_default());
+        assert!(ok.output.contains("共 3 行"));
+
+        // 越界 offset：给可行动的提示而非「已显示第 无 行」
+        let beyond = r.gw.tool_read(&serde_json::json!({ "path": "sample.txt", "offset": 99 }));
+        assert!(beyond.ok, "{}", beyond.error.unwrap_or_default());
+        assert!(beyond.output.contains("超出文件末尾"), "{}", beyond.output);
+        assert!(beyond.output.contains("offset≤3"), "应提示合法上界：{}", beyond.output);
+
+        // maxChars 传超大值：被钳到硬上限，不绕过单次读取预算（小文件内容不受影响）
+        let clamped = r.gw.tool_read(&serde_json::json!({ "path": "sample.txt", "maxChars": 1_000_000_000u64 }));
+        assert!(clamped.ok, "{}", clamped.error.unwrap_or_default());
+        assert!(clamped.output.contains("l3"), "小文件不受钳制影响：{}", clamped.output);
+
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
 }
 
 // ---------------------------------------------------------------- 终端超时诊断测试
@@ -3501,5 +3781,44 @@ mod timeout_output_tests {
         let r = execute_shell_command_timed(&root, cmd, 15).await;
         assert!(r.ok, "快速命令应成功");
         assert!(r.output.contains("quick-ok"), "输出应完整: {}", r.output);
+    }
+
+    /// 失败命令必须可诊断：退出码与输出摘要进 error——
+    /// 回灌层（runtime::tool_feedback）与事件/审计摘要只取 error 字段，
+    /// 之前失败命令 error 留空，模型与用户看到的失败原因是一句空话。
+    /// output 保留原文（审批代执行等老调用方按 output 取输出，向后兼容）。
+    #[tokio::test]
+    async fn 终端失败_退出码与输出进入错误字段() {
+        let root = std::env::temp_dir();
+        let cmd = if cfg!(windows) {
+            "cmd /C \"echo out-tail & echo boom 1>&2 & exit /b 3\"".to_string()
+        } else {
+            "printf out-tail; echo boom >&2; exit 3".to_string()
+        };
+        let r = execute_shell_command_timed(&root, &cmd, 15).await;
+        assert!(!r.ok, "非零退出应判定失败");
+        let err = r.error.unwrap_or_else(|| "（error 为空）".into());
+        assert!(err.contains("退出码 3"), "错误应含退出码: {err}");
+        assert!(err.contains("boom"), "错误应含 stderr 摘要: {err}");
+        assert!(err.contains("out-tail"), "错误应含 stdout 尾部摘要: {err}");
+        assert!(r.output.contains("out-tail"), "output 保留原文（向后兼容）: {}", r.output);
+    }
+
+    /// 超长输出截断必须带标记：模型不得把半截输出当完整结论
+    /// （典型误判：测试/构建日志尾部被切，把半路输出读成「成功」）
+    #[tokio::test]
+    async fn 终端输出_超长截断带标记() {
+        let root = std::env::temp_dir();
+        let cmd = if cfg!(windows) {
+            "cmd /C \"for /L %i in (1,1,1500) do @echo aaaaaaaaaaaaaaaaaaaa-%i\"".to_string()
+        } else {
+            "i=0; while [ $i -lt 1500 ]; do echo aaaaaaaaaaaaaaaaaaaa-$i; i=$((i+1)); done".to_string()
+        };
+        let r = execute_shell_command_timed(&root, &cmd, 30).await;
+        assert!(r.ok, "{}", r.error.unwrap_or_default());
+        assert!(r.output.contains("输出已截断"), "超长输出必须带截断标记");
+        assert!(r.output.contains("aaaaaaaaaaaaaaaaaaaa-0"), "截断应保留头部");
+        let tail = &r.output[r.output.len().saturating_sub(400)..];
+        assert!(!tail.contains("-1499"), "尾部内容应被截掉，实际尾部: {tail}");
     }
 }
