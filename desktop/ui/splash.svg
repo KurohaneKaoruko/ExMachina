@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 启动动画源文件：外弧组旋转（连结运转）+ 中枢圆环呼吸（核心跳动） -->
+  <rect width="512" height="512" fill="#000000"/>
+  <style>
+    .arcs { transform-origin: 256px 256px; animation: spin 2.8s linear infinite; }
+    .core { transform-origin: 256px 256px; animation: pulse 2.8s ease-in-out infinite; }
+    @keyframes spin  { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+  </style>
+  <circle class="core" cx="256" cy="256" r="72" fill="none" stroke="#ffffff" stroke-width="50"/>
+  <g class="arcs" fill="none" stroke="#ffffff" stroke-width="46">
+    <path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/>
+    <path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/>
+    <path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/>
+    <path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/>
+  </g>
+</svg>

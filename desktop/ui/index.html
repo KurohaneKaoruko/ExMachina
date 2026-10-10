@@ -7,9 +7,23 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <!-- 启动画面：连结动画（网关就绪后淡出；最少展示 1.6s 保证品牌瞬间） -->
+    <div id="splash">
+      <svg class="splash-svg" viewBox="0 0 512 512" aria-hidden="true">
+        <circle class="splash-core" cx="256" cy="256" r="72" fill="none" stroke="#ffffff" stroke-width="50"/>
+        <g class="splash-arcs" fill="none" stroke="#ffffff" stroke-width="46">
+          <path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/>
+          <path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/>
+          <path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/>
+          <path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/>
+        </g>
+      </svg>
+      <div class="splash-word">EXMACHINA</div>
+      <div class="splash-status" id="splash-status">连结中</div>
+    </div>
     <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
     <header id="titlebar" data-tauri-drag-region>
-      <span class="tb-brand" data-tauri-drag-region>EXMACHINA</span>
+      <span class="tb-brand" data-tauri-drag-region><svg class="tb-mark" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/><path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/><path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/><path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/></g></svg>EXMACHINA</span>
       <div class="tb-btns hidden" id="tb-btns">
         <button id="tb-min" title="最小化">─</button>
         <button id="tb-max" title="最大化 / 还原">▢</button>
@@ -30,6 +44,7 @@
             <button id="btn-tasks" class="side-link" title="当前会话的任务图与台账">▣ 任务</button>
             <button id="btn-approvals" class="side-link" title="待处理审批单（破坏性操作放行闸口）">⚠ 待审批<span id="approvals-badge" class="badge hidden">0</span></button>
           </div>
+          <button id="btn-sfx" class="side-link" title="界面音效开 / 关（本地合成，无音频文件与网络请求）">🔊 音效</button>
           <button id="btn-settings" class="side-link" title="模型 / 组与个体 / 通道 / 定时 / 安全">⚙ 设置</button>
         </div>
       </aside>
@@ -106,7 +121,7 @@
         </header>
         <!-- 只读预览提示条：截断 / 非 UTF-8 文件常驻警示（textarea 同步置 readOnly） -->
         <div id="cp-readonly-bar" class="cp-readonly-bar hidden">该文件为只读预览（超过 200KB 截断或非 UTF-8 内容，保存已禁用）</div>
-        <div id="cp-editor-empty" class="cp-editor-empty">在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
+        <div id="cp-editor-empty" class="cp-editor-empty"><div class="empty-mark"><svg class="mark-svg" width="56" height="56" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/><path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/><path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/><path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/></g></svg></div>在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
         <!-- 编辑器三明治：行号列（左）/ 当前行高亮条（底）/ 文本层（顶）；滚动由 JS 同步 -->
         <div id="cp-editor-wrap" class="hidden">
           <div id="cp-curline" aria-hidden="true" class="hidden"></div>
