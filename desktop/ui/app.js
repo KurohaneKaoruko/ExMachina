@@ -961,7 +961,7 @@ function hideSplash() {
   }, wait);
 }
 
-const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single", "智能体"], ["channel", "通道"], ["cron", "定时任务"], ["approval", "审批"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"], ["version", "版本"]];
+const SETTINGS_TABS = [["model", "模型"], ["single", "智能体"], ["group", "智能体组"], ["channel", "通道"], ["cron", "定时任务"], ["approval", "审批"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"], ["version", "版本"]];
 
 function showView(v) {
   // 编码页有未保存修改时，切走前先确认（切文件在 openFile、换目录在 applyWorkspace 各自拦截）
