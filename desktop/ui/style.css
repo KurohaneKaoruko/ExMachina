@@ -598,13 +598,17 @@ button { font-family: inherit; cursor: pointer; }
 .tk-acc div { padding: 1px 0; }
 .tk-acc div::before { content: "□ "; color: var(--text-faint); }
 
-/* SVG 连线 DAG：容器横向滚动兜底；连线层垫底，节点卡绝对定位其上 */
+/* SVG 连线 DAG：容器横向滚动兜底；scaleBox 撑缩放后布局盒，连线层垫底，节点卡绝对定位其上 */
 .tk-dag-wrap { overflow-x: auto; padding-bottom: 6px; }
-.tk-dag { position: relative; }
+.tk-dag-scale { position: relative; }
+.tk-dag { position: relative; transform-origin: 0 0; }
 .tk-dag-edges { position: absolute; top: 0; left: 0; z-index: 0; }
 .tk-dag-edges .tk-edge { transition: opacity 0.15s; }
 .tk-dag-edges .tk-edge:hover { opacity: 1; stroke-width: 2.5; }
 .tk-dnode { position: absolute; width: 252px; margin-bottom: 0; z-index: 1; }
+/* 缩放工具条：倍率读数 + 重置视图，靠右贴在任务图上方 */
+.tk-zoom-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 6px; }
+.tk-zoom-val { font-size: 11.5px; color: var(--text-faint); font-family: Consolas, monospace; }
 
 .ledger-goal {
   border: 1px solid rgba(124, 140, 255, 0.35); background: rgba(124, 140, 255, 0.06);
@@ -682,6 +686,18 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--text-faint); font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
   font-size: 13px; line-height: 20px; text-align: right; white-space: pre;
   user-select: none; -webkit-user-select: none; pointer-events: none;
+}
+/* 行号列块级行元素：未保存行在左边际画色点（与树内 st-dirty 同色系） */
+#cp-lines .cp-ln { position: relative; }
+#cp-lines .cp-ln.dirty::before {
+  content: ""; position: absolute; left: 4px; top: 7px;
+  width: 5px; height: 6px; background: var(--accent-2);
+}
+/* 只读预览提示条：常驻编辑区头部下方，解释只读原因与禁存口径 */
+.cp-readonly-bar {
+  padding: 5px 14px; font-size: 12px; color: var(--warn);
+  background: rgba(251, 191, 36, 0.07); border-bottom: 1px solid rgba(251, 191, 36, 0.3);
+  flex-shrink: 0;
 }
 #cp-curline {
   position: absolute; left: 52px; right: 0; height: 20px; z-index: 0; pointer-events: none;

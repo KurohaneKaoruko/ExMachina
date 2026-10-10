@@ -111,7 +111,7 @@ const S = {
   // 编码页状态：树按目录懒加载（"" = 工作区根）；file 为编辑器当前内容（dirty 才可保存）
   code: {
     tree: { "": { open: true, loaded: false, entries: [] } },
-    file: null,          // {path, content, size, truncated, binary, dirty}
+    file: null,          // {path, content, size, truncated, binary, readonly, dirty}（content 兼作未保存标记的基线）
     changes: null,       // /workspace/changes 原样数据
     overview: null,      // /git/overview 原样数据
     rightTab: "changes", // changes | git
@@ -2008,6 +2008,16 @@ function renderSetApprovals(body) {
   load();
 }
 
+// 审批单 → 所属会话：sessionId 完整则直用；疑似截断 id（列表无精确命中）做前缀匹配，
+// 仅唯一命中才返回（多命中/零命中置灰，避免跳错会话）
+function sessionJumpTarget(sessionId) {
+  const sid = String(sessionId ?? "").trim();
+  if (!sid) return null;
+  if (S.sessions.some((s) => s.id === sid)) return sid;
+  const hits = S.sessions.filter((s) => String(s.id).startsWith(sid));
+  return hits.length === 1 ? hits[0].id : null;
+}
+
 function approvalRow(it, refresh) {
   const row = document.createElement("div");
   row.className = "set-row";
@@ -2019,6 +2029,18 @@ function approvalRow(it, refresh) {
   </div><span class="task-status ${stCls}">${esc(it.status ?? "")}</span>`;
   const ops = document.createElement("div");
   ops.className = "set-ops";
+  // 跳转会话：切回对话页并选中审批来源会话；定位不到则置灰说明原因
+  const jump = mkBtn("跳转", async () => {
+    const target = sessionJumpTarget(it.sessionId); // 点击时现算，避免列表渲染后过期
+    if (!target) return;
+    showView("chat");
+    await selectSession(target);
+  }, "set-btn");
+  if (!sessionJumpTarget(it.sessionId)) {
+    jump.disabled = true;
+    jump.title = "会话不在当前列表（可能已归档或 id 不足以定位）";
+  }
+  ops.appendChild(jump);
   if (it.status === "pending") {
     ops.appendChild(mkBtn("批准", async () => {
       if (await settingsSave(api.decideApproval(it.id, true), "已批准，由系统代执行")) { refresh(); refreshApprovalsBadge(); }
@@ -2156,6 +2178,9 @@ function renderTasksPage(graph, session) {
 const DAG_NODE_W = 252;  // 节点卡宽（.tk-dnode 同步）
 const DAG_GAP_X = 46;    // 层间距
 const DAG_GAP_Y = 16;    // 同层节点纵间距
+const DAG_ZOOM_MIN = 0.5;
+const DAG_ZOOM_MAX = 2;
+let dagZoom = 1;         // 视图缩放倍率（模块级：graph.updated 推送重渲染时保持当前倍率）
 
 function renderTaskDag(container, nodes) {
   const items = orderedNodes(nodes);
@@ -2165,9 +2190,25 @@ function renderTaskDag(container, nodes) {
   for (const it of items) (layers[it.depth] ??= []).push(it);
   const wrap = document.createElement("div");
   wrap.className = "tk-dag-wrap";
+  // scaleBox 撑出与缩放后内容等大的布局盒（transform 不参与布局，滚动范围靠它兜底）
+  const scaleBox = document.createElement("div");
+  scaleBox.className = "tk-dag-scale";
   const dag = document.createElement("div");
   dag.className = "tk-dag";
-  wrap.appendChild(dag);
+  scaleBox.appendChild(dag);
+  wrap.appendChild(scaleBox);
+  // 缩放工具条：实时倍率 + 重置视图（回到 1 倍与左上原点）
+  const bar = document.createElement("div");
+  bar.className = "tk-zoom-bar";
+  const zoomVal = document.createElement("span");
+  zoomVal.className = "tk-zoom-val";
+  bar.appendChild(zoomVal);
+  bar.appendChild(mkBtn("重置视图", () => {
+    dagZoom = 1;
+    applyDagZoom(scaleBox, dag, zoomVal);
+    wrap.scrollTo({ left: 0, top: 0 });
+  }, "set-btn"));
+  container.appendChild(bar);
   container.appendChild(wrap);
   // 先挂载再量高：卡片高度随内容（objective / 验收条数）自适应
   const els = new Map();
@@ -2198,6 +2239,24 @@ function renderTaskDag(container, nodes) {
   dag.style.width = `${width}px`;
   dag.style.height = `${height}px`;
   dag.insertBefore(dagEdgesSvg(nodes, byId, pos, width, height), dag.firstChild);
+  applyDagZoom(scaleBox, dag, zoomVal);
+  // Ctrl+滚轮缩放（0.5~2 倍）：只拦带 Ctrl 的滚轮，普通滚动 / 触控板平移不受影响
+  wrap.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    dagZoom = Math.min(DAG_ZOOM_MAX, Math.max(DAG_ZOOM_MIN, dagZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    applyDagZoom(scaleBox, dag, zoomVal);
+  }, { passive: false });
+}
+
+// 缩放呈现：dag 层 transform scale（节点布局仍在原坐标系量取），scaleBox 按倍率撑出滚动范围
+function applyDagZoom(scaleBox, dag, zoomVal) {
+  const w = parseFloat(dag.style.width) || dag.offsetWidth;
+  const h = parseFloat(dag.style.height) || dag.offsetHeight;
+  dag.style.transform = `scale(${dagZoom})`;
+  scaleBox.style.width = `${Math.round(w * dagZoom)}px`;
+  scaleBox.style.height = `${Math.round(h * dagZoom)}px`;
+  if (zoomVal) zoomVal.textContent = `${Math.round(dagZoom * 100)}%`;
 }
 
 // 连线层：依赖 → 依赖者，三次贝塞尔（水平进出、垂直过渡），状态色 + 悬停提示
@@ -2420,12 +2479,15 @@ async function openFile(path) {
   try {
     const r = await api.fsFile(path);
     const content = String(r.content ?? "");
+    const binary = content.includes("\uFFFD"); // 替换字符 = 非 UTF-8 字节被改写，禁存防损坏
     S.code.file = {
       path,
       content,
       size: Number(r.size ?? 0),
       truncated: Boolean(r.truncated),
-      binary: content.includes("\uFFFD"), // 替换字符 = 非 UTF-8 字节被改写，禁存防损坏
+      binary,
+      // 截断 / 非 UTF-8 一律只读预览：防误改后因禁存白干
+      readonly: Boolean(r.truncated) || binary,
       dirty: false,
     };
     renderEditor();
@@ -2438,6 +2500,9 @@ function renderEditor() {
   const f = S.code.file;
   $("cp-editor-empty").classList.toggle("hidden", Boolean(f));
   $("cp-editor-wrap").classList.toggle("hidden", !f);
+  // 截断 / 非 UTF-8 文件：textarea readOnly + 顶部提示条，从源头防误改
+  ta.readOnly = Boolean(f?.readonly);
+  $("cp-readonly-bar").classList.toggle("hidden", !f?.readonly);
   if (f) {
     ta.value = f.content;
     renderGutter(true);
@@ -2448,20 +2513,36 @@ function renderEditor() {
   renderEditorState();
 }
 
-// —— 行号列 / 当前行 ——
+// —— 行号列 / 当前行 / 未保存行标记 ——
 // 口径：textarea wrap="off"（不软换行），逻辑行与可视行一一对应，
 // 行高等于 CSS 的 20px；行号列用 overflow:hidden + scrollTop 跟随文本层滚动。
 const EDITOR_LINE_H = 20;
 const EDITOR_PAD_TOP = 14;
-let gutterLines = -1;
+let gutterSig = ""; // 行号列重建签名：行数 + 未保存区间，任一变化才重排
+
+// 未保存行区间：当前内容与基线（f.content，保存成功即翻新）逐行对比，
+// 公共前/后缀裁掉后剩下的连续区间即视为改动区（简化 diff：区间内行号画点）
+function dirtyLineRange(baseLines, curLines) {
+  const minLen = Math.min(baseLines.length, curLines.length);
+  let lo = 0;
+  while (lo < minLen && baseLines[lo] === curLines[lo]) lo++;
+  let suf = 0;
+  while (suf < minLen - lo && baseLines[baseLines.length - 1 - suf] === curLines[curLines.length - 1 - suf]) suf++;
+  // 纯删行会让当前坐标系里的改动区变空：至少标住接缝处一行，保证 dirty 时行号列有可视提示
+  let hi = Math.max(curLines.length - suf, Math.min(lo + 1, curLines.length));
+  if (hi <= lo) { lo = Math.max(0, curLines.length - 1); hi = curLines.length; }
+  return { lo, hi };
+}
 
 function renderGutter(force) {
-  const count = $("cp-editor").value.split("\n").length;
-  if (!force && count === gutterLines) return;
-  gutterLines = count;
-  const parts = [];
-  for (let i = 1; i <= count; i++) parts.push(i);
-  $("cp-lines").textContent = parts.join("\n");
+  const lines = $("cp-editor").value.split("\n");
+  const range = S.code.file?.dirty ? dirtyLineRange(S.code.file.content.split("\n"), lines) : null;
+  const sig = `${lines.length}|${range ? `${range.lo}:${range.hi}` : ""}`;
+  if (!force && sig === gutterSig) return;
+  gutterSig = sig;
+  $("cp-lines").innerHTML = lines
+    .map((_, i) => `<div class="cp-ln${range && i >= range.lo && i < range.hi ? " dirty" : ""}">${i + 1}</div>`)
+    .join("");
   syncEditorScroll();
 }
 
@@ -2493,8 +2574,8 @@ function renderEditorState() {
     ${f.truncated ? `<span class="cp-chip cp-chip-warn">超过 200KB 已截断展示</span>` : ""}
     ${f.binary ? `<span class="cp-chip cp-chip-warn">非 UTF-8 内容</span>` : ""}
     <span class="cp-chip">${esc(fmtSize(f.size))}</span>`;
-  // 截断 / 二进制时禁存：写回会把不完整内容覆盖到完整文件上
-  $("cp-save").disabled = !f || f.truncated || f.binary || !f.dirty;
+  // 截断 / 二进制（readonly）禁存：写回会把不完整内容覆盖到完整文件上
+  $("cp-save").disabled = !f || f.readonly || !f.dirty;
   $("cp-reload").disabled = !f;
 }
 
@@ -2514,7 +2595,7 @@ const EDITOR_INDENT = "  ";
 // 返回是否发生了编辑（调用方据此决定要不要 preventDefault 拦下焦点切换）
 function editorIndent(shift) {
   const ta = $("cp-editor");
-  if (!S.code.file) return false;
+  if (!S.code.file || S.code.file.readonly) return false; // 只读态放行默认 Tab（移动焦点）
   const value = ta.value;
   const s = ta.selectionStart, e = ta.selectionEnd;
   if (s === e && !shift) {
@@ -2548,12 +2629,13 @@ function execEditorInsert(text) {
 async function saveFile() {
   const f = S.code.file;
   const ta = $("cp-editor");
-  if (!f || f.truncated || f.binary || !f.dirty) return;
+  if (!f || f.readonly || !f.dirty) return;
   try {
     await api.fsSave(f.path, ta.value);
-    f.content = ta.value;
+    f.content = ta.value; // 基线翻新
     f.dirty = false;
     toast("已保存（含检查点与审计）");
+    renderGutter(); // 签名随基线翻新变化，未保存行标记随之清除
     renderEditorState();
     renderTree();
     refreshChanges(); // 变更面板跟随刷新，不 await 阻塞
@@ -2658,7 +2740,9 @@ function renderChangesPanel() {
     if (op === "discard" && !confirm(`丢弃「${path}」的未提交修改？将生成审批单。`)) return;
     runGitOp({ op, path }, op === "stage" ? "已暂存" : op === "unstage" ? "已取消暂存" : "已生成丢弃审批单");
   }));
-  $("cp-stage-all")?.addEventListener("click", () => runGitOp({ op: "stage", path: "." }, "已暂存全部变更"));
+  $("cp-stage-all")?.addEventListener("click", () =>
+    // 暂存动作会触发面板重渲染，等它落定再聚焦新提交框，缩短「暂存 → 提交」路径
+    runGitOp({ op: "stage", path: "." }, "已暂存全部变更").then(() => $("cp-commit-msg")?.focus()));
   $("cp-discard-all")?.addEventListener("click", () => {
     if (!confirm("丢弃全部未提交修改？将生成审批单「git checkout -- .」等待放行（不影响未跟踪的新文件）。")) return;
     runGitOp({ op: "discard", path: "." }, "已生成全部丢弃审批单");
@@ -2667,6 +2751,10 @@ function renderChangesPanel() {
     const msg = box.querySelector("#cp-commit-msg").value.trim();
     if (!msg) return toast("提交信息不能为空", false);
     runGitOp({ op: "commit", message: msg }, "已提交");
+  });
+  // 提交框内 Enter 直接提交（输入法组词中不触发）
+  box.querySelector("#cp-commit-msg")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) box.querySelector("#cp-commit-btn")?.click();
   });
 }
 
@@ -2939,6 +3027,12 @@ async function init() {
     openFile(f.path);
   });
   $("cp-editor").addEventListener("input", onEditorInput);
+  // 关窗兜底：编码页有未保存修改时浏览器级提醒（平时离开走 confirmDiscardDirty，Tauri 壳另有驻留逻辑）
+  window.addEventListener("beforeunload", (e) => {
+    if (!S.code.file?.dirty) return;
+    e.preventDefault();
+    e.returnValue = ""; // 兜住直接关窗 / 刷新丢改动
+  });
   // 行号列 / 当前行跟随：滚动同步 + 光标移动（点击 / 按键）重定位
   $("cp-editor").addEventListener("scroll", syncEditorScroll);
   for (const ev of ["click", "keyup", "focus"]) $("cp-editor").addEventListener(ev, positionCurLine);
