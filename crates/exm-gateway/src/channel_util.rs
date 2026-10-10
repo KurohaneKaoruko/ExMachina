@@ -197,6 +197,42 @@ pub(crate) fn media_placeholder(kinds: &[&str]) -> String {
     format!("（用户发来附件：{}，附件细节见消息注入）", parts.join("、"))
 }
 
+// ---------------------------------------------------------------- 附件类型归类
+
+/// 附件 mimetype → 媒体类型（纯函数）：image | voice | file。
+/// 音频归 voice 以便占位正文计为「语音」并触发转写（telegram 同款能力）；
+/// 未识别的 mimetype 保守归 file——宁可当附件带路径，也不丢弃。
+/// 为什么在共用层：discord（content_type）与 slack（mimetype）用同一段语义，
+/// 各写一遍必然漂移（某个平台漏了 audio 归类，占位与转写就静默失效）。
+pub(crate) fn classify_attachment(mimetype: &str) -> &'static str {
+    if mimetype.starts_with("image/") {
+        "image"
+    } else if mimetype.starts_with("audio/") {
+        "voice"
+    } else {
+        "file"
+    }
+}
+
+// ---------------------------------------------------------------- 语音转写注记
+
+/// 语音附件转写注记（telegram 同款能力的共用化）：转写成功返回
+/// `\n（语音转写：…）` 注记文本，失败/空结果返回空串（调用方直接 append 到正文）。
+///
+/// 为什么做成共用小件：入站语音在 napcat（record 段）/ slack（audio/* 文件）/
+/// discord（audio/* 附件）/ matrix（m.audio）都会出现，「下载成功 → core.transcribe
+/// → 失败静默降级」这段逻辑各写一遍必然漂移（有的平台会漏、报错口径会不一致）。
+/// 转写属尽力而为：失败不拦截消息，语音文件本体仍以附件注记进入会话，模型还能按路径自行处理。
+pub(crate) async fn voice_transcript_note(core: &exm_core::Core, bytes: Vec<u8>, name: &str) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    match core.transcribe(&bytes, name).await {
+        Ok(t) if !t.trim().is_empty() => format!("\n（语音转写：{}）", t.trim()),
+        _ => String::new(),
+    }
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[cfg(test)]
@@ -239,6 +275,18 @@ mod tests {
         // 空 key 放行（平台没给 id 时不去重）
         assert!(first_seen("ut", ""));
         assert!(first_seen("ut", "  "));
+    }
+
+    /// 附件 mimetype 归类（discord/slack 共用）：音频归 voice 触发转写，未知保守归 file 不丢
+    #[test]
+    fn 附件归类_音频归语音未知归文件() {
+        assert_eq!(classify_attachment("image/png"), "image");
+        assert_eq!(classify_attachment("image/jpeg"), "image");
+        assert_eq!(classify_attachment("audio/ogg"), "voice", "音频归 voice 以触发转写");
+        assert_eq!(classify_attachment("audio/mpeg"), "voice");
+        assert_eq!(classify_attachment("application/pdf"), "file");
+        assert_eq!(classify_attachment("video/mp4"), "file", "视频无消费方，保守归文件");
+        assert_eq!(classify_attachment(""), "file", "缺 mimetype 不丢弃");
     }
 
     #[test]

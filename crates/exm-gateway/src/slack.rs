@@ -5,9 +5,12 @@
 //! 事件：`hello` → `events_api` 信封；**每条信封须在 3 秒内 ack**（回 `{"envelope_id":…}`），
 //! 故 ack 一律先发、再异步处理消息。忽略机器人自己发的消息（bot_id / subtype / bot_message）。
 //! 回复文本限 4000 字符 → 截 3800。`disconnect` 帧按服务端要求重连。
+//! 入站媒体：event.files → url_private_download 落 inbox；纯媒体消息占位正文兜底；
+//! 音频文件（audio/*）归 voice 并转写为文本注记（telegram 同款能力）。
+//! 出站 typing：Slack 机器人无输入中指示 API，能力矩阵恒关（不支持项见 platform::caps 注释）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
-use crate::channel_util::{builtin_command, first_seen};
+use crate::channel_util::{builtin_command, classify_attachment, first_seen, media_placeholder, voice_transcript_note};
 use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
@@ -217,14 +220,9 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                     if !first_seen(&format!("slack:{}", ch.id), &ts) {
                         continue;
                     }
-                    if text.trim().is_empty() && payload.pointer("/event/files").and_then(|x| x.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
-                        continue;
-                    }
-                    if !ch.allowed_chats.is_empty() && !ch.allowed_chats.iter().any(|a| a == &channel) {
-                        eprintln!("[slack:{}] {channel} 不在白名单，已忽略", ch.id);
-                        continue;
-                    }
-                    // 入站媒体（组 6.4）：event.files → url_private_download（带 bot token）
+                    // 入站媒体（组 6.4）：event.files → url_private_download（带 bot token）。
+                    // 先盘附件再定正文：纯文件消息没有文字，需要占位正文兜底——
+                    // 曾漏接 media_placeholder，空正文直接进会话，「只发一个文件」石沉大海
                     let mut inbound: Vec<(String, String, String, String)> = Vec::new();
                     if let Some(files) = payload.pointer("/event/files").and_then(|x| x.as_array()) {
                         for f in files {
@@ -233,9 +231,23 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                             if url.is_empty() {
                                 continue;
                             }
-                            let kind = if f.get("mimetype").and_then(|x| x.as_str()).unwrap_or("").starts_with("image/") { "image" } else { "file" };
+                            let kind = classify_attachment(f.get("mimetype").and_then(|x| x.as_str()).unwrap_or(""));
                             inbound.push((kind.to_string(), url.to_string(), name.to_string(), bot_token.clone()));
                         }
+                    }
+                    let mut text = if text.trim().is_empty() {
+                        let kinds: Vec<&str> = inbound.iter().map(|(k, _, _, _)| k.as_str()).collect();
+                        media_placeholder(&kinds)
+                    } else {
+                        text
+                    };
+                    // 空守卫：附件条目全部缺 url 时占位也为空，无可执行内容直接丢弃
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    if !ch.allowed_chats.is_empty() && !ch.allowed_chats.iter().any(|a| a == &channel) {
+                        eprintln!("[slack:{}] {channel} 不在白名单，已忽略", ch.id);
+                        continue;
                     }
                     // DM（channel 以 D 开头）豁免群聊门控；app_mention 事件即提及信号
                     let is_group = !channel.starts_with('D');
@@ -269,14 +281,21 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                     let client2 = client.clone();
                     let token2 = bot_token.clone();
                     tokio::spawn(async move {
-                        // 入站媒体（组 6.4）：下载落 inbox → 注入
+                        // 入站媒体（组 6.4）：下载落 inbox → 注入；语音顺带转写（telegram 同款能力）
                         let mut saved: Vec<(String, String, String)> = Vec::new();
+                        let mut transcript_note = String::new();
                         for (kind, url, name, tk) in inbound {
                             if let Some(bytes) = crate::platform::download_bytes_auth(&url, &tk).await {
-                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes).await {
-                                    saved.push((kind, p, name));
+                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes.clone()).await {
+                                    saved.push((kind.clone(), p, name.clone()));
+                                }
+                                if kind == "voice" {
+                                    transcript_note.push_str(&voice_transcript_note(&core, bytes, &name).await);
                                 }
                             }
+                        }
+                        if !transcript_note.is_empty() {
+                            text.push_str(&transcript_note);
                         }
                         handle_message(&core, &ch2, &client2, &token2, &channel, &external_id, saved, text.trim()).await;
                     });

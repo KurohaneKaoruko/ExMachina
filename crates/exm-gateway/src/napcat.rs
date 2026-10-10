@@ -210,8 +210,11 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
         let Some(external_id) = napcat_gate(&core, &ch, &tx, group_id, user_id, &raw, &text).await else {
             return; // 闸门拦截（忽略 / 已回复）
         };
-        // 入站媒体（组 6.4）：下载或本地 file:// 复制 → 注入（段清单已在闸门前盘好）
+        // 入站媒体（组 6.4）：下载或本地 file:// 复制 → 注入（段清单已在闸门前盘好）；
+        // 语音段（record/voice）顺带转写为文本注记——telegram 同款能力，
+        // QQ 语音是高频输入形态，只存路径等于让用户对着机器人说了一堆「已保存的噪音」
         let mut saved: Vec<(String, String, String)> = Vec::new();
+        let mut transcript_note = String::new();
         for (kind, src) in media {
             let name = format!("napcat-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" });
             let bytes = if let Some(local) = src.strip_prefix("file://") {
@@ -220,11 +223,15 @@ async fn on_text(core: &Arc<Core>, ch: &Channel, tx: &mpsc::UnboundedSender<serd
                 crate::platform::download_bytes(&src).await
             };
             if let Some(b) = bytes {
-                if let Some(p) = crate::platform::save_inbound_media(&core, &ch, &name, b).await {
-                    saved.push((kind, p, name));
+                if let Some(p) = crate::platform::save_inbound_media(&core, &ch, &name, b.clone()).await {
+                    saved.push((kind.clone(), p, name.clone()));
+                }
+                if kind == "voice" {
+                    transcript_note.push_str(&crate::channel_util::voice_transcript_note(&core, b, &name).await);
                 }
             }
         }
+        let text = if transcript_note.is_empty() { text } else { format!("{text}{transcript_note}") };
         // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
         // 会话键与 handle_message 同口径：群号优先，私聊为用户 id
         let peer = group_id

@@ -5,10 +5,12 @@
 //! 其中 **MESSAGE_CONTENT 是特权 intent**，须在开发者门户 → Bot 页勾选，
 //! 否则服务器频道里的消息正文为空（私聊与 @ 提及不受此限）。
 //! 回复：POST /channels/{channel_id}/messages（单条限 2000 字符 → 截 1800）。
+//! 入站媒体：attachments 落 inbox；音频附件（audio/*，按住说话即此形态）转写为文本注记。
+//! 出站 typing：POST /channels/{channel_id}/typing（能力矩阵 typing 位已开）。
 //! 断线优先 Resume(op6，补发漏掉的事件)；op9 Invalid Session 回退重新 Identify。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/token 变更的账号回收任务。
 
-use crate::channel_util::{builtin_command, first_seen, media_placeholder};
+use crate::channel_util::{builtin_command, classify_attachment, first_seen, media_placeholder, voice_transcript_note};
 use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
@@ -296,15 +298,21 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                         let client2 = client.clone();
                                         let token2 = token.clone();
                                         tokio::spawn(async move {
-                                            // 附件下载落 inbox（闸门已过，不浪费白名单外流量）
+                                            // 附件下载落 inbox（闸门已过，不浪费白名单外流量）；
+                                            // 语音附件（audio/*，Discord 按住说话即此形态）顺带转写——telegram 同款能力
                                             let mut saved: Vec<(String, String, String)> = Vec::new();
+                                            let mut transcript_note = String::new();
                                             for (kind, url, name) in atts {
                                                 if let Some(bytes) = crate::platform::download_bytes(&url).await {
-                                                    if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes).await {
-                                                        saved.push((kind, p, name));
+                                                    if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes.clone()).await {
+                                                        saved.push((kind.clone(), p, name.clone()));
+                                                    }
+                                                    if kind == "voice" {
+                                                        transcript_note.push_str(&voice_transcript_note(&core, bytes, &name).await);
                                                     }
                                                 }
                                             }
+                                            let text = if transcript_note.is_empty() { text } else { format!("{text}{transcript_note}") };
                                             handle_message(&core, &ch2, &client2, &token2, &channel_id, &external_id, saved, &text).await;
                                         });
                                     }
@@ -363,16 +371,7 @@ fn parse_attachments(d: &Value) -> Vec<(String, String, String)> {
             if url.is_empty() {
                 continue;
             }
-            let kind = if a
-                .get("content_type")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .starts_with("image/")
-            {
-                "image"
-            } else {
-                "file"
-            };
+            let kind = classify_attachment(a.get("content_type").and_then(|x| x.as_str()).unwrap_or(""));
             out.push((kind.to_string(), url.to_string(), name.to_string()));
         }
     }
@@ -551,5 +550,8 @@ mod tests {
         // content_type 缺失时保守归文件
         let no_type = parse_attachments(&json!({ "attachments": [{ "filename": "x.bin", "url": "https://cdn/3" }] }));
         assert_eq!(no_type[0].0, "file");
+        // 音频附件（Discord 按住说话即 audio/ogg 形态）归 voice：触发占位计「语音」与转写
+        let voice = parse_attachments(&json!({ "attachments": [{ "filename": "msg.ogg", "content_type": "audio/ogg", "url": "https://cdn/4.ogg" }] }));
+        assert_eq!(voice[0].0, "voice", "音频附件应归 voice");
     }
 }

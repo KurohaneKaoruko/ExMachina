@@ -7,6 +7,8 @@
 //! （被动消息 5 分钟有效；群/单聊文本限 2000 字节，收束陈述截断到 650 字符）。
 //! 断线重连：优先 Resume（补发漏掉的事件），Invalid Session(op9) 回退重新 Identify；
 //! config.sandbox = "true" 时走沙箱 openapi（sandbox.api.sgroup.qq.com）。
+//! 平台限制：被动消息仅支持文本——媒体产物以链接注记降级、无 typing 指示（见 platform::caps）；
+//! 入站附件按扩展名归 image/file，落 inbox 注入（官方 bot 无语音消息形态）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
 use crate::channel_util::{builtin_command, first_seen, media_placeholder};
@@ -275,7 +277,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                                     continue;
                                                 }
                                                 let full = if url.starts_with("http") { url.to_string() } else { format!("https://multimedia.qq.com{url}") };
-                                                let kind = if name.contains(".png") || name.contains(".jpg") || name.contains(".jpeg") { "image" } else { "file" };
+                                                let kind = if is_image_name(&name) { "image" } else { "file" };
                                                 if let Some(bytes) = crate::platform::download_bytes(&full).await {
                                                     inbound.push((kind.into(), name.into(), peer.key().to_string(), bytes));
                                                 }
@@ -430,6 +432,15 @@ impl Peer {
             _ => 650,
         }
     }
+}
+
+/// 附件文件名 → 是否图片（纯函数）：按最后一个 '.' 的扩展名（小写）比对常见位图后缀。
+/// 曾用 contains(".png") 判定——「a.png.txt」会误判成图片，且漏掉 gif/webp/bmp。
+fn is_image_name(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().rsplit('.').next(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp")
+    )
 }
 
 /// 频道 @ 消息正文剥掉 `<@…>` 提及片段；未闭合片段保留原样（曾把前缀重复拼一遍）
@@ -594,5 +605,16 @@ mod tests {
         assert_eq!(Peer::Group("g".into()).max_chars(), 650);
         assert_eq!(Peer::C2C("u".into()).max_chars(), 650);
         assert_eq!(Peer::Guild("c".into()).max_chars(), 3800);
+    }
+
+    /// 附件图片判定：按扩展名整词比对（大小写不敏感），假扩展名与无扩展名不算
+    #[test]
+    fn 图片文件名判定_扩展名整词() {
+        assert!(is_image_name("shot.png"));
+        assert!(is_image_name("IMG_0001.JPG"), "大小写不敏感");
+        assert!(is_image_name("a.jpeg") && is_image_name("b.gif") && is_image_name("c.webp"));
+        assert!(!is_image_name("a.png.txt"), "中间含 .png 不算图片（曾用 contains 误判）");
+        assert!(!is_image_name("report.pdf"));
+        assert!(!is_image_name("noext"), "无扩展名不算图片");
     }
 }
