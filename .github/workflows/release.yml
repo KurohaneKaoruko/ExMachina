@@ -62,6 +62,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: 工具链安装（重试，防 rustup CDN 抖动）
+        run: |
+          for i in 1 2 3 4 5; do
+            rustup toolchain install stable --profile minimal --no-self-update && break
+            echo "第 $i/5 次失败，30s 后重试（rustup CDN 抖动）"; sleep 30
+          done
       - uses: dtolnay/rust-toolchain@stable
       - name: System libs
         if: runner.os == 'Linux'
@@ -121,6 +127,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: 工具链安装（重试，防 rustup CDN 抖动）
+        run: |
+          for i in 1 2 3 4 5; do
+            rustup toolchain install stable --profile minimal --no-self-update && break
+            echo "第 $i/5 次失败，30s 后重试（rustup CDN 抖动）"; sleep 30
+          done
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
