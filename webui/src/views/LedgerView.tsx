@@ -1,6 +1,7 @@
 /** 三账面板：任务账 / 证据账 / 风险账 */
 import React from "react";
-import { Card, Col, Empty, List, Row, Tag } from "antd";
+import { Card, Col, List, Row, Tag } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { PageHeader } from "../components/PageHeader";
 import { useExm } from "../store";
 import { useT } from "../i18n/core";
@@ -19,7 +20,7 @@ export function LedgerView(): React.ReactElement {
         desc={t("ledger.desc")}
       />
       {!ledger ? (
-        <Empty description={t("ledger.empty")} className="pane-empty" />
+        <BrandEmpty description={t("ledger.empty")} className="pane-empty" />
       ) : (
         <Row gutter={16} className="ledger-wrap">
           <Col span={8}>

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- EXMACHINA · 智能连结体：三智能体（环节点）+ 指挥体（中枢环），K4 全连结拓扑 -->
+  <rect width="512" height="512" fill="#000000"/>
+
+  <!-- 连结边：三角环（个体互联）+ 三条中枢辐线 -->
+  <g stroke="#ffffff" stroke-linecap="round" fill="none">
+    <path d="M 256 100 L 401 352 L 111 352 Z" stroke-width="14"/>
+    <line x1="256" y1="268" x2="256" y2="100" stroke-width="9"/>
+    <line x1="256" y1="268" x2="401" y2="352" stroke-width="9"/>
+    <line x1="256" y1="268" x2="111" y2="352" stroke-width="9"/>
+  </g>
+
+  <!-- 节点：三个智能体（环）+ 指挥体中枢（环） -->
+  <circle cx="256" cy="100" r="27" fill="#000000" stroke="#ffffff" stroke-width="11"/>
+  <circle cx="401" cy="352" r="27" fill="#000000" stroke="#ffffff" stroke-width="11"/>
+  <circle cx="111" cy="352" r="27" fill="#000000" stroke="#ffffff" stroke-width="11"/>
+  <circle cx="256" cy="268" r="21" fill="#000000" stroke="#ffffff" stroke-width="11"/>
+</svg>

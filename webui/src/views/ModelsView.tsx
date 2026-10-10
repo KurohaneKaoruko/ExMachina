@@ -8,9 +8,10 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AutoComplete, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch,
+  AutoComplete, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch,
   Tag, Tooltip, message,
 } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import {
   ApiOutlined, CheckCircleOutlined, CloudDownloadOutlined, DeleteOutlined, EditOutlined,
   EyeOutlined, MinusCircleOutlined, PlusOutlined, ReloadOutlined, SoundOutlined,
@@ -463,7 +464,7 @@ export function ModelsView(): React.ReactElement {
             );
           })}
         </div>
-        {!loading && profiles.length === 0 && <Empty description={t("models.none")} className="pane-empty" />}
+        {!loading && profiles.length === 0 && <BrandEmpty description={t("models.none")} className="pane-empty" />}
       </Spin>
 
       <Card

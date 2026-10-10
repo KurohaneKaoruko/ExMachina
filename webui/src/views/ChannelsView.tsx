@@ -1,8 +1,9 @@
 /** 通道网关：多平台多账号接入（QQ 官方机器人 / NapCat / Telegram / Discord / Slack / Matrix / webhook 桥接），每个账号可绑定不同智能体组 */
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Button, Collapse, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Tooltip, message,
+  Button, Collapse, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Tooltip, message,
 } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type Channel, type ChannelStatus } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -371,7 +372,7 @@ export function ChannelsView(): React.ReactElement {
           rowKey="id"
           pagination={false}
           dataSource={channels}
-          locale={{ emptyText: <Empty description={t("channels.empty")} className="pane-empty" /> }}
+          locale={{ emptyText: <BrandEmpty description={t("channels.empty")} className="pane-empty" /> }}
           columns={[
             {
               title: t("channels.colAccount"),

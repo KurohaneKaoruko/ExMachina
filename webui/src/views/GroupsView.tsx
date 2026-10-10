@@ -2,8 +2,9 @@
  *  子个体是组的成员：成员的新建 / 编辑 / 人设 / 经验优化 / 删除都在组详情内完成（不再单设页面）。 */
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Table, Tag, message,
+  Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Spin, Table, Tag, message,
 } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import {
   ArrowLeftOutlined, DeleteOutlined, EditOutlined, FormOutlined, PlusOutlined,
   SettingOutlined, UndoOutlined, UsergroupDeleteOutlined,
@@ -412,7 +413,7 @@ export function GroupsView(): React.ReactElement {
                   },
                 ]}
               />
-              {members.length === 0 && <Empty description={t("groups.emptyMembers")} className="pane-empty" />}
+              {members.length === 0 && <BrandEmpty description={t("groups.emptyMembers")} className="pane-empty" />}
             </Spin>
           </Card>
         </div>
@@ -612,7 +613,7 @@ export function GroupsView(): React.ReactElement {
             </Card>
           ))}
         </div>
-        {groups.length === 0 && <Empty description={t("groups.none")} className="pane-empty" />}
+        {groups.length === 0 && <BrandEmpty description={t("groups.none")} className="pane-empty" />}
       </div>
 
       <Modal open={groupModal} title={t("groups.modalNew")} onCancel={() => setGroupModal(false)} onOk={() => void submitGroup()} okText={t("groups.create")}>

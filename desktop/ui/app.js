@@ -119,6 +119,81 @@ const S = {
   },
 };
 
+// ────────────────────────────── SFX：界面音效（Web Audio API 程序化合成） ──────────────────────────────
+// 零音频文件 / 零外部依赖 / 零网络请求：振荡器 + 包络现场合成。主增益 0.12，宁轻勿吵。
+// 静音口径：localStorage exm.sfx（默认开）；prefers-reduced-motion 用户默认静音（与动效减免一致）。
+// 纪律：hover 不发声；splash 期间无循环音，仅网关就绪淡出时一声 connect；批量表单渲染只建按钮不发声。
+
+const sfx = (() => {
+  let ctx = null;
+  let master = null;
+  const reduced = Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+  const enabled = () => {
+    try { const v = localStorage.getItem("exm.sfx"); return v == null ? !reduced : v === "1"; }
+    catch { return !reduced; }
+  };
+  let on = enabled();
+
+  // 共享 AudioContext 懒初始化；自动播放策略下挂起则尝试 resume（首次用户手势后生效，未就绪即静默丢弃）
+  function ready() {
+    if (!on) return null;
+    if (!ctx) {
+      const AC = window.AudioContext ?? window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.12; // 主增益纪律：0.08~0.15
+      master.connect(ctx.destination);
+    }
+    if (ctx.state === "suspended") void ctx.resume();
+    return ctx.state === "running" ? ctx : null;
+  }
+
+  // 单音：type 波形，f0→f1 频率滑移（f1=0 不滑），at 相对起始秒，dur 时长，vol 峰值（乘主增益）
+  function tone({ type = "sine", f0, f1 = 0, at = 0, dur = 0.06, vol = 0.6 }) {
+    const c = ready();
+    if (!c) return;
+    const t0 = c.currentTime + at;
+    const osc = c.createOscillator();
+    const g = c.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0, t0);
+    if (f1) osc.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.005);  // 5ms 快起音：清脆不拖
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur); // 指数快衰减：滴一声即收
+    osc.connect(g).connect(master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  // 音效清单（合成参数即音色，可微调）
+  const sounds = {
+    // click 清脆滴：方波 880→660Hz，40ms 快衰减
+    click: () => tone({ type: "square", f0: 880, f1: 660, dur: 0.04, vol: 0.5 }),
+    // send 发射感：正弦 520→880Hz 上滑，90ms
+    send: () => tone({ f0: 520, f1: 880, dur: 0.09, vol: 0.7 }),
+    // success 确认：双音 660+990Hz 顺序，120ms
+    success: () => { tone({ f0: 660, dur: 0.06 }); tone({ f0: 990, at: 0.06, dur: 0.06 }); },
+    // error 低哑否定：锯齿 220→180Hz，150ms
+    error: () => tone({ type: "sawtooth", f0: 220, f1: 180, dur: 0.15, vol: 0.55 }),
+    // notify 注意：三连短音 880/1100/880
+    notify: () => { tone({ f0: 880, dur: 0.05 }); tone({ f0: 1100, at: 0.07, dur: 0.05 }); tone({ f0: 880, at: 0.14, dur: 0.06 }); },
+    // connect 启动完成：正弦 300→1200Hz 上扫 250ms + 包络淡出
+    connect: () => tone({ f0: 300, f1: 1200, dur: 0.25, vol: 0.65 }),
+  };
+
+  return {
+    play(name) { if (!on) return; try { sounds[name]?.(); } catch { /* 音频不可用不干扰功能 */ } },
+    toggle() {
+      on = !on;
+      try { localStorage.setItem("exm.sfx", on ? "1" : "0"); } catch { /* 忽略 */ }
+      return on;
+    },
+    get enabled() { return on; },
+  };
+})();
+
 // ────────────────────────────── WS 事件流 ──────────────────────────────
 
 let ws = null;
@@ -180,6 +255,7 @@ function wsConnect() {
 function handleEvent(evt) {
   // 审批角标先于会话过滤：通道发起的审批不属于当前会话也要亮（事件驱动即时刷新，轮询仅兜底）
   if (evt.type === "approval.required" || evt.type === "approval.resolved") {
+    if (evt.type === "approval.required") sfx.play("notify"); // 审批到达 → 三连注意音（通道等跨会话审批同样提醒）
     refreshApprovalsBadge();
     // 审批落地（代执行 push/丢弃等）可能改动工作区：编码页开着就顺手刷新变更与 Git 面板
     if (evt.type === "approval.resolved" && S.view === "code") {
@@ -263,6 +339,7 @@ function handleEvent(evt) {
       delete live.units[String(r.sourceAgent ?? "")];
       S.reports = [...S.reports, { agent: String(r.sourceAgent ?? ""), summary: String(r.summary ?? ""), confidence: Number(r.confidence ?? 0), nodeId: String(r.taskNodeId ?? "") }].slice(-12);
       live.activity.push({ text: `<b>@${esc(String(r.sourceAgent ?? ""))}</b> 回执：${esc(String(r.summary ?? "").slice(0, 90))}（置信 ${Number(r.confidence ?? 0).toFixed(2)}）` });
+      sfx.play("notify"); // 子个体回流 → 注意音
       scheduleLive();
       scheduleRight(true);
       break;
@@ -287,6 +364,7 @@ function handleEvent(evt) {
     }
     case "run.error":
       S.messages = [...S.messages, { id: `err-${Date.now()}`, role: "error", statements: [{ tag: "警告", text: String(p.message ?? "运行出错") }], createdAt: new Date().toISOString() }];
+      sfx.play("error"); // 运行失败 → 低哑否定
       resetLive();
       setRunning(false);
       renderStream(true);
@@ -409,6 +487,61 @@ const liveEl = document.createElement("div");
 liveEl.className = "live";
 liveEl.style.display = "none";
 
+// ────────────────────────────── 动效工具（品牌纹样 / stagger 编排） ──────────────────────────────
+// 纪律：只写 class 与 CSS 变量，动画本体全部在 style.css（transform/opacity 合成器路径）。
+
+// 品牌纹样：中枢环 + 外观弧槽，用于空态 / 加载态 / 分区徽记。
+//
+// 几何唯一定义在 **mark.js**（400 口径，随 index.html 的 <head> 先于本文件加载），
+// 这里只消费全局的 markBody() / brandMark() / markBodyIn512() / fillMarks()，不再定义。
+//
+// 之所以把定义搬出去：本文件里曾写过两份（brandMark 与 captureDisc 各抄一份）、
+// index.html 里又手抄一份，三份互相追不上，于是出过两次事故——
+//   · brandMark / captureDisc 的四弧整体偏了 10°，而标题栏、启动画面、图标都是正对的；
+//   · index.html 那份把一条弧的终点抄错，顶部缺口整段糊没，徽记只剩三个缺口。
+// 结论：徽记只留一处定义，任何位置要画徽记都用 <span data-mark="尺寸">。
+
+/** 空态捕获盘：四弧徽记 + 径向刻度环 + 扫描扇 + 准星（HUD「目标捕获」母题的完整表达） */
+function captureDisc(size = 360) {
+  const P = (deg, r) => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return [256 + Math.cos(a) * r, 256 + Math.sin(a) * r];
+  };
+  let ticks = "";
+  for (let i = 0; i < 72; i++) {
+    const deg = i * 5, major = deg % 30 === 0;
+    const [x1, y1] = P(deg, 218), [x2, y2] = P(deg, major ? 240 : 230);
+    ticks += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke-width="${major ? 4 : 2}"/>`;
+  }
+  return `<svg class="mark-svg capture-disc" width="${size}" height="${size}" viewBox="0 0 512 512" aria-hidden="true">
+    <g fill="none" stroke="currentColor" opacity="0.9">
+      <circle cx="256" cy="256" r="218" stroke-width="2"/>
+      <circle cx="256" cy="256" r="188" stroke-width="1" stroke-dasharray="2 12" opacity="0.7"/>
+    </g>
+    <g class="ring-rot rev" fill="none" stroke="currentColor">${ticks}</g>
+    <g class="ring-rot" fill="none" stroke="currentColor">
+      <path d="M 256 256 L 256 38 A 218 218 0 0 1 365 62 Z" fill="currentColor" stroke="none" opacity="0.16"/>
+    </g>
+    <g fill="none" stroke="currentColor" opacity="0.85">
+      <line x1="256" y1="14" x2="256" y2="54" stroke-width="2"/>
+      <line x1="256" y1="458" x2="256" y2="498" stroke-width="2"/>
+      <line x1="14" y1="256" x2="54" y2="256" stroke-width="2"/>
+      <line x1="458" y1="256" x2="498" y2="256" stroke-width="2"/>
+    </g>
+    ${markBodyIn512()}
+  </svg>`;
+}
+
+// 列表 stagger 入场：递增延迟（默认 36ms，封顶 10 档——长列表尾部不拖尾，全部动画只走合成器）
+function staggerIn(els, { step = 36, cap = 10 } = {}) {
+  let i = 0;
+  for (const el of els) {
+    el.style.setProperty("--stagger-delay", `${Math.min(i, cap) * step}ms`);
+    el.classList.add("stagger-in");
+    i++;
+  }
+}
+
 function relTime(iso) {
   if (!iso) return "";
   const d = new Date(iso), diff = (Date.now() - d.getTime()) / 1000;
@@ -424,6 +557,90 @@ function setConn(ok) {
   const el = $("conn-status");
   el.className = `conn ${ok ? "ok" : "err"}`;
   $("conn-text").textContent = ok ? "已连接" : "重连中…";
+  renderChrome();
+}
+
+// ─────────────────────── 品牌层：标题读数簇 + 底边遥测条 ───────────────────────
+// HUD 常驻读数（域名 / 链路 / 目标 / 会话数 / 模型 / 版次）。签名比对后重绘：
+// 读数未变则完全不碰 DOM，避免高频重建打断 LED 呼吸与入场动画。
+let chromeVer = ""; // /version 拉到一次后缓存（本机版本号）
+let chromeSig = "";
+
+function renderChrome() {
+  const host = GW.url.replace(/^https?:\/\//, "");
+  const target = S.target
+    ? `${S.target.mode === "group" ? "GROUP" : "SOLO"} · ${S.target.name ?? S.target.id ?? "—"}`
+    : "未选定";
+  const model = S.profiles.find((p) => p.id === S.activeProfileId)?.name ?? "未配置";
+  const nSess = String(S.sessions.length).padStart(2, "0");
+  const sig = [S.connected, host, target, nSess, model, chromeVer, S.view].join("|");
+  if (sig === chromeSig) return;
+  chromeSig = sig;
+
+  const tb = $("tb-readouts");
+  if (tb) {
+    tb.innerHTML =
+      `<span class="readout"><span class="k">GW</span><span class="v">${esc(host)}</span></span>` +
+      `<span class="readout"><span class="k">SESS</span><span class="v">${nSess}</span></span>`;
+  }
+
+  const tel = $("telemetry");
+  if (!tel) return;
+  tel.innerHTML =
+    `<span class="tel-brand">${brandMark("", 12)}EXM</span>` +
+    `<span class="tel-seg"><span class="tel-led ${S.connected ? "" : "err"}"></span>` +
+    `<span class="tel-k">LINK</span><span class="tel-v ${S.connected ? "ok" : "err"}">${S.connected ? "ONLINE" : "RECONN"}</span></span>` +
+    `<span class="tel-seg"><span class="tel-k">TGT</span><span class="tel-v">${esc(target)}</span></span>` +
+    `<span class="tel-seg"><span class="tel-k">SESS</span><span class="tel-v">${nSess}</span></span>` +
+    `<span class="tel-seg"><span class="tel-k">MODEL</span><span class="tel-v ${model === "未配置" ? "warn" : ""}">${esc(model)}</span></span>` +
+    `<span class="tel-spacer"></span>` +
+    `<span class="tel-seg sys"><span class="tel-k">VER</span><span class="tel-v">${esc(chromeVer || "dev")}</span></span>`;
+  // 遥测条是对话视图的常驻底栏；独立整页（设置 / 编码 / 任务）各自独占窗口，隐藏之
+  tel.classList.toggle("hidden", S.view !== "chat");
+}
+
+/** 本机版本读数：拉一次 /version 填进遥测条（失败保持 dev 占位，不打扰） */
+function loadChromeVersion() {
+  req("/version").then((v) => {
+    chromeVer = v?.version ?? "";
+    renderChrome();
+    renderNavFoot();
+  }).catch(() => {});
+}
+
+// ─────────────────── 整页 HUD 页头（设置 / 任务两个独立整页） ───────────────────
+// 独立整页此前直接堆内容卡片，缺「页」一级的框架语汇；这里补通栏读数带与左导航品牌区，
+// 读数键 / 值一律与底边遥测条同一套写法（[KEY] VALUE）。
+function pageHudHTML(title, en, readouts) {
+  const rs = (readouts ?? [])
+    .map(([k, v, cls]) =>
+      `<span class="readout"><span class="k">${esc(k)}</span><span class="v${cls ? ` ${cls}` : ""}">${esc(v)}</span></span>`)
+    .join("");
+  return (
+    `<span class="ph-mark">${brandMark("", 15)}</span>` +
+    `<span class="ph-title">${esc(title)}</span>` +
+    `<span class="ph-en">${esc(en)}</span>` +
+    `<span class="ph-rule"></span>` +
+    `<span class="ph-readouts">${rs}</span>`
+  );
+}
+
+/** 左导航品牌区（设置 / 任务两页共用），sub 为副标（如 SETTINGS / TASKS） */
+function navBrandHTML(sub) {
+  return (
+    `${brandMark("", 18)}` +
+    `<span class="sp-brand-text"><span class="sp-brand-name">EXMACHINA</span>` +
+    `<span class="sp-brand-sub">${esc(sub)}</span></span>`
+  );
+}
+
+/** 左导航底部版次读数：两页共用一份内容 */
+function renderNavFoot() {
+  const html = `<span class="readout"><span class="k">VER</span><span class="v">${esc(chromeVer || "dev")}</span></span>`;
+  for (const id of ["sp-foot", "tp-foot"]) {
+    const el = $(id);
+    if (el) el.innerHTML = html;
+  }
 }
 
 function setRunning(on) {
@@ -464,7 +681,20 @@ function renderSidebar() {
     nav.appendChild(head);
     nav.appendChild(box);
   }
+  // 入场编排（签名比对：列表重建高频，避免每次都重放动画）——
+  // 会话集变化 → 整列级联浮现；仅活动会话切换 → 活动行高亮脉冲
+  const idsSig = S.sessions.map((s) => s.id).join(",");
+  const activeSig = String(S.sessionId ?? "");
+  if (idsSig !== sidebarIdsSig) staggerIn(nav.querySelectorAll(".session-item"), { step: 36, cap: 10 });
+  else if (activeSig !== sidebarActiveSig) nav.querySelector(".session-item.active")?.classList.add("flash-in");
+  sidebarIdsSig = idsSig;
+  sidebarActiveSig = activeSig;
+  renderChrome(); // 会话数 / 目标读数跟随侧栏重建同步
 }
+
+// 侧栏动效签名（模块级记忆：与上次渲染比对决定放不放动画）
+let sidebarIdsSig = "";
+let sidebarActiveSig = "";
 
 function sessionEl(s) {
   const item = document.createElement("div");
@@ -522,6 +752,9 @@ function msgHtml(msg) {
   </div>`;
 }
 
+// 消息入场动效的增量检测：与上次渲染的消息数比对，只对「新到的」消息挂动画类
+let renderedMsgCount = 0;
+
 function renderStream(scroll) {
   // 独立整页（设置 / 编码 / 任务）接管期间不触碰对话 DOM（返回对话时统一重渲染）
   if (S.view !== "chat") return;
@@ -531,6 +764,17 @@ function renderStream(scroll) {
   streamEl.innerHTML = "";
   if (!S.messages.length && !S.running) streamEl.appendChild(welcomeEl());
   for (const m of S.messages) streamEl.insertAdjacentHTML("beforeend", msgHtml(m));
+  // 入场编排：全新渲染（切会话/首帧）→ 尾部级联；增量到达（新消息）→ 仅新消息滑入
+  const prevCount = renderedMsgCount;
+  renderedMsgCount = S.messages.length;
+  const fresh = S.messages.length - prevCount;
+  const msgEls = streamEl.querySelectorAll(":scope > .msg");
+  if (prevCount === 0 && S.messages.length) {
+    staggerIn([...msgEls].slice(-8), { step: 45, cap: 8 });
+  } else if (fresh > 0 && prevCount > 0) {
+    if (fresh <= 3) for (const el of [...msgEls].slice(-fresh)) el.classList.add("msg-in");
+    else staggerIn([...msgEls].slice(-6), { step: 45, cap: 6 }); // 会话切换 / 撤销等大幅变化
+  }
   // 运行中实时区
   streamEl.appendChild(liveEl);
   liveEl.style.display = S.running ? "" : "none";
@@ -567,6 +811,8 @@ function renderUnitStream(scroll) {
         <div class="live-orch md">${md(liveText ?? "")}<span class="cursor"></span></div>
       </div></div>`);
   }
+  // 最新消息滑入（进入子代理视图 / 新消息到达时；流式重建不重放）
+  if (scroll !== false) streamEl.querySelector(".msg:last-of-type")?.classList.add("msg-in");
   if (scroll !== false) scrollBottom();
 }
 
@@ -579,9 +825,20 @@ function orchestratorId() {
 function welcomeEl() {
   const el = document.createElement("div");
   el.className = "welcome";
+  const tgt = S.target
+    ? `${S.target.mode === "group" ? "组" : "个体"} · ${S.target.name ?? S.target.id ?? ""}`
+    : "未选定";
   el.innerHTML = `
+    <div class="welcome-mark">${brandMark("", 360)}</div>
+    <div class="welcome-capture">${captureDisc(196)}</div>
     <h1>有什么可以帮你？</h1>
     <p>对话交由当前对象（智能体或智能体组）协作完成；侧栏「编码」进入工作台、「任务」看派发与台账</p>
+    <div class="welcome-readout">
+      <span class="readout"><span class="k">LINK</span><span class="v ok">ONLINE</span></span>
+      <span class="readout"><span class="k">TGT</span><span class="v">${esc(tgt)}</span></span>
+      <span class="readout"><span class="k">SESS</span><span class="v">${String(S.sessions.length).padStart(2, "0")}</span></span>
+      <span class="readout"><span class="k">MODE</span><span class="v">ACQUIRE</span></span>
+    </div>
     <div class="suggest">
       <button data-q="帮我梳理一下这个项目的整体结构，给出模块说明">梳理项目结构，输出模块说明</button>
       <button data-q="写一个 Python 脚本：批量重命名当前目录下的图片文件，按日期编号">写一个批量重命名图片的脚本</button>
@@ -589,6 +846,7 @@ function welcomeEl() {
     </div>`;
   el.querySelectorAll(".suggest button").forEach((b) =>
     b.addEventListener("click", () => { $("input").value = b.dataset.q; autosize(); $("input").focus(); }));
+  staggerIn(el.querySelectorAll(".suggest button"), { step: 50, cap: 6 }); // 建议项逐条浮现
   return el;
 }
 
@@ -663,6 +921,7 @@ function updateSessionPreview(id, preview) {
 function alertErr(e) {
   // 统一错误口径：toast 短提示（对话内的运行失败仍走 run.error 消息块，不在此列）
   console.error(e);
+  sfx.play("error"); // 失败 → 低哑否定（toast 本体不重复发声）
   toast(String(e).replace(/^Error:\s*/, ""), false);
 }
 
@@ -705,6 +964,7 @@ async function send() {
   const input = $("input");
   const text = input.value.trim();
   if (!text || !S.sessionId) return;
+  sfx.play("send"); // 消息发出 → 发射感上滑
   input.value = "";
   autosize();
   const agent = S.unitView; // 子代理会话视图内 → 直聊该个体
@@ -751,16 +1011,33 @@ function setRightOpen(on) {
   $("btn-right").classList.toggle("on", on);
 }
 
+// 右栏动效签名（流式期间 120ms 重建频繁：状态集合没变就不重放入场动画）
+let rightSig = "";
+
 function renderRight() {
   const body = $("rp-body");
   const nodes = S.graph?.nodes ?? [];
   const units = Object.entries(S.live.units);
   const unitThink = Object.entries(S.live.unitThinking);
   $("rp-count").textContent = nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length}` : "";
+  // 头部读数：节点 / 运行中 / 子个体流 —— 与底边遥测条同语汇
+  const rpR = $("rp-readouts");
+  if (rpR) {
+    const liveN = nodes.filter((n) => ["dispatched", "running", "syncing", "arbitrating"].includes(n.status)).length;
+    rpR.innerHTML = nodes.length || units.length || unitThink.length
+      ? `<span class="readout"><span class="k">NODES</span><span class="v">${nodes.length}</span></span>` +
+        `<span class="readout"><span class="k">LIVE</span><span class="v${liveN ? " warn" : ""}">${liveN}</span></span>` +
+        `<span class="readout"><span class="k">UNIT</span><span class="v">${units.length}</span></span>`
+      : "";
+  }
   if (!nodes.length && !units.length && !unitThink.length && !S.reports.length) {
-    body.innerHTML = `<div class="rp-empty">本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示；点击个体卡可进入其会话</div>`;
+    body.innerHTML = `<div class="rp-empty"><div class="empty-mark">${brandMark("", 34)}</div><div>本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示；点击个体卡可进入其会话</div></div>`;
+    rightSig = "";
     return;
   }
+  const sig = `${nodes.map((n) => n.status).join("")}|${units.map(([a]) => a).join(",")}|${S.reports.length}`;
+  const sigChanged = sig !== rightSig;
+  rightSig = sig;
   let html = "";
   if (nodes.length) {
     html += `<div class="rp-section">任务派发（指挥体 → 子个体，点击查看个体会话）</div>`;
@@ -802,13 +1079,31 @@ function renderRight() {
   // 点击个体卡 → 进入与指挥体同款的子代理会话界面
   body.querySelectorAll("[data-agent]").forEach((el) =>
     el.addEventListener("click", () => openUnitView(el.dataset.agent)));
+  // 状态集合变化（新派发 / 新个体 / 回执到达）→ 卡片级联浮现；纯文本流式更新不重放
+  if (sigChanged) staggerIn(body.querySelectorAll(".task-card,.unit-card"), { step: 36, cap: 10 });
 }
 
 // ────────────────────────────── 设置视图（原生，直连环口 API） ──────────────────────────────
 // 桌面端不依赖任何 webui：模型与提供商 / 组与个体 / 通道 / 定时任务 / 安全 全部壳内直管。
 // 一切核心功能在 exm-core，桌面端与 webui、channel 一样只是连结核心的客户端。
 
-const SETTINGS_TABS = [["model", "模型"], ["group", "智能体组"], ["single", "智能体"], ["channel", "通道"], ["cron", "定时任务"], ["approval", "审批"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"], ["version", "版本"]];
+// 启动画面：最少展示 1.6s（品牌瞬间），网关就绪/初始化完成后淡出移除
+const SPLASH_MIN = 1600;
+const splashT0 = Date.now();
+
+function hideSplash() {
+  const sp = document.getElementById("splash");
+  if (!sp || sp.dataset.done) return;
+  sp.dataset.done = "1";
+  const wait = Math.max(0, SPLASH_MIN - (Date.now() - splashT0));
+  setTimeout(() => {
+    sp.classList.add("splash-out");
+    sfx.play("connect"); // 网关就绪开屏淡出 → 启动完成上扫一声（splash 期间无循环音）
+    setTimeout(() => sp.remove(), 750);
+  }, wait);
+}
+
+const SETTINGS_TABS = [["model", "模型"], ["single", "智能体"], ["group", "智能体组"], ["channel", "通道"], ["cron", "定时任务"], ["approval", "审批"], ["memory", "记忆"], ["skills", "技能"], ["audit", "审计"], ["config", "配置"], ["version", "版本"]];
 
 function showView(v) {
   // 编码页有未保存修改时，切走前先确认（切文件在 openFile、换目录在 applyWorkspace 各自拦截）
@@ -824,6 +1119,7 @@ function showView(v) {
   else if (v === "code") enterCode();
   else if (v === "tasks") enterTasks();
   else renderStream(true);
+  renderChrome(); // 遥测条随视图显隐
 }
 
 function renderView() {
@@ -837,14 +1133,29 @@ function toast(msg, ok = true) {
   // 统一容器纵向堆叠：旧实现 position:fixed 同点重叠，多条提示会互相遮挡
   const box = $("toasts");
   const t = document.createElement("div");
-  t.className = `toast ${ok ? "ok" : "err"}`;
+  t.className = `toast ${ok ? "ok" : "err"}`; // 进场滑入由 .toast 的 CSS 动画承担
   t.textContent = String(msg).replace(/^Error:\s*/, "");
   box.appendChild(t);
   while (box.children.length > 4) box.firstChild.remove(); // 上限 4 条，防刷屏
-  setTimeout(() => t.remove(), 3200);
+  setTimeout(() => t.classList.add("out"), 2800); // 退场：下滑淡出后再移除
+  setTimeout(() => t.remove(), 3140);
 }
 
 function renderSettings() {
+  // 页头读数带：当前分类在全部类目中的序号 + 会话 / 链路读数（与底边遥测条同语汇）
+  const idx = SETTINGS_TABS.findIndex(([id]) => id === S.settingsTab);
+  const hud = $("sp-hud");
+  if (hud) {
+    hud.innerHTML = pageHudHTML("设置", "SETTINGS CONSOLE", [
+      ["SEC", `${String(Math.max(idx, 0) + 1).padStart(2, "0")}/${String(SETTINGS_TABS.length).padStart(2, "0")}`],
+      ["VIEW", SETTINGS_TABS[Math.max(idx, 0)]?.[1] ?? "—"],
+      ["SESS", String(S.sessions.length).padStart(2, "0")],
+      ["LINK", S.connected ? "ONLINE" : "RECONN", S.connected ? "ok" : "err"],
+    ]);
+  }
+  const brand = $("sp-brand");
+  if (brand) brand.innerHTML = navBrandHTML("settings");
+  renderNavFoot();
   // 竖排导航
   const tabs = $("sp-tabs");
   tabs.innerHTML = "";
@@ -895,8 +1206,10 @@ function mkBtn(text, onclick, cls = "pop-save") {
   const b = document.createElement("button");
   b.className = cls;
   b.textContent = text;
+  // 全部 mkBtn 点击 → click（批量包装处：此处一行覆盖所有调用点；批量表单渲染只建按钮，不发声）
   // 统一 loading 态：async 处理器执行期间挂 .btn-busy（转圈 + 禁点），结束自动摘除
   b.addEventListener("click", (...args) => {
+    sfx.play("click");
     const r = onclick(...args);
     if (r && typeof r.finally === "function") {
       b.classList.add("btn-busy");
@@ -910,13 +1223,17 @@ function setCard(title) {
   c.className = "set-card";
   const h = document.createElement("div");
   h.className = "set-card-title";
-  h.textContent = title;
+  const mark = document.createElement("span");
+  mark.className = "card-mark";
+  mark.innerHTML = brandMark("", 12); // 分区标题旁的品牌小徽记
+  h.appendChild(mark);
+  h.appendChild(document.createTextNode(title));
   c.appendChild(h);
   return c;
 }
 async function settingsSave(promise, okMsg) {
-  try { await promise; toast(okMsg); return true; }
-  catch (e) { toast(String(e).slice(0, 160), false); return false; }
+  try { await promise; sfx.play("success"); toast(okMsg); return true; }
+  catch (e) { sfx.play("error"); toast(String(e).slice(0, 160), false); return false; }
 }
 
 // —— 模型与提供商 ——
@@ -1706,7 +2023,7 @@ function popItem({ title, sub, current, onclick }) {
   b.innerHTML = `<span style="min-width:0;overflow:hidden"><span>${esc(title)}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</span><span class="mark">${current ? "✓" : ""}</span>`;
   // stopPropagation：子菜单切换会重建浮窗内容，原 target 脱离容器后
   // 冒泡到 document 的关闭监听会被误判为「点在外面」而直接关浮窗
-  b.addEventListener("click", (e) => { e.stopPropagation(); onclick(e); });
+  b.addEventListener("click", (e) => { e.stopPropagation(); sfx.play("click"); onclick(e); });
   return b;
 }
 
@@ -2129,13 +2446,24 @@ function renderSetVersion(body) {
 
 const TASK_ST_COLOR = {
   pending: "var(--text-faint)", ready: "var(--text-faint)", dispatched: "var(--accent-2)",
-  running: "var(--accent-2)", syncing: "#c4b5fd", arbitrating: "var(--warn)",
+  running: "var(--accent-2)", syncing: "var(--accent-2)", arbitrating: "var(--warn)",
   done: "var(--ok)", blocked: "var(--warn)", failed: "var(--err)", cancelled: "var(--text-faint)",
 };
 const TASK_LEGEND = [["pending", "待派发"], ["running", "执行中"], ["done", "完成"], ["blocked", "受阻"], ["failed", "失败"]];
 
 function enterTasks() {
-  $("tp-body").innerHTML = `<div class="set-hint">加载任务图与台账…</div>`;
+  const brand = $("tp-brand");
+  if (brand) brand.innerHTML = navBrandHTML("tasks");
+  renderNavFoot();
+  const hud = $("tp-hud");
+  if (hud) {
+    hud.innerHTML = pageHudHTML("任务视图", "TASK GRAPH & LEDGER", [
+      ["NODES", "--"],
+      ["STATE", "SYNC…", "warn"],
+      ["SESS", String(S.sessions.length).padStart(2, "0")],
+    ]);
+  }
+  $("tp-body").innerHTML = `<div class="loading-hint"><span class="mark-charge mark-accent">${brandMark("", 22)}</span><span>加载任务图与台账…</span></div>`;
   refreshTasks();
 }
 
@@ -2153,6 +2481,22 @@ function renderTasksPage(graph, session) {
   const body = $("tp-body");
   body.innerHTML = "";
   const nodes = graph?.nodes ?? [];
+  const doneN = nodes.filter((n) => n.status === "done").length;
+  const liveN = nodes.filter((n) => ["dispatched", "running", "syncing", "arbitrating"].includes(n.status)).length;
+  const failN = nodes.filter((n) => n.status === "failed").length;
+  // 页头读数带：节点 / 完成 / 运行 / 失败 —— 打开任务视图即可一眼读数
+  const hud = $("tp-hud");
+  if (hud) {
+    hud.innerHTML = pageHudHTML("任务视图", "TASK GRAPH & LEDGER", [
+      ["NODES", String(nodes.length).padStart(2, "0")],
+      ["DONE", `${String(doneN).padStart(2, "0")}/${String(nodes.length).padStart(2, "0")}`, nodes.length && doneN === nodes.length ? "ok" : ""],
+      ["LIVE", String(liveN).padStart(2, "0"), liveN ? "warn" : ""],
+      ["FAIL", String(failN).padStart(2, "0"), failN ? "err" : ""],
+    ]);
+  }
+  const brand = $("tp-brand");
+  if (brand) brand.innerHTML = navBrandHTML("tasks");
+  renderNavFoot();
   // —— 任务图：SVG 连线 DAG（依赖深度分层 + 状态色贝塞尔连线），点节点直聊子代理 ——
   const graphCard = setCard(`任务图 · ${nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length} 完成` : "空"}`);
   graphCard.appendChild(Object.assign(document.createElement("div"), {
@@ -2239,6 +2583,8 @@ function renderTaskDag(container, nodes) {
   dag.style.width = `${width}px`;
   dag.style.height = `${height}px`;
   dag.insertBefore(dagEdgesSvg(nodes, byId, pos, width, height), dag.firstChild);
+  // 节点级联浮现（封顶 10 档）：图更新时保持「图是活的」感知
+  staggerIn(dag.querySelectorAll(".tk-dnode"), { step: 45, cap: 10 });
   applyDagZoom(scaleBox, dag, zoomVal);
   // Ctrl+滚轮缩放（0.5~2 倍）：只拦带 Ctrl 的滚轮，普通滚动 / 触控板平移不受影响
   wrap.addEventListener("wheel", (e) => {
@@ -2574,6 +2920,22 @@ function renderEditorState() {
     ${f.truncated ? `<span class="cp-chip cp-chip-warn">超过 200KB 已截断展示</span>` : ""}
     ${f.binary ? `<span class="cp-chip cp-chip-warn">非 UTF-8 内容</span>` : ""}
     <span class="cp-chip">${esc(fmtSize(f.size))}</span>`;
+  // 统计读数：行 / 字符 / 编码 / 修改态（有未保存改动时 MOD 转警示色）
+  const stats = $("cp-stats");
+  if (stats) {
+    if (!f) {
+      stats.innerHTML = "";
+    } else {
+      const text = $("cp-editor")?.value ?? f.content ?? "";
+      const lines = text ? text.split("\n").length : 0;
+      stats.innerHTML =
+        `<span class="cp-stat"><i>LN</i><b>${lines}</b></span>` +
+        `<span class="cp-stat"><i>CH</i><b>${text.length}</b></span>` +
+        `<span class="cp-stat"><i>ENC</i><b>${f.binary ? "BIN" : "UTF-8"}</b></span>` +
+        `<span class="cp-stat"><i>BYTES</i><b>${esc(fmtSize(f.size) || "0 B")}</b></span>` +
+        (f.dirty ? `<span class="cp-stat dirty"><i>MOD</i><b>●</b></span>` : "");
+    }
+  }
   // 截断 / 二进制（readonly）禁存：写回会把不完整内容覆盖到完整文件上
   $("cp-save").disabled = !f || f.readonly || !f.dirty;
   $("cp-reload").disabled = !f;
@@ -3007,6 +3369,14 @@ async function init() {
   });
   $("btn-side").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
   $("btn-settings").addEventListener("click", () => showView(S.view === "settings" ? "chat" : "settings"));
+  // 界面音效开关：本地合成提示音，状态记忆 localStorage exm.sfx（默认开；prefers-reduced-motion 默认关）
+  const paintSfx = () => { $("btn-sfx").textContent = sfx.enabled ? "🔊 音效" : "🔇 静音"; };
+  $("btn-sfx").addEventListener("click", () => {
+    sfx.toggle();
+    paintSfx();
+    if (sfx.enabled) sfx.play("click"); // 重新开启的一声反馈；静音本身无声
+  });
+  paintSfx();
   $("btn-right").addEventListener("click", () => setRightOpen(!S.rightOpen));
   setRightOpen(S.rightOpen);
   // 新视图入口：编码 / 任务 / 待审批（直达设置审批 tab）
@@ -3063,10 +3433,10 @@ async function init() {
   });
 
   // 输入区上下文芯片：菜单开合与切换
-  $("chip-ws").addEventListener("click", () => openPopover(wsMenu));
-  $("chip-target").addEventListener("click", () => openPopover(targetMenu));
-  $("chip-model").addEventListener("click", () => openPopover(modelMenu));
-  $("btn-plus").addEventListener("click", () => $("file-pick").click());
+  $("chip-ws").addEventListener("click", () => { sfx.play("click"); openPopover(wsMenu); });
+  $("chip-target").addEventListener("click", () => { sfx.play("click"); openPopover(targetMenu); });
+  $("chip-model").addEventListener("click", () => { sfx.play("click"); openPopover(modelMenu); });
+  $("btn-plus").addEventListener("click", () => { sfx.play("click"); $("file-pick").click(); });
   $("file-pick").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
   document.addEventListener("click", (e) => {
     const pop = $("popover");
@@ -3079,10 +3449,13 @@ async function init() {
     const health = await api.health();
     setConn(true);
     $("conn-text").textContent = health.mock ? "已连接（测试替身）" : "已连接";
+    const sps = document.getElementById("splash-status");
+    if (sps) sps.textContent = "已连结";
   } catch { setConn(false); }
 
   // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导设置
   await refreshContext();
+  loadChromeVersion(); // 遥测条版本读数（异步，不阻塞启动路径）
   // 待审批角标：启动即拉一次；即时性走 WS 事件 + 窗口聚焦校准，60s 轮询仅作兜底
   void refreshApprovalsBadge();
   window.addEventListener("focus", () => void refreshApprovalsBadge());
@@ -3106,6 +3479,10 @@ async function init() {
     if (S.sessions.length) await selectSession(S.sessions[0].id);
     else await newSession();
   } catch (e) { alertErr(e); }
+  hideSplash();
 }
+
+// 由 HTML 声明的徽记位先填上（不依赖网关；此前 index.html 手抄的那份抄漏了弧端点）
+fillMarks();
 
 init();

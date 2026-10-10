@@ -1,6 +1,7 @@
 /** 事件活动页：会话事件溯源 + 实时调度时间线 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, Card, Empty, Select, Space, Spin, Tag } from "antd";
+import { Button, Card, Select, Space, Spin, Tag } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { ReloadOutlined } from "@ant-design/icons";
 import { api, type StoredEvent } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -110,7 +111,7 @@ function AuditPane(): React.ReactElement {
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>{t("common.refresh")}</Button>
       </Space>
       <Spin spinning={loading}>
-        {items.length === 0 && <Empty description={t("activity.auditEmpty")} className="pane-empty" />}
+        {items.length === 0 && <BrandEmpty description={t("activity.auditEmpty")} className="pane-empty" />}
         {items.map((it, idx) => {
           const key = String(it.callId ?? idx);
           const isOpen = expanded === key;
@@ -211,7 +212,7 @@ function EventsPane(): React.ReactElement {
 
       <Spin spinning={loading}>
         <div className="event-stream">
-          {events.length === 0 && !loading && <Empty description={t("activity.empty")} className="pane-empty" />}
+          {events.length === 0 && !loading && <BrandEmpty description={t("activity.empty")} className="pane-empty" />}
           {events
             .slice()
             .reverse()

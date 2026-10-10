@@ -8,7 +8,6 @@ import {
   Card,
   Col,
   Descriptions,
-  Empty,
   Input,
   List,
   message,
@@ -21,6 +20,7 @@ import {
   Tag,
   Tooltip,
 } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { DeleteOutlined, PushpinOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { api, type LlmProfile, type MemoryEntry, type MemoryStats, type RecallHit } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -353,7 +353,7 @@ export function MemoryView(): React.ReactElement {
           rowKey="id"
           dataSource={entries}
           pagination={{ pageSize: 10 }}
-          locale={{ emptyText: <Empty description={t("memory.emptyEntries")} /> }}
+          locale={{ emptyText: <BrandEmpty description={t("memory.emptyEntries")} /> }}
           columns={[
             {
               title: t("memory.colKind"),

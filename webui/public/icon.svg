@@ -1,9 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="18" fill="#0a0e13"/>
-  <g fill="none" stroke="#37e0ff" stroke-width="3">
-    <path d="M64 16 L104 40 L104 88 L64 112 L24 88 L24 40 Z" opacity="0.9"/>
-    <path d="M64 30 L92 47 L92 81 L64 98 L36 81 L36 47 Z" opacity="0.55"/>
-    <path d="M64 44 L80 54 L80 74 L64 84 L48 74 L48 54 Z" opacity="0.3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <!-- EXMACHINA 站点图标 = desktop/ui/mark.js 的同一套几何（400 画布 / 圆心 200,200）：
+       中枢环 r=56.5，外圈 8 个 45° 槽位（0/180° 远弧 r=131.5，45/135/225/315° 近弧 r=107，
+       90/270° 留空），全部线宽 24.5。改口径先改 mark.js，再同步这里。 -->
+  <rect width="400" height="400" fill="#000000"/>
+  <circle cx="200" cy="200" r="56.5" fill="none" stroke="#ffffff" stroke-width="24.5"/>
+  <g fill="none" stroke="#ffffff" stroke-width="24.5" stroke-linecap="butt">
+    <path d="M 321.49 250.32 A 131.5 131.5 0 0 0 321.49 149.68"/>
+    <path d="M 298.86 159.05 A 107.0 107.0 0 0 0 240.95 101.14"/>
+    <path d="M 159.05 101.14 A 107.0 107.0 0 0 0 101.14 159.05"/>
+    <path d="M 78.51 149.68 A 131.5 131.5 0 0 0 78.51 250.32"/>
+    <path d="M 101.14 240.95 A 107.0 107.0 0 0 0 159.05 298.86"/>
+    <path d="M 240.95 298.86 A 107.0 107.0 0 0 0 298.86 240.95"/>
   </g>
-  <text x="64" y="72" font-family="Consolas, monospace" font-size="26" font-weight="bold" fill="#37e0ff" text-anchor="middle">EX</text>
 </svg>

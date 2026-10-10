@@ -1,6 +1,7 @@
 /** 技能包管理：派发时按触发词自动携带的指令包（数据化技能，热装载） */
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Space, Spin, Tag, message } from "antd";
+import { Button, Card, Form, Input, Modal, Popconfirm, Space, Spin, Tag, message } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type SkillDef } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -115,7 +116,7 @@ export function SkillsView(): React.ReactElement {
           ))}
         </div>
         {!loading && skills.length === 0 && (
-          <Empty description={t("skills.empty")} className="graph-empty" />
+          <BrandEmpty description={t("skills.empty")} className="graph-empty" />
         )}
       </Spin>
 

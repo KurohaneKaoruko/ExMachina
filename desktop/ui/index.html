@@ -4,12 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EXMACHINA</title>
+    <!-- 徽记几何唯一定义（400 口径）：必须在 app.js 之前加载，启动画面才能首帧就有图形 -->
+    <script src="mark.js"></script>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <!-- 启动画面：连结动画（网关就绪后淡出；最少展示 1.6s 保证品牌瞬间）
+         动效不旋转，且整枚同拍呼吸——弧槽与中枢环灰度始终一致（见 style.css 的 mk-breathe） -->
+    <div id="splash">
+      <div class="splash-svg" data-mark="210"></div>
+      <div class="splash-word">EXMACHINA</div>
+      <div class="splash-status" id="splash-status">连结中</div>
+    </div>
+    <script>fillMarks();</script>
     <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
     <header id="titlebar" data-tauri-drag-region>
-      <span class="tb-brand" data-tauri-drag-region>EXMACHINA</span>
+      <span class="tb-brand" data-tauri-drag-region><span class="tb-mark" data-mark="15"></span>EXMACHINA</span>
+      <div class="tb-readouts" id="tb-readouts"></div>
       <div class="tb-btns hidden" id="tb-btns">
         <button id="tb-min" title="最小化">─</button>
         <button id="tb-max" title="最大化 / 还原">▢</button>
@@ -30,6 +41,7 @@
             <button id="btn-tasks" class="side-link" title="当前会话的任务图与台账">▣ 任务</button>
             <button id="btn-approvals" class="side-link" title="待处理审批单（破坏性操作放行闸口）">⚠ 待审批<span id="approvals-badge" class="badge hidden">0</span></button>
           </div>
+          <button id="btn-sfx" class="side-link" title="界面音效开 / 关（本地合成，无音频文件与网络请求）">🔊 音效</button>
           <button id="btn-settings" class="side-link" title="模型 / 组与个体 / 通道 / 定时 / 安全">⚙ 设置</button>
         </div>
       </aside>
@@ -74,17 +86,25 @@
 
       <!-- 右栏：子个体执行面板（任务派发图 + 各子个体实时流） -->
       <aside id="rightpanel">
-        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span><button id="rp-full" class="rp-full" title="整页任务视图（任务图 + 台账）">任务视图 ›</button></div>
+        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span><span id="rp-readouts" class="rp-readouts"></span><button id="rp-full" class="rp-full" title="整页任务视图（任务图 + 台账）">任务视图 ›</button></div>
         <div id="rp-body"></div>
       </aside>
     </div>
+    <!-- 分段遥测条：窗口底边通栏系统读数（对话视图常驻，其余整页隐藏） -->
+    <div id="telemetry" class="telemetry" aria-hidden="true"></div>
     <!-- 设置（独立整页）：原生管理面，直连环口 API -->
     <div id="settings-page" class="hidden">
       <aside class="sp-nav">
+        <div class="sp-brand" id="sp-brand"></div>
+        <div class="sp-nav-rule"></div>
         <button id="sp-back" class="sp-back">‹ 返回对话</button>
         <nav id="sp-tabs"></nav>
+        <div class="sp-foot" id="sp-foot"></div>
       </aside>
-      <main class="sp-main"><div id="sp-body"></div></main>
+      <main class="sp-main">
+        <div class="page-hud" id="sp-hud"></div>
+        <div id="sp-body"></div>
+      </main>
     </div>
 
     <!-- 编码（独立整页）：文件树 + 编辑器 + 变更/Git 面板，直连 fs / git 环口 -->
@@ -99,6 +119,7 @@
         <header class="cp-editor-head">
           <span id="cp-file-path" class="cp-file-path">未打开文件</span>
           <span id="cp-file-state" class="cp-file-state"></span>
+          <span id="cp-stats" class="cp-stats"></span>
           <span class="cp-editor-ops">
             <button id="cp-reload" class="set-btn">重新加载</button>
             <button id="cp-save" class="set-btn">保存（Ctrl+S）</button>
@@ -106,7 +127,7 @@
         </header>
         <!-- 只读预览提示条：截断 / 非 UTF-8 文件常驻警示（textarea 同步置 readOnly） -->
         <div id="cp-readonly-bar" class="cp-readonly-bar hidden">该文件为只读预览（超过 200KB 截断或非 UTF-8 内容，保存已禁用）</div>
-        <div id="cp-editor-empty" class="cp-editor-empty">在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
+        <div id="cp-editor-empty" class="cp-editor-empty"><div class="empty-mark" data-mark="56"></div>在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
         <!-- 编辑器三明治：行号列（左）/ 当前行高亮条（底）/ 文本层（顶）；滚动由 JS 同步 -->
         <div id="cp-editor-wrap" class="hidden">
           <div id="cp-curline" aria-hidden="true" class="hidden"></div>
@@ -129,11 +150,17 @@
     <!-- 任务（独立整页）：当前会话任务图 + 台账 -->
     <div id="tasks-page" class="hidden">
       <aside class="sp-nav">
+        <div class="sp-brand" id="tp-brand"></div>
+        <div class="sp-nav-rule"></div>
         <button id="tp-back" class="sp-back">‹ 返回对话</button>
         <div class="tp-nav-title">任务视图</div>
         <div class="tp-nav-sub">当前会话的任务图（graph 接口 + graph.updated 推送）与任务台账（goal / 验收 / 证据 / 风险）</div>
+        <div class="sp-foot" id="tp-foot"></div>
       </aside>
-      <main class="sp-main"><div id="tp-body"></div></main>
+      <main class="sp-main">
+        <div class="page-hud" id="tp-hud"></div>
+        <div id="tp-body"></div>
+      </main>
     </div>
 
     <!-- 通用模态：会话操作（重命名 / 分叉 / 撤销 / 归档）等轻量交互 -->
