@@ -560,7 +560,19 @@ function renderSidebar() {
     nav.appendChild(head);
     nav.appendChild(box);
   }
+  // 入场编排（签名比对：列表重建高频，避免每次都重放动画）——
+  // 会话集变化 → 整列级联浮现；仅活动会话切换 → 活动行高亮脉冲
+  const idsSig = S.sessions.map((s) => s.id).join(",");
+  const activeSig = String(S.sessionId ?? "");
+  if (idsSig !== sidebarIdsSig) staggerIn(nav.querySelectorAll(".session-item"), { step: 36, cap: 10 });
+  else if (activeSig !== sidebarActiveSig) nav.querySelector(".session-item.active")?.classList.add("flash-in");
+  sidebarIdsSig = idsSig;
+  sidebarActiveSig = activeSig;
 }
+
+// 侧栏动效签名（模块级记忆：与上次渲染比对决定放不放动画）
+let sidebarIdsSig = "";
+let sidebarActiveSig = "";
 
 function sessionEl(s) {
   const item = document.createElement("div");
@@ -867,6 +879,9 @@ function setRightOpen(on) {
   $("btn-right").classList.toggle("on", on);
 }
 
+// 右栏动效签名（流式期间 120ms 重建频繁：状态集合没变就不重放入场动画）
+let rightSig = "";
+
 function renderRight() {
   const body = $("rp-body");
   const nodes = S.graph?.nodes ?? [];
@@ -874,9 +889,13 @@ function renderRight() {
   const unitThink = Object.entries(S.live.unitThinking);
   $("rp-count").textContent = nodes.length ? `${nodes.filter((n) => n.status === "done").length}/${nodes.length}` : "";
   if (!nodes.length && !units.length && !unitThink.length && !S.reports.length) {
-    body.innerHTML = `<div class="rp-empty">本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示；点击个体卡可进入其会话</div>`;
+    body.innerHTML = `<div class="rp-empty"><div class="empty-mark">${brandMark("", 34)}</div><div>本轮暂无派发任务<br/>指挥体拆解任务后，子个体的执行情况会在这里实时展示；点击个体卡可进入其会话</div></div>`;
+    rightSig = "";
     return;
   }
+  const sig = `${nodes.map((n) => n.status).join("")}|${units.map(([a]) => a).join(",")}|${S.reports.length}`;
+  const sigChanged = sig !== rightSig;
+  rightSig = sig;
   let html = "";
   if (nodes.length) {
     html += `<div class="rp-section">任务派发（指挥体 → 子个体，点击查看个体会话）</div>`;
@@ -918,6 +937,8 @@ function renderRight() {
   // 点击个体卡 → 进入与指挥体同款的子代理会话界面
   body.querySelectorAll("[data-agent]").forEach((el) =>
     el.addEventListener("click", () => openUnitView(el.dataset.agent)));
+  // 状态集合变化（新派发 / 新个体 / 回执到达）→ 卡片级联浮现；纯文本流式更新不重放
+  if (sigChanged) staggerIn(body.querySelectorAll(".task-card,.unit-card"), { step: 36, cap: 10 });
 }
 
 // ────────────────────────────── 设置视图（原生，直连环口 API） ──────────────────────────────
@@ -969,11 +990,12 @@ function toast(msg, ok = true) {
   // 统一容器纵向堆叠：旧实现 position:fixed 同点重叠，多条提示会互相遮挡
   const box = $("toasts");
   const t = document.createElement("div");
-  t.className = `toast ${ok ? "ok" : "err"}`;
+  t.className = `toast ${ok ? "ok" : "err"}`; // 进场滑入由 .toast 的 CSS 动画承担
   t.textContent = String(msg).replace(/^Error:\s*/, "");
   box.appendChild(t);
   while (box.children.length > 4) box.firstChild.remove(); // 上限 4 条，防刷屏
-  setTimeout(() => t.remove(), 3200);
+  setTimeout(() => t.classList.add("out"), 2800); // 退场：下滑淡出后再移除
+  setTimeout(() => t.remove(), 3140);
 }
 
 function renderSettings() {
@@ -1044,7 +1066,11 @@ function setCard(title) {
   c.className = "set-card";
   const h = document.createElement("div");
   h.className = "set-card-title";
-  h.textContent = title;
+  const mark = document.createElement("span");
+  mark.className = "card-mark";
+  mark.innerHTML = brandMark("", 12); // 分区标题旁的品牌小徽记
+  h.appendChild(mark);
+  h.appendChild(document.createTextNode(title));
   c.appendChild(h);
   return c;
 }
@@ -2269,7 +2295,7 @@ const TASK_ST_COLOR = {
 const TASK_LEGEND = [["pending", "待派发"], ["running", "执行中"], ["done", "完成"], ["blocked", "受阻"], ["failed", "失败"]];
 
 function enterTasks() {
-  $("tp-body").innerHTML = `<div class="set-hint">加载任务图与台账…</div>`;
+  $("tp-body").innerHTML = `<div class="loading-hint"><span class="mark-spin mark-accent">${brandMark("", 22)}</span><span>加载任务图与台账…</span></div>`;
   refreshTasks();
 }
 
@@ -2373,6 +2399,8 @@ function renderTaskDag(container, nodes) {
   dag.style.width = `${width}px`;
   dag.style.height = `${height}px`;
   dag.insertBefore(dagEdgesSvg(nodes, byId, pos, width, height), dag.firstChild);
+  // 节点级联浮现（封顶 10 档）：图更新时保持「图是活的」感知
+  staggerIn(dag.querySelectorAll(".tk-dnode"), { step: 45, cap: 10 });
   applyDagZoom(scaleBox, dag, zoomVal);
   // Ctrl+滚轮缩放（0.5~2 倍）：只拦带 Ctrl 的滚轮，普通滚动 / 触控板平移不受影响
   wrap.addEventListener("wheel", (e) => {
