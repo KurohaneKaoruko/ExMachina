@@ -264,6 +264,9 @@ impl BrowserSession {
     pub async fn navigate(&mut self, url: &str) -> anyhow::Result<()> {
         self.command("Page.navigate", serde_json::json!({ "url": url })).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.timeout_secs);
+        // 连续命令超时计数：单次瞬时超时（CI runner 偶发 / 浏览器短暂无响应）吸收后重试，
+        // 连续两次仍无响应才判定浏览器实例僵死（真断连会快速连败，不会白等）
+        let mut eval_errs = 0u32;
         loop {
             if tokio::time::Instant::now() > deadline {
                 return Ok(()); // 超时也返回：页面多数已可读
@@ -271,8 +274,13 @@ impl BrowserSession {
             tokio::time::sleep(Duration::from_millis(200)).await;
             match self.eval("document.readyState").await {
                 Ok(s) if s.contains("complete") => return Ok(()),
-                Ok(_) => continue,
-                Err(e) => return Err(e),
+                Ok(_) => eval_errs = 0,
+                Err(e) => {
+                    eval_errs += 1;
+                    if eval_errs >= 2 {
+                        return Err(e);
+                    }
+                }
             }
         }
     }
