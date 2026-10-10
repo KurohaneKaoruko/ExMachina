@@ -1,6 +1,7 @@
 /** 执行审批：被闸门拦截的命令，批准后代执行 / 拒绝 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, Empty, Segmented, Space, Spin, Table, Tag, message } from "antd";
+import { Button, Segmented, Space, Spin, Table, Tag, message } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { ArrowRightOutlined, CheckOutlined, CloseOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type ApprovalRequest } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -71,7 +72,7 @@ export function ApprovalsView(): React.ReactElement {
           rowKey="id"
           pagination={{ pageSize: 12 }}
           dataSource={items}
-          locale={{ emptyText: <Empty description={t("approvals.empty")} className="pane-empty" /> }}
+          locale={{ emptyText: <BrandEmpty description={t("approvals.empty")} className="pane-empty" /> }}
           columns={[
             {
               title: t("approvals.colStatus"),

@@ -1,6 +1,7 @@
 /** 自动化管理：定时任务（cron / 一次性）的创建、启停、手动执行与运行记录 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Segmented, Collapse, Button, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message } from "antd";
+import { Segmented, Collapse, Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, message } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { CaretRightOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { api, type Channel, type CronJob, type CronRun } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -106,7 +107,7 @@ export function AutomationsView(): React.ReactElement {
           rowKey="id"
           pagination={false}
           dataSource={jobs}
-          locale={{ emptyText: <Empty description={t("cron.empty")} className="pane-empty" /> }}
+          locale={{ emptyText: <BrandEmpty description={t("cron.empty")} className="pane-empty" /> }}
           columns={[
             {
               title: t("cron.colJob"),
@@ -177,7 +178,7 @@ export function AutomationsView(): React.ReactElement {
       </Spin>
 
       <Drawer title={t("cron.runsTitle", { name: runsFor?.name ?? "" })} open={runsFor !== null} onClose={() => setRunsFor(null)} width={520}>
-        {runs.length === 0 && <Empty description={t("cron.noRuns")} />}
+        {runs.length === 0 && <BrandEmpty description={t("cron.noRuns")} />}
         {runs.map((r) => (
           <div key={r.id} className="run-row">
             <div>

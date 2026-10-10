@@ -72,7 +72,7 @@ export function CharStream({ className }: CharStreamProps): React.ReactElement {
     /** 从 CSS 变量取当前强调色的 RGB 三元组，实现换色联动 */
     const accentRgb = (): string =>
       getComputedStyle(document.documentElement).getPropertyValue("--accent-rgb").trim() ||
-      "53, 224, 200";
+      "0, 229, 255";
 
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);

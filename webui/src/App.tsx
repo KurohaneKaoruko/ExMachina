@@ -1,6 +1,6 @@
 /** 主框架：纯导航侧栏——组切换在对话页内，组管理独立成页 */
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { Menu, message, Spin, Tag } from "antd";
+import { Menu, message, Tag } from "antd";
 import {
   ApartmentOutlined,
   BellOutlined,
@@ -27,6 +27,7 @@ import { LANGS, useLang, useT, type TKey } from "./i18n/core";
 import { ACCENTS, accentOf, useTheme } from "./theme";
 import { CharStream } from "./components/CharStream";
 import { AsciiDivider } from "./components/Ascii";
+import { Emblem } from "./components/Emblem";
 /* 视图懒加载（React.lazy + 动态 import）：按视图切分 chunk，首屏只拉 shell + 当前视图，
  * 其余视图在导航到时才加载（vendor 三方库另行在 vite.config.ts 的 manualChunks 分组缓存） */
 const LoginView = lazy(() => import("./views/LoginView").then((m) => ({ default: m.LoginView })));
@@ -45,13 +46,14 @@ const ApprovalsView = lazy(() => import("./views/ApprovalsView").then((m) => ({ 
 const ChannelsView = lazy(() => import("./views/ChannelsView").then((m) => ({ default: m.ChannelsView })));
 const ActivityView = lazy(() => import("./views/ActivityView").then((m) => ({ default: m.ActivityView })));
 
-/** 懒加载 chunk 未就绪时的兜底（antd Spin 居中） */
+/** 懒加载 chunk 未就绪时的兜底：品牌徽记 + 等宽字状态行（替代裸 Spin） */
 function ViewSuspense({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
     <Suspense
       fallback={
-        <div style={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
-          <Spin size="large" />
+        <div className="view-loading">
+          <Emblem size={56} animated />
+          <span className="view-loading-text">LOADING</span>
         </div>
       }
     >
@@ -192,10 +194,10 @@ export default function App(): React.ReactElement {
     return (
       <div className="login-wrap">
         <div className="login-core">
-          <div className="brand-row" style={{ justifyContent: "center" }}>
-            <span className="brand-led" />
-            <span className="brand-name">EX·MACHINA</span>
+          <div className="login-figure">
+            <Emblem size={92} animated />
           </div>
+          <span className="brand-name login-brand">EX·MACHINA</span>
           <div className="title-rule" style={{ marginTop: 12 }} />
           <div className="login-sub" style={{ textAlign: "center" }}>
             {t("status.connecting")} <span className="mono">[CONNECTING]</span>
@@ -314,20 +316,23 @@ export default function App(): React.ReactElement {
       </aside>
       <main className="app-content">
         <ViewSuspense>
-          {view === "chat" && <ChatView />}
-          {view === "graph" && <GraphView />}
-          {view === "agent" && <SinglesView />}
-          {view === "groups" && <GroupsView />}
-          {view === "nexus" && <NexusView />}
-          {view === "skills" && <SkillsView />}
-          {view === "models" && <ModelsView />}
-          {view === "automations" && <AutomationsView />}
-          {view === "approvals" && <ApprovalsView />}
-          {view === "channels" && <ChannelsView />}
-          {view === "ledger" && <LedgerView />}
-          {view === "memory" && <MemoryView />}
-          {view === "activity" && <ActivityView />}
-          {view === "settings" && <SettingsView />}
+          {/* key 驱动：切视图即重挂载 → 入场动效（淡入 + 上移）每次都完整播放 */}
+          <div className="view-stage" key={view}>
+            {view === "chat" && <ChatView />}
+            {view === "graph" && <GraphView />}
+            {view === "agent" && <SinglesView />}
+            {view === "groups" && <GroupsView />}
+            {view === "nexus" && <NexusView />}
+            {view === "skills" && <SkillsView />}
+            {view === "models" && <ModelsView />}
+            {view === "automations" && <AutomationsView />}
+            {view === "approvals" && <ApprovalsView />}
+            {view === "channels" && <ChannelsView />}
+            {view === "ledger" && <LedgerView />}
+            {view === "memory" && <MemoryView />}
+            {view === "activity" && <ActivityView />}
+            {view === "settings" && <SettingsView />}
+          </div>
         </ViewSuspense>
       </main>
     </div>

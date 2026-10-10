@@ -1,9 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="18" fill="#0a0e13"/>
-  <g fill="none" stroke="#37e0ff" stroke-width="3">
-    <path d="M64 16 L104 40 L104 88 L64 112 L24 88 L24 40 Z" opacity="0.9"/>
-    <path d="M64 30 L92 47 L92 81 L64 98 L36 81 L36 47 Z" opacity="0.55"/>
-    <path d="M64 44 L80 54 L80 74 L64 84 L48 74 L48 54 Z" opacity="0.3"/>
+  <rect width="128" height="128" fill="#000000"/>
+  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="butt">
+    <path d="M 101.4 70.6 A 38 38 0 0 1 70.6 101.4" opacity="0.95"/>
+    <path d="M 57.4 101.4 A 38 38 0 0 1 26.6 70.6" opacity="0.75"/>
+    <path d="M 26.6 57.4 A 38 38 0 0 1 57.4 26.6" opacity="0.55"/>
+    <path d="M 70.6 26.6 A 38 38 0 0 1 101.4 57.4" opacity="0.35"/>
   </g>
-  <text x="64" y="72" font-family="Consolas, monospace" font-size="26" font-weight="bold" fill="#37e0ff" text-anchor="middle">EX</text>
+  <rect x="57" y="57" width="14" height="14" fill="#00e5ff"/>
 </svg>

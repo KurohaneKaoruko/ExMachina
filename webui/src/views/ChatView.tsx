@@ -504,7 +504,7 @@ export function ChatView(): React.ReactElement {
           <span className="page-en">CHAT</span>
           <span className="console-sep" />
           <span className="readout"><span className="k">MODE</span> <span className="v">{target.mode === "single" ? "SOLO" : "GROUP"}</span></span>
-          <span className="readout"><span className="k">STATE</span> <span className="v">{running ? "RUNNING" : "IDLE"}</span></span>
+          <span className="readout"><span className="k">STATE</span> <span className={`v${running ? " v-live" : ""}`}>{running ? "RUNNING" : "IDLE"}</span></span>
 
           {usage && (
             <span className="readout console-usage">

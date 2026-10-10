@@ -1,6 +1,7 @@
 /** 智能连结网络（实验性）：外部连结体管理——远程 EXMACHINA 网关 / 本机 CLI 智能体的接入与维护 */
 import React, { useCallback, useEffect, useState } from "react";
-import { Alert, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tag, message } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { PlusOutlined, SettingOutlined, UsergroupDeleteOutlined } from "@ant-design/icons";
 import { api, type NexusLink } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -88,7 +89,7 @@ export function NexusView(): React.ReactElement {
       <div className="pane-body">
         <Spin spinning={loading}>
           {links.length === 0 ? (
-            <Empty description={t("nexus.empty")} className="pane-empty" />
+            <BrandEmpty description={t("nexus.empty")} className="pane-empty" />
           ) : (
             <div className="nexus-links">
               {links.map((l) => (

@@ -1,22 +1,24 @@
 /** 任务图视图：DAG 实时渲染（自绘 SVG，按拓扑深度分层） */
 import React, { useMemo, useState } from "react";
-import { Drawer, Empty, Select, Tag, Typography } from "antd";
+import { Drawer, Select, Tag, Typography } from "antd";
+import { BrandEmpty } from "../components/BrandEmpty";
 import { useExm } from "../store";
 import { PageHeader } from "../components/PageHeader";
 import { useT } from "../i18n/core";
 import type { TaskNode, TaskStatus } from "../types";
 
+/** 状态 → 纯色（扁平硬朗口径：白/灰阶 + 五个语义纯色，无渐变） */
 const STATUS_COLORS: Record<TaskStatus, string> = {
-  pending: "#bfbfbf",
-  ready: "#1677ff",
-  dispatched: "#2f54eb",
-  running: "#faad14",
-  syncing: "#722ed1",
-  done: "#52c41a",
-  blocked: "#f5222d",
-  failed: "#cf1322",
-  arbitrating: "#eb2f96",
-  cancelled: "#8c8c8c",
+  pending: "#5a5a5a",
+  ready: "#ffffff",
+  dispatched: "#00e5ff",
+  running: "#ffea00",
+  syncing: "#7c8cff",
+  done: "#00e676",
+  blocked: "#ff1744",
+  failed: "#ff1744",
+  arbitrating: "#ffea00",
+  cancelled: "#333333",
 };
 
 const NODE_W = 200;
@@ -84,7 +86,7 @@ export function GraphView(): React.ReactElement {
             <Select size="small" style={{ minWidth: 180 }} value={sessionId ?? undefined} onChange={(v) => void selectSession(v)} options={sessions.map((s) => ({ value: s.id, label: s.title }))} placeholder={t("graph.pickSession")} />
           }
         />
-        <Empty description={t("graph.empty")} className="graph-empty" />
+        <BrandEmpty description={t("graph.empty")} className="graph-empty" />
       </div>
     );
   }
