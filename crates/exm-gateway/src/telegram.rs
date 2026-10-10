@@ -289,7 +289,12 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                     text: &text, external_id: &from_id, display_name: &display, is_group, mentioned, chat_key: &chat_key,
                 }).await {
                     GateDecision::Allow => {
-                        handle_message(&core, &ch, chat_id, &from_id, inbound_media.unwrap_or_default(), &text).await
+                        // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截——与其他适配器同口径
+                        if let Some(reply) = crate::channel_util::builtin_command(&core, &ch, &chat_key, &text).await {
+                            send_message(ch.token.as_deref().unwrap_or_default(), chat_id, &reply).await;
+                        } else {
+                            handle_message(&core, &ch, chat_id, &from_id, inbound_media.unwrap_or_default(), &text).await
+                        }
                     }
                     GateDecision::Ignore => {}
                     GateDecision::Deny(reply) => {
