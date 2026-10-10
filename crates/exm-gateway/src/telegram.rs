@@ -169,8 +169,9 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                 eprintln!("[telegram:{}] chat {chat_id} 不在白名单，已忽略", ch.id);
                 continue;
             }
-            let text = match u.pointer("/message/text").and_then(|v| v.as_str()) {
-                Some(t) => Some(t.to_string()),
+            let text = inbound_text(&u);
+            let mut text = match text {
+                Some(t) => Some(t),
                 None => {
                     // 语音消息：getFile 下载 ogg → 转写为文本
                     match u.pointer("/message/voice/file_id").and_then(|v| v.as_str()) {
@@ -194,10 +195,21 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                     }
                 }
             };
-            if let Some(text) = text {
-                if text.trim().is_empty() {
-                    continue;
-                }
+            // 纯图/纯文件（无文字无语音）：给占位正文让消息继续走——媒体说明由注入注释补上。
+            // 曾在这里直接 continue，导致「只发一张图」被整体丢弃（photo 消息永远没有 text 字段）。
+            if text.is_none() && has_media(&u) {
+                text = Some(
+                    if u.pointer("/message/photo").is_some() {
+                        "（用户发来一张图片，见附件注入）".to_string()
+                    } else {
+                        "（用户发来一个文件，见附件注入）".to_string()
+                    },
+                );
+            }
+            let Some(text) = text else { continue };
+            if text.trim().is_empty() {
+                continue;
+            }
                 // 入站媒体（组 6.4）：photo / document 下载落 inbox，随消息注入
                 let mut media: Vec<(String, String, String)> = Vec::new();
                 if let Some(photos) = u.pointer("/message/photo").and_then(|v| v.as_array()) {
@@ -277,7 +289,12 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                     text: &text, external_id: &from_id, display_name: &display, is_group, mentioned, chat_key: &chat_key,
                 }).await {
                     GateDecision::Allow => {
-                        handle_message(&core, &ch, chat_id, &from_id, inbound_media.unwrap_or_default(), &text).await
+                        // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截——与其他适配器同口径
+                        if let Some(reply) = crate::channel_util::builtin_command(&core, &ch, &chat_key, &text).await {
+                            send_message(ch.token.as_deref().unwrap_or_default(), chat_id, &reply).await;
+                        } else {
+                            handle_message(&core, &ch, chat_id, &from_id, inbound_media.unwrap_or_default(), &text).await
+                        }
                     }
                     GateDecision::Ignore => {}
                     GateDecision::Deny(reply) => {
@@ -287,6 +304,25 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
             }
         }
     }
+
+/// 从 update 提取文本正文：message.text 优先，其次图/文件的 caption 说明
+fn inbound_text(u: &serde_json::Value) -> Option<String> {
+    u.pointer("/message/text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            u.pointer("/message/caption")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+}
+
+/// 是否携带会被注入的媒体（photo / document——两者在入站媒体段落盘并随消息注入；
+/// voice 已在上文转写为文本，其余类型未采集故不计入，避免占位正文误导）
+fn has_media(u: &serde_json::Value) -> bool {
+    ["photo", "document"]
+        .iter()
+        .any(|k| u.pointer(&format!("/message/{k}")).map(|v| !v.is_null()).unwrap_or(false))
 }
 
 /// typing 指示（组 6.5）：sendChatAction typing；失败静默（指示属尽力而为）

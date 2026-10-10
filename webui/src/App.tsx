@@ -1,6 +1,6 @@
 /** 主框架：纯导航侧栏——组切换在对话页内，组管理独立成页 */
-import React, { useEffect, useState } from "react";
-import { Menu, message, Tag } from "antd";
+import React, { lazy, Suspense, useEffect, useState } from "react";
+import { Menu, message, Spin, Tag } from "antd";
 import {
   ApartmentOutlined,
   BellOutlined,
@@ -27,21 +27,38 @@ import { LANGS, useLang, useT, type TKey } from "./i18n/core";
 import { ACCENTS, accentOf, useTheme } from "./theme";
 import { CharStream } from "./components/CharStream";
 import { AsciiDivider } from "./components/Ascii";
-import { LoginView } from "./views/LoginView";
-import { ChatView } from "./views/ChatView";
-import { ModelsView } from "./views/ModelsView";
-import { GraphView } from "./views/GraphView";
-import { LedgerView } from "./views/LedgerView";
-import { MemoryView } from "./views/MemoryView";
-import { SettingsView } from "./views/SettingsView";
-import { GroupsView } from "./views/GroupsView";
-import { NexusView } from "./views/NexusView";
-import { SinglesView } from "./views/SinglesView";
-import { SkillsView } from "./views/SkillsView";
-import { AutomationsView } from "./views/AutomationsView";
-import { ApprovalsView } from "./views/ApprovalsView";
-import { ChannelsView } from "./views/ChannelsView";
-import { ActivityView } from "./views/ActivityView";
+/* 视图懒加载（React.lazy + 动态 import）：按视图切分 chunk，首屏只拉 shell + 当前视图，
+ * 其余视图在导航到时才加载（vendor 三方库另行在 vite.config.ts 的 manualChunks 分组缓存） */
+const LoginView = lazy(() => import("./views/LoginView").then((m) => ({ default: m.LoginView })));
+const ChatView = lazy(() => import("./views/ChatView").then((m) => ({ default: m.ChatView })));
+const ModelsView = lazy(() => import("./views/ModelsView").then((m) => ({ default: m.ModelsView })));
+const GraphView = lazy(() => import("./views/GraphView").then((m) => ({ default: m.GraphView })));
+const LedgerView = lazy(() => import("./views/LedgerView").then((m) => ({ default: m.LedgerView })));
+const MemoryView = lazy(() => import("./views/MemoryView").then((m) => ({ default: m.MemoryView })));
+const SettingsView = lazy(() => import("./views/SettingsView").then((m) => ({ default: m.SettingsView })));
+const GroupsView = lazy(() => import("./views/GroupsView").then((m) => ({ default: m.GroupsView })));
+const NexusView = lazy(() => import("./views/NexusView").then((m) => ({ default: m.NexusView })));
+const SinglesView = lazy(() => import("./views/SinglesView").then((m) => ({ default: m.SinglesView })));
+const SkillsView = lazy(() => import("./views/SkillsView").then((m) => ({ default: m.SkillsView })));
+const AutomationsView = lazy(() => import("./views/AutomationsView").then((m) => ({ default: m.AutomationsView })));
+const ApprovalsView = lazy(() => import("./views/ApprovalsView").then((m) => ({ default: m.ApprovalsView })));
+const ChannelsView = lazy(() => import("./views/ChannelsView").then((m) => ({ default: m.ChannelsView })));
+const ActivityView = lazy(() => import("./views/ActivityView").then((m) => ({ default: m.ActivityView })));
+
+/** 懒加载 chunk 未就绪时的兜底（antd Spin 居中） */
+function ViewSuspense({ children }: { children: React.ReactNode }): React.ReactElement {
+  return (
+    <Suspense
+      fallback={
+        <div style={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
+          <Spin size="large" />
+        </div>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}
 
 type ViewKey =
   | "chat"
@@ -189,12 +206,14 @@ export default function App(): React.ReactElement {
   }
   if (!authed) {
     return (
-      <LoginView
-        onUnlock={() => {
-          setAuthed(true);
-          void init();
-        }}
-      />
+      <ViewSuspense>
+        <LoginView
+          onUnlock={() => {
+            setAuthed(true);
+            void init();
+          }}
+        />
+      </ViewSuspense>
     );
   }
 
@@ -294,20 +313,22 @@ export default function App(): React.ReactElement {
         </div>
       </aside>
       <main className="app-content">
-        {view === "chat" && <ChatView />}
-        {view === "graph" && <GraphView />}
-        {view === "agent" && <SinglesView />}
-        {view === "groups" && <GroupsView />}
-        {view === "nexus" && <NexusView />}
-        {view === "skills" && <SkillsView />}
-        {view === "models" && <ModelsView />}
-        {view === "automations" && <AutomationsView />}
-        {view === "approvals" && <ApprovalsView />}
-        {view === "channels" && <ChannelsView />}
-        {view === "ledger" && <LedgerView />}
-        {view === "memory" && <MemoryView />}
-        {view === "activity" && <ActivityView />}
-        {view === "settings" && <SettingsView />}
+        <ViewSuspense>
+          {view === "chat" && <ChatView />}
+          {view === "graph" && <GraphView />}
+          {view === "agent" && <SinglesView />}
+          {view === "groups" && <GroupsView />}
+          {view === "nexus" && <NexusView />}
+          {view === "skills" && <SkillsView />}
+          {view === "models" && <ModelsView />}
+          {view === "automations" && <AutomationsView />}
+          {view === "approvals" && <ApprovalsView />}
+          {view === "channels" && <ChannelsView />}
+          {view === "ledger" && <LedgerView />}
+          {view === "memory" && <MemoryView />}
+          {view === "activity" && <ActivityView />}
+          {view === "settings" && <SettingsView />}
+        </ViewSuspense>
       </main>
     </div>
   );

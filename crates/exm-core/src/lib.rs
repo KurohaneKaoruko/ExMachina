@@ -1186,6 +1186,8 @@ pub fn build_orchestrator(
     }
     // 记忆工具（memory_read/write/link）的受控入口：组隔离在工具层强制
     gateway = gateway.with_memory(memory.clone());
+    // 记忆模式对齐（深层记忆关闭 = 文件记忆模式）：工具面读 md、拒写库，与规划注入同源
+    gateway = gateway.with_memory_mode(cfg.memory_enabled, cfg.memory_md_path.clone());
     let tools = Arc::new(gateway);
     let unit_runtime = Arc::new(AgentRuntime::new(
         registry.clone(),

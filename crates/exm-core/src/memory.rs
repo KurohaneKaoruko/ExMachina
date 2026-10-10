@@ -225,6 +225,11 @@ impl Embedder for LexicalEmbedder {
 pub struct MemoryStore {
     db: FsDb,
     dir: PathBuf,
+    /// 写入串行锁：remember 的「查哈希 → 命中提升 / 未命中新建」是跨多文件的读-改-写，
+    /// 并发写同内容会双双未命中而各建一条（哈希去重契约被破坏），并发命中提升也会互相覆盖丢增量。
+    /// 只串行「写路径」（remember/forget/pin/decay）；检索不持锁——recall 里 access_count
+    /// 的并发丢失属可容忍的统计误差，不值得让检索排队。
+    write_lock: parking_lot::Mutex<()>,
 }
 
 type TermBucket = std::collections::HashMap<String, Vec<(String, f64)>>;
@@ -244,7 +249,7 @@ impl MemoryStore {
     /// `data_dir` 为工作区数据根目录（与 Store 共用，但各自分集合）
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         let dir = data_dir.as_ref().to_path_buf();
-        Ok(MemoryStore { db: FsDb::open(&dir)?, dir })
+        Ok(MemoryStore { db: FsDb::open(&dir)?, dir, write_lock: parking_lot::Mutex::new(()) })
     }
 
     pub fn root(&self) -> String {
@@ -253,9 +258,21 @@ impl MemoryStore {
 
     // ---------------- 写入 ----------------
 
+    /// 条目标题/正文长度上限（字符）：记忆条目是检索单元而非文档仓库——
+    /// 正文会原文进入 memory.md 渲染、召回注入与工具回灌，超长条目会撑爆
+    /// 浅层视图与提示预算。超长内容应落工作区文件，条目正文只留要点与文件引用。
+    const TITLE_CAP_CHARS: usize = 200;
+    const BODY_CAP_CHARS: usize = 8000;
+
     /// 记住一条：按内容哈希去重（组维度隔离，同内容跨组各自成条）；重复命中则提升重要性/置信度并刷新时间
     pub fn remember(&self, draft: &MemoryDraft) -> Result<MemoryEntry> {
-        let hash = content_hash(&draft.title, &draft.body, draft.group_id.as_deref());
+        // 写路径全程持锁：查哈希与写哈希/写条目必须原子，否则并发同内容去重失效（见 write_lock 注释）
+        let _guard = self.write_lock.lock();
+        // 长度钳制与空白规整先行：哈希必须对「实际落库的内容」计算——
+        // 若先按原文算哈希、落库前才截断，同内容二次写入仍命中，但条目正文与哈希语义脱钩
+        let title = cap_chars(draft.title.trim(), Self::TITLE_CAP_CHARS);
+        let body = cap_chars(draft.body.trim(), Self::BODY_CAP_CHARS);
+        let hash = content_hash(&title, &body, draft.group_id.as_deref());
         let now = now_iso();
 
         if let Some(existing_id) = self.hash_lookup(&hash)? {
@@ -276,8 +293,8 @@ impl MemoryStore {
             session_id: draft.session_id.clone(),
             agent_id: draft.agent_id.clone(),
             group_id: draft.group_id.clone(),
-            title: draft.title.clone(),
-            body: draft.body.clone(),
+            title,
+            body,
             tags: draft.tags.clone(),
             importance: draft.importance.clamp(0.0, 1.0),
             confidence: draft.confidence.clamp(0.0, 1.0),
@@ -352,6 +369,8 @@ impl MemoryStore {
     }
 
     pub fn pin(&self, id: &str, pinned: bool) -> Result<()> {
+        // 读-改-写条目，与 remember 的命中提升同口径串行，避免字段更新互相覆盖
+        let _guard = self.write_lock.lock();
         if let Some(mut e) = self.get_entry(id)? {
             e.pinned = pinned;
             e.updated_at = now_iso();
@@ -361,6 +380,9 @@ impl MemoryStore {
     }
 
     pub fn forget(&self, id: &str) -> Result<()> {
+        // 与 remember 互斥：防止「forget 删哈希 → remember 按同哈希新建 → forget 删旧条目」
+        // 交错后留下孤儿哈希/悬空索引
+        let _guard = self.write_lock.lock();
         if let Some(e) = self.get_entry(id)? {
             self.unindex_entry(&e)?;
             let hash = content_hash(&e.title, &e.body, e.group_id.as_deref());
@@ -405,16 +427,19 @@ impl MemoryStore {
         Ok(entries.len())
     }
 
-    /// 时间衰减（固定项豁免），下限 floor
+    /// 时间衰减（固定项豁免），下限 floor。
+    /// 衰减数学收敛在 [`decay_factor`]/[`decayed_importance`] 两个纯函数里，边界行为有单测锁定。
     pub fn decay(&self, half_life_days: f64, floor: f64) -> Result<usize> {
+        // 整轮持写锁：衰减是「读全部条目 → 逐条改写」的维护操作，
+        // 与 remember 的命中提升并发时会互相覆盖 importance
+        let _guard = self.write_lock.lock();
         let entries: Vec<MemoryEntry> = self.db.list(ENTRIES)?;
         let mut changed = 0;
         for mut e in entries {
             if e.pinned {
                 continue;
             }
-            let factor = 0.5f64.powf(age_days(&e.updated_at) / half_life_days.max(1.0));
-            let next = (e.importance * factor).max(floor);
+            let next = decayed_importance(e.importance, age_days(&e.updated_at), half_life_days, floor);
             if (next - e.importance).abs() > 1e-6 {
                 e.importance = next;
                 self.save_entry(&e)?;
@@ -498,7 +523,10 @@ impl MemoryStore {
     ) -> Result<Vec<RecallHit>> {
         let q_tokens = tokens(query);
         if q_tokens.is_empty() {
-            return self.recent(limit, group);
+            // 空查询（无有效词项）回退「近期列表」：回退不是免检通道——
+            // 分层（个体/群体）与 scope 过滤必须照常生效，
+            // 否则个体视角的空查询会把他人私有记忆当「近期」召回（越权泄漏）。
+            return self.recent_layered(limit, group, layer, scope);
         }
 
         // 候选：命中任一查询词项的条目 + 命中权重
@@ -550,7 +578,7 @@ impl MemoryStore {
                     return Ok(sem);
                 }
             }
-            return self.recent(limit, group);
+            return self.recent_layered(limit, group, layer, scope);
         }
         let max_overlap = overlap.values().map(|v| v.0).fold(1.0f64, f64::max);
 
@@ -629,9 +657,39 @@ impl MemoryStore {
     }
 
     pub fn recent(&self, limit: usize, group: Option<&str>) -> Result<Vec<RecallHit>> {
+        self.recent_layered(limit, group, AgentLayer::All, None)
+    }
+
+    /// 分层版近期列表：`agent` 为 Some = 个体视角（该个体私有 + 群体共享）；None = 全量（管理视角）。
+    /// 工具面的空查询列示走这里——「列示」与「检索」适用同一套分层口径。
+    pub fn recent_in_layer(&self, agent: Option<&str>, limit: usize, group: Option<&str>) -> Result<Vec<RecallHit>> {
+        let layer = match agent {
+            Some(a) => AgentLayer::Agent(a),
+            None => AgentLayer::All,
+        };
+        self.recent_layered(limit, group, layer, None)
+    }
+
+    /// 近期列表实现（分层 + scope + 组三维过滤，排序口径与历史版本一致）
+    fn recent_layered(
+        &self,
+        limit: usize,
+        group: Option<&str>,
+        layer: AgentLayer<'_>,
+        scope: Option<&str>,
+    ) -> Result<Vec<RecallHit>> {
         let mut entries: Vec<MemoryEntry> = self.db.list(ENTRIES)?;
         if let Some(g) = group {
             entries.retain(|e| e.group_id.as_deref().is_none_or(|eg| eg == g));
+        }
+        entries.retain(|e| match layer {
+            AgentLayer::All => true,
+            AgentLayer::SharedOnly => e.agent_id.is_none(),
+            AgentLayer::Agent(a) => e.agent_id.as_deref().is_none_or(|x| x == a),
+        });
+        // scope 口径与词项召回路径一致：命中请求 scope 或全局/项目级条目才可见
+        if let Some(sc) = scope {
+            entries.retain(|e| e.scope == sc || e.scope == "global" || e.scope == "project");
         }
         entries.sort_by(|a, b| {
             b.pinned
@@ -909,6 +967,36 @@ impl MemoryStore {
 
 // ---------------------------------------------------------------- 工具函数
 
+/// 衰减因子 = 0.5^(age / half_life)。
+/// 边界自洽（逐条钳制的原因）：
+/// - `half_life ≤ 0 / NaN`：无数学意义的半衰期，按 1 天处理（`f64::max` 恰好也是这个语义，
+///   与历史行为一致）；配置层另有清洗（非法值回落默认 30 天），此处是最后一道兜底。
+/// - `age < 0`（未来时间戳，时钟回拨/脏数据）：按 0 处理——衰减只能让记忆变淡，
+///   绝不能反向「增寿」，否则每次衰减都在抬升重要性，重复整理会无限膨胀。
+/// - `half_life` 极大（→∞）：age/half_life → 0，因子 → 1，等于不衰减（符合直觉：
+///   「半衰期无穷长」就是「永不遗忘」）。
+fn decay_factor(age_days: f64, half_life_days: f64) -> f64 {
+    let hl = if half_life_days.is_finite() && half_life_days > 0.0 { half_life_days } else { 1.0 };
+    0.5f64.powf(age_days.max(0.0) / hl)
+}
+
+/// 衰减后重要性：乘因子后收进 [floor, 1.0]。
+/// 下限保底：濒死记忆缓慢趋近 floor 而非骤归零（floor 语义 = 衰减底线）；
+/// 上限钳 1.0：floor 传入越界值（>1）时也不得把重要性抬出 [0,1] 合法域。
+fn decayed_importance(current: f64, age_days: f64, half_life_days: f64, floor: f64) -> f64 {
+    let floor = floor.clamp(0.0, 1.0);
+    (current * decay_factor(age_days, half_life_days)).clamp(floor, 1.0)
+}
+
+/// 按字符截断（非字节）：中文场景按字节切会劈开 UTF-8 序列产生乱码尾巴
+fn cap_chars(s: &str, cap: usize) -> String {
+    if s.chars().count() <= cap {
+        s.to_string()
+    } else {
+        s.chars().take(cap).collect()
+    }
+}
+
 fn render_entry_md(e: &MemoryEntry) -> String {
     let tags = if e.tags.is_empty() { String::new() } else { format!(" `{}`", e.tags.join("` `")) };
     format!(
@@ -1150,6 +1238,197 @@ mod tests {
         let all = store.list(None, 50).unwrap();
         let count = all.iter().filter(|e| e.title == same_title).count();
         assert_eq!(count, 3, "同内容在 gA/gB/全局 应为 3 条独立条目，实际 {count}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 空查询回退近期_分层不越权() {
+        let dir = std::env::temp_dir().join(format!("exm-mem-emptyq-{}", uuid::Uuid::new_v4()));
+        let store = MemoryStore::open(&dir).unwrap();
+
+        // 甲的私有记忆 + 乙的私有记忆 + 一条群体记忆
+        let mut a = MemoryDraft::new(MemoryKind::Lesson, "甲的私有教训", "只属于 agent-a");
+        a.agent_id = Some("agent-a".into());
+        store.remember(&a).unwrap();
+        let mut b = MemoryDraft::new(MemoryKind::Lesson, "乙的私有教训", "只属于 agent-b");
+        b.agent_id = Some("agent-b".into());
+        store.remember(&b).unwrap();
+        store.remember(&MemoryDraft::new(MemoryKind::Decision, "群体决策", "无归属共享")).unwrap();
+
+        // 空查询回退近期：个体视角只见「自己私有 + 群体」，他人的私有不得混入
+        let hits_a = store.recall_for_agent("agent-a", "", 10, None, None).unwrap();
+        let titles: Vec<&str> = hits_a.iter().map(|h| h.entry.title.as_str()).collect();
+        assert!(titles.contains(&"甲的私有教训"), "本人私有可见");
+        assert!(titles.contains(&"群体决策"), "群体共享可见");
+        assert!(!titles.contains(&"乙的私有教训"), "空查询不得泄漏他人私有，实际 {titles:?}");
+
+        // 群体检索（SharedOnly）空查询：仅群体
+        let shared = store.recall("", 10, None, None, None).unwrap();
+        assert!(shared.iter().all(|h| h.entry.agent_id.is_none()), "群体视角空查询不得带出个体私有");
+
+        // 全量视角（管理）空查询：全部可见
+        let all = store.recall_all("   ", 10, None, None).unwrap();
+        assert_eq!(all.len(), 3, "管理视角空查询可见全部");
+
+        // 纯符号查询（无有效词项）与空串同路径，分层同样生效
+        let sym = store.recall_for_agent("agent-b", "!!!@@@###", 10, None, None).unwrap();
+        assert!(sym.iter().all(|h| h.entry.agent_id.as_deref() != Some("agent-a")));
+
+        // 列示入口的分层口径：recent_in_layer
+        let list_b = store.recent_in_layer(Some("agent-b"), 10, None).unwrap();
+        assert!(list_b.iter().all(|h| h.entry.agent_id.as_deref() != Some("agent-a")));
+        let list_all = store.recent_in_layer(None, 10, None).unwrap();
+        assert_eq!(list_all.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 衰减数学_边界自洽() {
+        // 曲线自洽：一个半衰期恰好减半，两个半衰期剩四分之一
+        assert!((decay_factor(0.0, 30.0) - 1.0).abs() < 1e-9, "零龄不衰减");
+        assert!((decay_factor(30.0, 30.0) - 0.5).abs() < 1e-9);
+        assert!((decay_factor(60.0, 30.0) - 0.25).abs() < 1e-9);
+        // 0 天 / 负数 / NaN：无数学意义，按 1 天兜底（与 1 天曲线重合）
+        for bad in [0.0, -3.0, f64::NAN] {
+            assert!(
+                (decay_factor(10.0, bad) - decay_factor(10.0, 1.0)).abs() < 1e-12,
+                "非法半衰期 {bad} 应按 1 天处理"
+            );
+        }
+        // 极大半衰期：等于不衰减（永不遗忘）
+        assert!((decay_factor(365.0, 1e300) - 1.0).abs() < 1e-9);
+        // 未来时间戳：不增寿（因子恒 1）
+        assert!((decay_factor(-7.0, 30.0) - 1.0).abs() < 1e-12, "未来时间戳不得反向增寿");
+        // 下限保底与上限钳制
+        let decayed = decayed_importance(0.5, 40.0, 30.0, 0.05);
+        assert!((decayed - 0.5 * 0.5f64.powf(40.0 / 30.0)).abs() < 1e-9, "应严格落在半衰曲线上");
+        assert_eq!(decayed_importance(0.01, 1000.0, 30.0, 0.05), 0.05, "跌破下限保到 floor");
+        assert_eq!(decayed_importance(0.9, 0.0, 30.0, 1.5), 1.0, "floor 越界不得把重要性抬出 [0,1]");
+        assert_eq!(decayed_importance(0.8, -100.0, 30.0, 0.05), 0.8, "未来时间戳下重要性原样保留");
+    }
+
+    /// 衰减整链路：过期条目严格落在半衰曲线上；未来时间戳不被增寿
+    #[test]
+    fn 衰减整链路_过期变淡_未来不增寿() {
+        let dir = std::env::temp_dir().join(format!("exm-mem-decay-{}", uuid::Uuid::new_v4()));
+        let store = MemoryStore::open(&dir).unwrap();
+        let stale = store
+            .remember(&MemoryDraft::new(MemoryKind::Fact, "过期记忆", "四十天前的旧事").importance(0.8))
+            .unwrap();
+        let future = store
+            .remember(&MemoryDraft::new(MemoryKind::Fact, "未来记忆", "时钟回拨产生的脏数据").importance(0.6))
+            .unwrap();
+
+        // 直改条目时间戳模拟「40 天前」与「未来 1 天」（造存储态，避免睡真实时间）
+        let stale_ts = (chrono::Utc::now() - chrono::Duration::days(40)).to_rfc3339();
+        let future_ts = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+        patch_updated_at(&store, &stale.id, &stale_ts);
+        patch_updated_at(&store, &future.id, &future_ts);
+
+        let changed = store.decay(30.0, 0.05).unwrap();
+        assert_eq!(changed, 1, "只有过期条目需要改写");
+
+        let stale_after = store.get_entry_public(&stale.id).unwrap().unwrap();
+        let expect = 0.8 * 0.5f64.powf(40.0 / 30.0);
+        assert!(
+            (stale_after.importance - expect).abs() < 1e-9,
+            "应严格落在半衰曲线上：{} vs {expect}",
+            stale_after.importance
+        );
+
+        let future_after = store.get_entry_public(&future.id).unwrap().unwrap();
+        assert!((future_after.importance - 0.6).abs() < 1e-12, "未来时间戳不得被衰减反向增寿");
+        assert!(future_after.importance <= 1.0, "重要性不得越出 [0,1]");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 测试辅助：直改条目 updated_at（制造时间态，不睡真实时钟）
+    fn patch_updated_at(store: &MemoryStore, id: &str, ts: &str) {
+        let mut e = store.get_entry_public(id).unwrap().unwrap();
+        e.updated_at = ts.to_string();
+        store.save_entry(&e).unwrap();
+    }
+
+    #[test]
+    fn 并发写入_同内容去重不裂条() {
+        let dir = std::env::temp_dir().join(format!("exm-mem-race-{}", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(MemoryStore::open(&dir).unwrap());
+
+        // 同内容并发：哈希查重与写入必须原子，否则各建一条（去重契约被破坏）
+        // （词项刻意与其他条目不重叠，避免召回阶段按词项撞上）
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let s = store.clone();
+            let d = MemoryDraft::new(MemoryKind::Fact, "原子去重约定", "十六线程同记一事只落一条");
+            handles.push(std::thread::spawn(move || s.remember(&d).unwrap()));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let all = store.list(None, 100).unwrap();
+        assert_eq!(all.len(), 1, "并发同内容应只落 1 条，实际 {} 条", all.len());
+        assert!(
+            (all[0].importance - 1.0).abs() < 1e-9,
+            "16 次写入的重要性提升应封顶 1.0，实际 {}",
+            all[0].importance
+        );
+
+        // 不同内容并发：互不丢失
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let s = store.clone();
+            handles.push(std::thread::spawn(move || {
+                s.remember(&MemoryDraft::new(MemoryKind::Fact, format!("独立条目{i}"), format!("第 {i} 条独立内容")))
+                    .unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(store.list(None, 100).unwrap().len(), 9, "8 条不同内容应全部落库");
+
+        // 去重后的哈希索引仍可用：并发写入的条目可被正常召回
+        let hits = store.recall("原子去重", 5, None, None, None).unwrap();
+        assert_eq!(hits.len(), 1, "哈希索引未裂，召回应恰好 1 条");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 写入边界_超长截断与特殊字符() {
+        let dir = std::env::temp_dir().join(format!("exm-mem-cap-{}", uuid::Uuid::new_v4()));
+        let store = MemoryStore::open(&dir).unwrap();
+
+        // 超长正文/标题：按字符截断（不劈 UTF-8），返回值即落库内容
+        let long_body = "长".repeat(50_000);
+        let long_title = format!("{}超长标题", "标".repeat(300));
+        let e = store.remember(&MemoryDraft::new(MemoryKind::Fact, long_title, long_body)).unwrap();
+        assert_eq!(e.body.chars().count(), MemoryStore::BODY_CAP_CHARS, "正文应截到上限");
+        assert_eq!(e.title.chars().count(), MemoryStore::TITLE_CAP_CHARS, "标题应截到上限");
+
+        // 特殊字符：emoji / 换行 / 引号 / 路径分隔符——原样存取、去重键稳定
+        let weird = "含\"引号\"与\\斜杠、/path:分隔符*与\n换行 和 emoji 🦾🤖";
+        let w1 = store.remember(&MemoryDraft::new(MemoryKind::Lesson, weird, weird)).unwrap();
+        let w2 = store.remember(&MemoryDraft::new(MemoryKind::Lesson, weird, weird)).unwrap();
+        assert_eq!(w1.id, w2.id, "特殊字符内容应稳定去重（同一哈希）");
+        let back = store.get_entry_public(&w1.id).unwrap().unwrap();
+        assert_eq!(back.body, weird, "特殊字符正文应原样存取");
+
+        // 首尾空白规整后等价去重：同一句话多打了空格不裂条
+        let padded =
+            store.remember(&MemoryDraft::new(MemoryKind::Lesson, format!("{weird} "), format!("{weird} "))).unwrap();
+        assert_eq!(padded.id, w1.id, "仅首尾空白差异应视为同一条");
+
+        // 截断后的条目仍可被正常召回（索引按落库内容建立）
+        let hits = store.recall("超长标题", 5, None, None, None).unwrap();
+        assert!(
+            hits.iter().any(|h| h.entry.title.chars().count() == MemoryStore::TITLE_CAP_CHARS),
+            "截断条目应在索引内，实际: {:?}",
+            hits.iter().map(|h| h.entry.title.clone()).collect::<Vec<_>>()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

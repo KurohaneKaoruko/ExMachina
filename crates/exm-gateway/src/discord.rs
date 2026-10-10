@@ -5,9 +5,12 @@
 //! 其中 **MESSAGE_CONTENT 是特权 intent**，须在开发者门户 → Bot 页勾选，
 //! 否则服务器频道里的消息正文为空（私聊与 @ 提及不受此限）。
 //! 回复：POST /channels/{channel_id}/messages（单条限 2000 字符 → 截 1800）。
+//! 入站媒体：attachments 落 inbox；音频附件（audio/*，按住说话即此形态）转写为文本注记。
+//! 出站 typing：POST /channels/{channel_id}/typing（能力矩阵 typing 位已开）。
 //! 断线优先 Resume(op6，补发漏掉的事件)；op9 Invalid Session 回退重新 Identify。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/token 变更的账号回收任务。
 
+use crate::channel_util::{builtin_command, classify_attachment, first_seen, media_placeholder, voice_transcript_note};
 use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
@@ -117,6 +120,9 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
     // (session_id, seq)：断线优先 Resume 补发
     let mut session: Option<(String, i64)> = None;
     let mut bot_id = String::new(); // READY 时捕获本 bot 用户 id（提及归一化用）
+    // 断线退避：连续失败按 3→6→12…（封顶 300s）指数递增；连结成功（READY/RESUMED）即复位。
+    // 否则 token 失效或网关维护期间会每 3 秒重连一次。
+    let mut fail_streak: u32 = 0;
     loop {
         let gw = match client.get(format!("{API}/gateway/bot")).header("Authorization", &auth).send().await {
             Ok(r) if r.status().is_success() => match r.json::<Value>().await {
@@ -224,10 +230,28 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                         let user = d.pointer("/user/username").and_then(|x| x.as_str()).unwrap_or("?");
                                         println!("[discord:{}] 机器人已连结：{user}", ch.id);
                                         report_status(&ch.id, "ok", format!("机器人 {user}"));
+                                        fail_streak = 0;
                                     }
-                                    "RESUMED" => report_status(&ch.id, "ok", "会话已恢复"),
+                                    "RESUMED" => {
+                                        report_status(&ch.id, "ok", "会话已恢复");
+                                        fail_streak = 0;
+                                    }
                                     "MESSAGE_CREATE" => {
-                                        let Some((channel_id, text)) = parse_message(&d) else { continue };
+                                        let Some((channel_id, content)) = parse_message(&d) else { continue };
+                                        // 消息去重：断线 Resume 会重放漏收事件，按平台消息 id 首见放行
+                                        let msg_id = d.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                                        if !first_seen(&format!("discord:{}", ch.id), msg_id) {
+                                            continue;
+                                        }
+                                        // 入站媒体（组 6.4）：附件下载（图片与文件同走 CDN 直链）
+                                        let atts = parse_attachments(&d);
+                                        // 纯附件消息（无文字）：占位正文兜底，曾直接丢弃——用户「只发一张图」得不到响应
+                                        let text = if content.trim().is_empty() {
+                                            let kinds: Vec<&str> = atts.iter().map(|(k, _, _)| k.as_str()).collect();
+                                            media_placeholder(&kinds)
+                                        } else {
+                                            content
+                                        };
                                         if text.trim().is_empty() {
                                             continue;
                                         }
@@ -261,12 +285,35 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                                                 continue;
                                             }
                                         }
+                                        // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
+                                        if let Some(reply) = builtin_command(&core, &ch, &channel_id, &text).await {
+                                            let client2 = client.clone();
+                                            let token2 = token.clone();
+                                            let cid = channel_id.clone();
+                                            tokio::spawn(async move { send_message(&client2, &token2, &cid, &reply).await });
+                                            continue;
+                                        }
                                         let core = core.clone();
                                         let ch2 = ch.clone();
                                         let client2 = client.clone();
                                         let token2 = token.clone();
                                         tokio::spawn(async move {
-                                            handle_message(&core, &ch2, &client2, &token2, &channel_id, &external_id, text.trim()).await;
+                                            // 附件下载落 inbox（闸门已过，不浪费白名单外流量）；
+                                            // 语音附件（audio/*，Discord 按住说话即此形态）顺带转写——telegram 同款能力
+                                            let mut saved: Vec<(String, String, String)> = Vec::new();
+                                            let mut transcript_note = String::new();
+                                            for (kind, url, name) in atts {
+                                                if let Some(bytes) = crate::platform::download_bytes(&url).await {
+                                                    if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes.clone()).await {
+                                                        saved.push((kind.clone(), p, name.clone()));
+                                                    }
+                                                    if kind == "voice" {
+                                                        transcript_note.push_str(&voice_transcript_note(&core, bytes, &name).await);
+                                                    }
+                                                }
+                                            }
+                                            let text = if transcript_note.is_empty() { text } else { format!("{text}{transcript_note}") };
+                                            handle_message(&core, &ch2, &client2, &token2, &channel_id, &external_id, saved, &text).await;
                                         });
                                     }
                                     _ => {}
@@ -296,7 +343,10 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 断线退避：指数递增（连结成功时已在 READY/RESUMED 处复位）
+        let wait = Duration::from_secs((3u64 << fail_streak.min(7)).min(300));
+        fail_streak = fail_streak.saturating_add(1);
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -310,7 +360,25 @@ fn parse_message(d: &Value) -> Option<(String, String)> {
     Some((channel_id, strip_mentions(content)))
 }
 
-/// 剥掉 `<@123456>` / `<@&123456>` 提及片段
+/// MESSAGE_CREATE 附件 → (kind, url, 文件名)：图片按 content_type 判定，其余归文件。
+/// CDN 直链公开可下载，无需鉴权头。
+fn parse_attachments(d: &Value) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    if let Some(list) = d.get("attachments").and_then(|x| x.as_array()) {
+        for a in list {
+            let url = a.get("url").and_then(|x| x.as_str()).unwrap_or("");
+            let name = a.get("filename").and_then(|x| x.as_str()).unwrap_or("attachment.bin");
+            if url.is_empty() {
+                continue;
+            }
+            let kind = classify_attachment(a.get("content_type").and_then(|x| x.as_str()).unwrap_or(""));
+            out.push((kind.to_string(), url.to_string(), name.to_string()));
+        }
+    }
+    out
+}
+
+/// 剥掉 `<@…>` 提及片段；未闭合片段保留原样（曾把前缀重复拼一遍）
 fn strip_mentions(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
@@ -318,7 +386,12 @@ fn strip_mentions(s: &str) -> String {
         out.push_str(&rest[..i]);
         match rest[i..].find('>') {
             Some(j) => rest = &rest[i + j + 1..],
-            None => break,
+            None => {
+                // 找不到收尾 > ：把标记连同后面正文原样保留，宁可带杂质也不吞正文
+                out.push_str(&rest[i..]);
+                rest = "";
+                break;
+            }
         }
     }
     out.push_str(rest);
@@ -333,6 +406,7 @@ async fn handle_message(
     token: &str,
     channel_id: &str,
     external_id: &str,
+    media: Vec<(String, String, String)>,
     text: &str,
 ) {
     // typing 指示（组 6.5）：触发输入中状态
@@ -344,7 +418,12 @@ async fn handle_message(
             .await;
     }
     let Some((run, rx)) = ChannelRun::begin(core, ch, channel_id).await else { return };
-    core.stamp_session_origin(&run.session_id, &external_id, core.identity_of(&ch.id, &external_id).map(|i| i.role).as_deref().unwrap_or(""));
+    // 会话来源登记：与其他适配器同口径（绑定身份用 id，未绑定回退通道主体键）——
+    // 曾登记成 role 且缺省空串，导致 token 配额等按来源计的治理对该通道失明
+    core.stamp_session_origin(&run.session_id, external_id, core.identity_of(&ch.id, external_id).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, external_id)).as_str());
+    // 入站媒体注入（组 6.4）：图片进多模态暂存，文件附路径说明
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     let client2 = client.clone();
     let token2 = token.to_string();
     let cid = channel_id.to_string();
@@ -370,7 +449,7 @@ async fn handle_message(
             async move { dc_send_media(&client2, &token2, &cid, item).await }
         },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }
 
@@ -423,5 +502,56 @@ async fn send_message(client: &reqwest::Client, token: &str, channel_id: &str, t
             eprintln!("[discord] 回复失败：HTTP {status} {body}");
         }
         Err(e) => eprintln!("[discord] 回复网络错误：{e}"),
+    }
+}
+
+// ---------------------------------------------------------------- 测试（纯函数部分）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 机器人自己的消息不解析（防回环）；普通消息剥提及取频道
+    #[test]
+    fn 消息解析_机器人自消息忽略() {
+        let bot = json!({ "author": { "bot": true, "id": "9" }, "channel_id": "C1", "content": "我自己说的" });
+        assert!(parse_message(&bot).is_none(), "bot 消息一律忽略");
+        let human = json!({ "author": { "id": "1" }, "channel_id": "C1", "content": "<@99> 部署一下" });
+        let (cid, text) = parse_message(&human).expect("人类消息应解析");
+        assert_eq!(cid, "C1");
+        assert_eq!(text, "部署一下");
+    }
+
+    /// 提及剥离：成员与角色两种片段都剥；未闭合不吞正文
+    #[test]
+    fn 提及剥离_成员与角色片段() {
+        assert_eq!(strip_mentions("<@123> <@&456> 上线检查"), "上线检查", "剥完应收敛首尾空白");
+        assert_eq!(strip_mentions("纯文本"), "纯文本");
+        assert_eq!(strip_mentions("未闭合<@123"), "未闭合<@123");
+    }
+
+    /// 附件解析：图片按 content_type 归类，缺 url 的条目跳过，无附件返回空
+    #[test]
+    fn 附件解析_图片文件分类() {
+        let d = json!({
+            "attachments": [
+                { "filename": "shot.png", "content_type": "image/png", "url": "https://cdn/1.png" },
+                { "filename": "report.pdf", "content_type": "application/pdf", "url": "https://cdn/2.pdf" },
+                { "filename": "broken.txt", "url": "" },
+            ]
+        });
+        let atts = parse_attachments(&d);
+        assert_eq!(atts.len(), 2, "缺 url 的条目不收：{atts:?}");
+        assert_eq!(atts[0], ("image".to_string(), "https://cdn/1.png".to_string(), "shot.png".to_string()));
+        assert_eq!(atts[1].0, "file", "非图片 content_type 归文件");
+        // 无附件字段（纯文本消息）
+        assert!(parse_attachments(&json!({ "content": "hi" })).is_empty());
+        // content_type 缺失时保守归文件
+        let no_type = parse_attachments(&json!({ "attachments": [{ "filename": "x.bin", "url": "https://cdn/3" }] }));
+        assert_eq!(no_type[0].0, "file");
+        // 音频附件（Discord 按住说话即 audio/ogg 形态）归 voice：触发占位计「语音」与转写
+        let voice = parse_attachments(&json!({ "attachments": [{ "filename": "msg.ogg", "content_type": "audio/ogg", "url": "https://cdn/4.ogg" }] }));
+        assert_eq!(voice[0].0, "voice", "音频附件应归 voice");
     }
 }

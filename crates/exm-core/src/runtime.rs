@@ -73,17 +73,24 @@ impl AgentRuntime {
         ];
 
         let max_steps = order.constraints.max_steps.max(1);
+        // 派发时限（指挥体按步数分档声明，timeout_ms = 步数 × 30s）：0 = 不限（旧调用方兼容）。
+        // 没有这道闸，挂死的 LLM 流会让节点无限期占住编排并发槽，整轮调度随之卡死——
+        // max_steps 只约束「思考-调工具」轮数，约束不了单次 LLM 调用内部的无限等待。
+        let deadline = (order.constraints.timeout_ms > 0)
+            .then(|| std::time::Instant::now() + std::time::Duration::from_millis(order.constraints.timeout_ms));
         let mut rewrites: u32 = 0;
         let mut usage_prompt: u64 = 0;
         let mut usage_completion: u64 = 0;
         let mut last_model = String::new();
         // 原生 function calling：按白名单生成工具 schema + 该个体可见的 MCP 工具
-        // （web_search / computer 仅在后端就绪时下发——不承诺不存在的能力）
-        let mut specs = crate::tools::ToolGateway::tool_specs(
+        // （web_search / computer 仅在后端就绪时下发——不承诺不存在的能力；
+        //   文件记忆模式下 memory_write/link 必然失败，同样不下发）
+        let mut specs = crate::tools::ToolGateway::tool_specs_gated(
             &order.tool_allowlist,
             self.tools.search_ready(),
             self.tools.browser_ready(),
             self.tools.computer_ready(),
+            self.tools.memory_deep(),
         );
         // 声明式自定义工具（按 agents 可见性）与 MCP 第三方工具一并下发
         specs.extend(self.tools.custom_specs_for(&def.identifier));
@@ -94,9 +101,29 @@ impl AgentRuntime {
             if crate::round_trace::is_cancelled(session_id) {
                 anyhow::bail!("本轮已被用户停止");
             }
-            let (text, calls, usage) = self
-                .call_llm(&messages, &agent_hint, &chain, &specs, &mut on_delta)
-                .await?;
+            // 时限检查点：派发预算耗尽即快速失败（把并发槽还给调度器），而非等 LLM 挂到天荒地老
+            if let Some(dl) = deadline {
+                if std::time::Instant::now() >= dl {
+                    self.tools.record_usage(session_id, usage_prompt, usage_completion, &last_model);
+                    anyhow::bail!(
+                        "个体 {} 超过派发时限 {}ms（{} 步内未产出合法 SyncReport）",
+                        def.identifier,
+                        order.constraints.timeout_ms,
+                        _step
+                    );
+                }
+            }
+            let (text, calls, usage) = match self
+                .call_llm(&messages, &agent_hint, &chain, &specs, deadline, &mut on_delta)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    // LLM 调用失败（含超时）：已消耗的用量照记，失败原因回流调度器
+                    self.tools.record_usage(session_id, usage_prompt, usage_completion, &last_model);
+                    return Err(e);
+                }
+            };
             usage_prompt += usage.0;
             usage_completion += usage.1;
             if let Some((_, _, m)) = chain.candidates.first() {
@@ -236,11 +263,14 @@ impl AgentRuntime {
         let mut usage_completion: u64 = 0;
         let mut last_model = String::new();
 
-        let mut specs = crate::tools::ToolGateway::tool_specs(
+        // 原生 function calling：按白名单生成工具 schema + 该个体可见的 MCP 工具
+        // （后端未就绪 / 模式不支持的工具不下发——不承诺不存在的能力）
+        let mut specs = crate::tools::ToolGateway::tool_specs_gated(
             &def.tools,
             self.tools.search_ready(),
             self.tools.browser_ready(),
             self.tools.computer_ready(),
+            self.tools.memory_deep(),
         );
         specs.extend(self.tools.custom_specs_for(&def.identifier));
         specs.extend(self.tools.mcp().tool_snapshot_for(&def.identifier));
@@ -251,7 +281,7 @@ impl AgentRuntime {
                 anyhow::bail!("本轮已被用户停止");
             }
             let (text, calls, usage) = self
-                .call_llm(&messages, &agent_hint, &chain, &specs, &mut on_delta)
+                .call_llm(&messages, &agent_hint, &chain, &specs, None, &mut on_delta)
                 .await?;
             usage_prompt += usage.0;
             usage_completion += usage.1;
@@ -395,12 +425,15 @@ impl AgentRuntime {
         out.into_iter().map(|x| x.unwrap_or_default()).collect()
     }
 
+    /// `deadline` = 派发时限（Some = execute 路径按 DispatchOrder 预算收口；None = 不限时）。
+    /// 挂死的 SSE 连接在剩余预算内等不到收尾时：abort 流任务并报可诊断错误，节点不被无限拖住。
     async fn call_llm<F>(
         &self,
         messages: &[ChatMessage],
         hint: &Option<String>,
         chain: &crate::provider::ModelChain,
         tools: &[crate::provider::ToolSpec],
+        deadline: Option<std::time::Instant>,
         on_delta: &mut F,
     ) -> anyhow::Result<(String, Vec<ToolCall>, (u64, u64))>
     where
@@ -414,7 +447,7 @@ impl AgentRuntime {
         }
         let mut last_err: Option<anyhow::Error> = None;
         for (pid, provider, model) in candidates {
-            let mut req = ChatRequest::new(model, messages.to_vec());
+            let mut req = ChatRequest::new(model.clone(), messages.to_vec());
             req.key_hint = hint.clone();
             if !tools.is_empty() {
                 req.tools = tools.to_vec();
@@ -427,9 +460,27 @@ impl AgentRuntime {
             let handle = tokio::spawn(async move { stream_provider.stream(req_clone, tx).await });
 
             let mut emitted = false;
-            while let Some(delta) = rx.recv().await {
-                emitted = true;
-                on_delta(delta);
+            // 有界收增量：到点（deadline）或流自然关闭即出循环；超时路径 abort 流任务，
+            // 连接随任务取消而释放（不残留读端拖住运行时收尾）
+            let drain = async {
+                while let Some(delta) = rx.recv().await {
+                    emitted = true;
+                    on_delta(delta);
+                }
+            };
+            match deadline {
+                Some(dl) => {
+                    if tokio::time::timeout_at(tokio::time::Instant::from_std(dl), drain)
+                        .await
+                        .is_err()
+                    {
+                        handle.abort();
+                        return Err(anyhow::anyhow!(
+                            "LLM 调用超时（候选 {pid}/{model}）：时限内未完成流式响应，已中止"
+                        ));
+                    }
+                }
+                None => drain.await,
             }
             match handle.await {
                 Ok(Ok(resp)) => {
@@ -463,5 +514,142 @@ impl AgentRuntime {
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("无可用模型候选")))
+    }
+}
+
+// ---------------------------------------------------------------- 派发时限测试
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use crate::config::SecurityConfig;
+    use crate::provider::{ChatResponse, FailoverState};
+    use crate::types::{DispatchBoundary, DispatchConstraints, DispatchInput, DispatchOrder};
+    use std::time::Duration;
+
+    /// 挂死流替身：永不产出增量、长眠不醒（模拟端点挂死 / 网络黑洞）
+    struct HangingStreamProvider;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for HangingStreamProvider {
+        fn name(&self) -> &'static str {
+            "hanging"
+        }
+        async fn chat(&self, _req: ChatRequest) -> anyhow::Result<ChatResponse> {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(ChatResponse::default())
+        }
+        async fn stream(
+            &self,
+            _req: ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<StreamDelta>,
+        ) -> anyhow::Result<ChatResponse> {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(ChatResponse::default())
+        }
+    }
+
+    fn runtime_with(provider: Arc<dyn LlmProvider>) -> AgentRuntime {
+        let base = std::env::temp_dir().join(format!("exm-rt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let reg_dir = base.join("entities");
+        std::fs::create_dir_all(reg_dir.join("prompts")).unwrap();
+        let meta = crate::types::GroupMeta {
+            id: "exmachina".into(),
+            name: "测试组".into(),
+            description: String::new(),
+            primary: None,
+            workspace: None,
+            model: None,
+            capabilities: None,
+            builtin: true,
+            created_at: crate::types::now_iso(),
+        };
+        std::fs::write(
+            reg_dir.join("group.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+        // 提示词按组布局解析：groups/<gid>/prompts/<file>.md
+        let prompts_dir = reg_dir.join("groups").join("exmachina").join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("timeout-agent.md"), "# 测试个体\n你是测试个体。").unwrap();
+        let registry = Arc::new(LocalRegistry::new(&reg_dir).expect("临时注册表创建失败"));
+        let store = Arc::new(crate::store::Store::open(base.join("data")).expect("临时存储创建失败"));
+        let (events, _rx) = tokio::sync::broadcast::channel::<crate::types::CoreEvent>(16);
+        let tools = Arc::new(ToolGateway::new(
+            &base,
+            store,
+            registry.clone(),
+            events,
+            SecurityConfig::default(),
+        ));
+        AgentRuntime::new(registry, provider, tools, "test-model")
+    }
+
+    fn order_with(timeout_ms: u64) -> DispatchOrder {
+        DispatchOrder {
+            task_node_id: "T1".into(),
+            objective: "时限演练".into(),
+            acceptance: vec!["产出 SyncReport".into()],
+            boundary: DispatchBoundary { in_scope: vec![], forbidden: vec![] },
+            inputs: vec![DispatchInput {
+                ref_id: "user".into(),
+                kind: "userInput".into(),
+                summary: "时限演练".into(),
+            }],
+            tool_allowlist: vec![],
+            constraints: DispatchConstraints { max_steps: 3, timeout_ms },
+            report_format: "SyncReport".into(),
+        }
+    }
+
+    fn def_with() -> AgentDefinition {
+        serde_json::from_value(serde_json::json!({
+            "name": "时限演练体", "identifier": "timeout-agent", "domain": "公共",
+            "tier": "unit", "description": "派发时限演练", "capabilities": ["测试"],
+            "promptFile": "timeout-agent.md"
+        }))
+        .unwrap()
+    }
+
+    /// 挂死的 LLM 流必须在派发时限内被掐断并报可诊断错误（回归：timeout_ms 声明无人执行，
+    /// 节点无限期占住编排并发槽）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn 派发时限_挂死流被掐断并报错() {
+        let rt = runtime_with(Arc::new(HangingStreamProvider));
+        let def = def_with();
+        let order = order_with(400); // 400ms 时限
+        let chain = crate::provider::ModelChain {
+            candidates: vec![(String::new(), Arc::new(HangingStreamProvider), "m".into())],
+            failover: Arc::new(FailoverState::default()),
+        };
+        let started = std::time::Instant::now();
+        let r = rt.execute(&def, &order, chain, "ses-timeout", false, |_| {}).await;
+        let elapsed = started.elapsed();
+        let err = r.expect_err("挂死流应在时限内失败");
+        assert!(err.to_string().contains("超时"), "错误应可诊断为超时: {err}");
+        assert!(
+            elapsed >= Duration::from_millis(400) && elapsed < Duration::from_secs(10),
+            "应约在时限处失败而非挂满 60s，实际 {elapsed:?}"
+        );
+    }
+
+    /// 快速正常的 LLM 不应被时限误伤（时限内正常产出 SyncReport → 成功回流）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn 派发时限_正常流不受影响() {
+        let rt = runtime_with(Arc::new(crate::provider::MockLlmProvider));
+        let def = def_with();
+        let order = order_with(10_000);
+        let chain = crate::provider::ModelChain {
+            candidates: vec![(String::new(), Arc::new(crate::provider::MockLlmProvider), "m".into())],
+            failover: Arc::new(FailoverState::default()),
+        };
+        let report = rt
+            .execute(&def, &order, chain, "ses-ok", false, |_| {})
+            .await
+            .expect("时限充裕时应正常执行");
+        assert_eq!(report.task_node_id, "T1");
+        assert_eq!(report.status, crate::types::SyncStatus::Done);
     }
 }

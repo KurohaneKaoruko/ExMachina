@@ -792,13 +792,19 @@ pub(crate) struct ChannelCaps {
 
 /// 能力矩阵：telegram/discord/slack/napcat/matrix 直发媒体（或部分），qqbot 官方 API 受限全降级。
 /// 与各适配器实际发送实现保持同步——新增实现即开位。
+/// 平台不支持项的原因（给维护者的口径，别随手"优化"回去）：
+/// · discord voice：无原生语音条目形态，为避免与「discord 不支持语音」的既有测试口径冲突暂不开位；
+/// · slack / napcat typing：Slack 机器人无输入中指示 API；OneBot 11 无标准 typing 动作；
+/// · qqbot 全降级：官方机器人被动消息仅支持文本，富媒体需另走 richmedia 上报链路。
 pub(crate) fn caps(kind: &str) -> ChannelCaps {
     match kind {
         "telegram" => ChannelCaps { image: true, file: true, voice: true, typing: true },
         "discord" => ChannelCaps { image: true, file: true, voice: false, typing: true },
         "slack" => ChannelCaps { image: true, file: true, voice: false, typing: false },
         "napcat" => ChannelCaps { image: true, file: true, voice: true, typing: false },
-        "matrix" => ChannelCaps { image: false, file: false, voice: false, typing: false },
+        // matrix：m.image / m.file / m.audio 出站已实现（mx_send_media：upload → content_uri → 事件），
+        // typing 有官方端点（PUT /rooms/{id}/typing/{uid}）——曾因这里全 false 把已实现能力封成死代码。
+        "matrix" => ChannelCaps { image: true, file: true, voice: true, typing: true },
         _ => ChannelCaps { image: false, file: false, voice: false, typing: false },
     }
 }

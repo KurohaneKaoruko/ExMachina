@@ -83,9 +83,8 @@ cargo run -p exm-cli --release --bin exm -- agents
 
 > Docker：`docker compose up --build`（编成与状态卷持久化，详见 [docker-compose.yml](./docker-compose.yml)）。
 
-> **桌面端**（Tauri 壳，自带本地网关 / `--remote` 远程直连）：见 [desktop/README.md](./desktop/README.md)。
-> **移动端**：无需单独 App——手机浏览器 / PWA 打开网关地址（桌面端局域网地址或远程服务器地址）即为同源客户端，
-> 与桌面端共用同一端口交付（WebUI / API / WS 同端口托管）。
+> **桌面端**（Tauri 壳，自带本地网关 / `--remote` 远程直连）：对话与全部管理均为原生界面，零 webui 依赖——见 [desktop/README.md](./desktop/README.md)。
+> **移动端**：无需单独 App——手机浏览器 / PWA 打开网关地址（服务器部署的网关同端口托管 WebUI / API / WS）即为同源客户端。
 
 ## 为什么需要"集群"，而不是再要一个助手
 

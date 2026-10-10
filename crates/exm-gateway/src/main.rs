@@ -20,7 +20,16 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    let cfg = ExmConfig::load(std::env::current_dir()?);
+    // 工作区根：EXM_WORKSPACE_ROOT 优先（桌面壳用它把默认工作区指到用户数据目录，
+    // 绝不落在安装目录——防止 agent 把应用自身文件当工作对象改坏）
+    let mut root = std::env::current_dir()?;
+    if let Ok(ws) = std::env::var("EXM_WORKSPACE_ROOT") {
+        let ws = ws.trim().to_string();
+        if !ws.is_empty() {
+            root = std::path::PathBuf::from(ws);
+        }
+    }
+    let cfg = ExmConfig::load(root);
     let core = Arc::new(Core::with_config(cfg)?);
     exm_gateway::serve(core, port, host.as_deref()).await
 }

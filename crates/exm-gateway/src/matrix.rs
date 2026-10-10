@@ -5,9 +5,13 @@
 //! 首次 sync 只取 `next_batch` 游标并丢弃历史事件，其后逐批处理 join 房间里的
 //! `m.room.message` 文本事件（时间线倒序不需要，按批处理即可）。
 //! 回复：PUT /rooms/{roomId}/send/m.room.message/{txnId}（txn 自增，幂等去重）。
+//! 出站媒体：POST /media/v3/upload → content_uri → m.image / m.file / m.audio 事件（组 6.3）。
+//! 入站媒体：m.image / m.file / m.audio → 标记行 → mxc 下载落 inbox；语音（m.audio）转写为文本注记。
+//! typing 指示：PUT /rooms/{roomId}/typing/{userId}（处理开始即触发，20s 自然过期）。
 //! token 失效（M_UNKNOWN_TOKEN）上报错误后指数退避重试。
 //! 监督循环每 5 秒对账：新增账号拉起轮询，删除/停用/凭证变更的账号回收任务。
 
+use crate::channel_util::{builtin_command, first_seen, media_placeholder};
 use crate::platform::{admit, caps, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use parking_lot::Mutex;
@@ -167,39 +171,46 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                             "ok",
                             if self_user.is_empty() { "轮询中".into() } else { format!("账号 {self_user}") },
                         );
-                        for (room, sender, mentioned, raw_text) in parse_events(&body, &self_user) {
+                        for (room, sender, event_id, mentioned, raw_text) in parse_events(&body, &self_user) {
+                            // 消息去重（防御性）：/sync 游标本身保证不重放，这里兜底
+                            // 「游标丢失（如长期断线后重置）导致同批事件重见」的场景
+                            if !first_seen(&format!("matrix:{}", ch.id), &event_id) {
+                                continue;
+                            }
                             // 入站媒体（组 6.4）：标记行解析 → mxc 下载 → 注入
                             let mut saved: Vec<(String, String, String)> = Vec::new();
-                            let text = if let Some(rest) = raw_text.strip_prefix(US) {
-                                let parts: Vec<&str> = rest.split(US).collect();
-                                if parts.len() == 3 {
-                                    let (kind, mxc, _room) = (parts[0], parts[1], parts[2]);
-                                    let dl = format!(
-                                        "{}/_matrix/media/v3/download/{}",
-                                        hs,
-                                        url_encode(mxc.trim_start_matches("mxc://"))
-                                    );
-                                    match client.get(dl).bearer_auth(&token).send().await {
-                                        Ok(r) if r.status().is_success() => {
-                                            let name = format!("matrix-{}.{}", exm_core::types::now_ms(), if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" });
-                                            if let Some(bytes) = r.bytes().await.ok().map(|b| b.to_vec()) {
-                                                if let Some(p) = crate::platform::save_inbound_media(core.as_ref(), &ch, &name, bytes).await {
-                                                    saved.push((kind.to_string(), p, name));
-                                                }
+                            let text: String = if let Some((kind, mxc)) = parse_media_marker(&raw_text) {
+                                let dl = format!(
+                                    "{}/_matrix/media/v3/download/{}",
+                                    hs,
+                                    url_encode(mxc.trim_start_matches("mxc://"))
+                                );
+                                // 纯媒体消息占位正文：曾给空串导致整条被下方空文本检查丢弃——
+                                // 「只发一张图」在 matrix 通道完全石沉大海
+                                let mut text = media_placeholder(&[&kind]);
+                                match client.get(dl).bearer_auth(&token).send().await {
+                                    Ok(r) if r.status().is_success() => {
+                                        let ext = if kind == "image" { "png" } else if kind == "voice" { "ogg" } else { "bin" };
+                                        let name = format!("matrix-{}.{ext}", exm_core::types::now_ms());
+                                        if let Some(bytes) = r.bytes().await.ok().map(|b| b.to_vec()) {
+                                            if let Some(p) = crate::platform::save_inbound_media(core.as_ref(), &ch, &name, bytes.clone()).await {
+                                                saved.push((kind.to_string(), p, name.clone()));
+                                            }
+                                            // 语音转写（telegram 同款能力）：m.audio 下载成功即转写，
+                                            // 结果以注记并入正文；失败静默——附件本体已保存，模型仍可按路径处理
+                                            if kind == "voice" {
+                                                text.push_str(&crate::channel_util::voice_transcript_note(core.as_ref(), bytes, &name).await);
                                             }
                                         }
-                                        Err(_) => {
-                                            saved.push((kind.to_string(), String::new(), "下载失败附件".into()));
-                                        }
-                                        Ok(_) => {
-                                            saved.push((kind.to_string(), String::new(), "下载失败附件".into()));
-                                        }
                                     }
-                                    // 媒体消息无文本正文
-                                    String::new()
-                                } else {
-                                    raw_text
+                                    _ => {
+                                        // 下载失败不硬塞空路径条目（会注出「已保存：<空>」的假话），
+                                        // 改成显式失败占位，用户与模型都知道附件没收到
+                                        let kind_cn = if kind == "image" { "图片" } else if kind == "voice" { "语音" } else { "文件" };
+                                        text = format!("（用户发来一个{kind_cn}附件，但下载失败，未能读取内容）");
+                                    }
                                 }
+                                text
                             } else {
                                 raw_text
                             };
@@ -231,14 +242,24 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
                                     continue;
                                 }
                             }
+                            // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
+                            if let Some(reply) = builtin_command(&core, &ch, &room, &text).await {
+                                let client2 = client.clone();
+                                let hs2 = hs.clone();
+                                let token2 = token.clone();
+                                let room2 = room.clone();
+                                tokio::spawn(async move { send_message(&client2, &hs2, &token2, &room2, &reply).await });
+                                continue;
+                            }
                             let core = core.clone();
                             let ch2 = ch.clone();
                             let hs2 = hs.clone();
                             let token2 = token.clone();
                             let client2 = client.clone();
                             let sender2 = sender.clone();
+                            let self2 = self_user.clone();
                             tokio::spawn(async move {
-                                handle_message(&core, &ch2, &client2, &hs2, &token2, &room, &sender2, text.trim()).await;
+                                handle_message(&core, &ch2, &client2, &hs2, &token2, &room, &sender2, &self2, saved, &text).await;
                             });
                         }
                         since = next.or(since);
@@ -270,10 +291,22 @@ async fn poll_loop(core: Arc<Core>, ch: Channel) {
     }
 }
 
-const US: char = '\u{1}'; // 入站媒体标记行分隔符（媒体消息正文形如 \u{1}kind\u{1}mxc\u{1}room）
+const US: char = '\u{1}'; // 入站媒体标记行分隔符（媒体消息正文形如 \u{1}media\u{1}kind\u{1}mxc\u{1}room）
 
-/// /sync 响应 → [(房间 id, 发送者, 是否提及, 正文)]。自己发的消息与非文本消息一律忽略。
-fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, String)> {
+/// 媒体标记行解析（纯函数）：`\u{1}media\u{1}kind\u{1}mxc\u{1}room` → (kind, mxc)。
+/// 产出方 parse_events 恒以 5 段形态写出（前导 US + "media" 哨兵）；消费方曾按 3 段解析，
+/// 条件永假 → matrix 纯媒体消息从未真正下载，控制字符标记行原样进了模型上下文。
+/// 收拢成一个函数让产出/消费的口径只有一处，测试直接锚定这个格式。
+fn parse_media_marker(raw: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = raw.split(US).collect();
+    if parts.len() == 5 && parts[1] == "media" && !parts[2].is_empty() && !parts[3].is_empty() {
+        return Some((parts[2].to_string(), parts[3].to_string()));
+    }
+    None
+}
+
+/// /sync 响应 → [(房间 id, 发送者, 事件 id, 是否提及, 正文)]。自己发的消息与非文本消息一律忽略。
+fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, String, bool, String)> {
     let mut out = Vec::new();
     let Some(join) = body.pointer("/rooms/join").and_then(|v| v.as_object()) else {
         return out;
@@ -291,6 +324,7 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
             if !self_user.is_empty() && sender == self_user {
                 continue;
             }
+            let event_id = e.get("event_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
             // 入站媒体（组 6.4）：m.image / m.file / m.audio → (kind, mxc, 文件名)
             let msgtype = content.get("msgtype").and_then(|x| x.as_str()).unwrap_or("");
             if matches!(msgtype, "m.image" | "m.file" | "m.audio") {
@@ -304,6 +338,7 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
                     out.push((
                         room_id.clone(),
                         sender.to_string(),
+                        event_id,
                         false,
                         format!("{US}media{US}{kind}{US}{url}{US}{room_id}"),
                     ));
@@ -321,7 +356,7 @@ fn parse_events(body: &Value, self_user: &str) -> Vec<(String, String, bool, Str
                 .map(|a| a.iter().any(|u| u.as_str() == Some(self_user)))
                 .unwrap_or(false)
                 || (!self_user.is_empty() && text.to_lowercase().contains(&format!("@{}", self_user.to_lowercase())));
-            out.push((room_id.clone(), sender.to_string(), mentioned, text.to_string()));
+            out.push((room_id.clone(), sender.to_string(), event_id, mentioned, text.to_string()));
         }
     }
     out
@@ -354,11 +389,33 @@ async fn handle_message(
     token: &str,
     room: &str,
     sender: &str,
+    self_user: &str,
+    media: Vec<(String, String, String)>,
     text: &str,
 ) {
+    // typing 指示（组 6.5）：官方端点 PUT /rooms/{roomId}/typing/{userId}；
+    // 指示属尽力而为，失败静默（whoami 失败时 self_user 为空，直接跳过）
+    if caps("matrix").typing && !self_user.is_empty() {
+        let url = format!(
+            "{hs}/_matrix/client/v3/rooms/{}/typing/{}",
+            url_encode(room),
+            url_encode(self_user)
+        );
+        let _ = client
+            .put(&url)
+            .bearer_auth(token)
+            .json(&json!({ "typing": true, "timeout": 20_000 }))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await;
+    }
     // 会话键用房间 id，房间内多人共享同一会话（Matrix 房间即群）
     let Some((run, rx)) = ChannelRun::begin(core, ch, room).await else { return };
     core.stamp_session_origin(&run.session_id, sender, core.identity_of(&ch.id, sender).map(|i| i.id).unwrap_or_else(|| format!("ch:{}:{}", ch.id, sender)).as_str());
+    // 入站媒体注入（组 6.4）：图片进多模态暂存，文件/语音附路径说明——
+    // 曾下载保存后忘了传入执行上下文，附件等于白收
+    let note = crate::platform::stage_inbound_media(core, &run.session_id, &media);
+    let text = if note.is_empty() { text.to_string() } else { format!("{text}{note}") };
     let client2 = client.clone();
     let hs2 = hs.to_string();
     let token2 = token.to_string();
@@ -388,7 +445,7 @@ async fn handle_message(
             async move { mx_send_media(&client2, &hs2, &token2, &room2, &item).await }
         },
     );
-    run.run(text).await;
+    run.run(&text).await;
     let _ = reply.await;
 }
 
@@ -487,5 +544,82 @@ async fn send_message(client: &reqwest::Client, hs: &str, token: &str, room: &st
             eprintln!("[matrix] 回复失败：HTTP {status} {body}");
         }
         Err(e) => eprintln!("[matrix] 回复网络错误：{e}"),
+    }
+}
+
+// ---------------------------------------------------------------- 测试（纯函数部分）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// /sync 事件解析：文本提及、自身过滤、媒体消息打标记行、非文本事件忽略
+    #[test]
+    fn 事件解析_提及与自身过滤与媒体标记() {
+        let body = json!({
+            "rooms": { "join": {
+                "!r1:x": { "timeline": { "events": [
+                    // 他人文本 + m.mentions 命中
+                    { "type": "m.room.message", "sender": "@a:x", "event_id": "$e1",
+                      "content": { "msgtype": "m.text", "body": "帮我看看", "m.mentions": { "user_ids": ["@me:x"] } } },
+                    // 自己发的：忽略
+                    { "type": "m.room.message", "sender": "@me:x", "event_id": "$e2",
+                      "content": { "msgtype": "m.text", "body": "我自己说的" } },
+                    // 图片消息：转标记行
+                    { "type": "m.room.message", "sender": "@b:x", "event_id": "$e3",
+                      "content": { "msgtype": "m.image", "body": "shot.png", "url": "mxc://x/abc" } },
+                    // 非文本（如 m.notice）：忽略
+                    { "type": "m.room.message", "sender": "@b:x", "event_id": "$e4",
+                      "content": { "msgtype": "m.notice", "body": "bot 广播" } },
+                    // 其他事件类型：忽略
+                    { "type": "m.room.member", "sender": "@b:x", "event_id": "$e5", "content": {} },
+                ] } }
+            } }
+        });
+        let out = parse_events(&body, "@me:x");
+        assert_eq!(out.len(), 2, "自身/notice/非消息事件不收：{out:?}");
+        // 文本事件：提及命中、event_id 作去重键
+        assert_eq!(out[0].0, "!r1:x");
+        assert_eq!(out[0].2, "$e1");
+        assert!(out[0].3, "m.mentions 命中应算提及");
+        assert_eq!(out[0].4, "帮我看看");
+        // 图片消息：标记行 \u{1}kind\u{1}mxc\u{1}room，未提及
+        assert_eq!(out[1].2, "$e3");
+        assert!(!out[1].3);
+        assert_eq!(out[1].4, format!("{US}media{US}image{US}mxc://x/abc{US}!r1:x"));
+        // 无 join 房间（初始 sync）返回空
+        assert!(parse_events(&json!({}), "@me:x").is_empty());
+    }
+
+    /// URL 编码：只放行 unreserved 字符（since 游标 / 房间 id 含保留字符也不跑偏）
+    #[test]
+    fn url编码_游标与房间id安全() {
+        assert_eq!(url_encode("abc123"), "abc123");
+        assert_eq!(url_encode("a b/c+d"), "a%20b%2Fc%2Bd");
+        assert_eq!(url_encode("!room:x.org"), "%21room%3Ax.org");
+        assert_eq!(url_encode("-_.~"), "-_.~", "unreserved 字符不编码");
+        // 非 ASCII 按 UTF-8 字节展开
+        assert_eq!(url_encode("房"), "%E6%88%BF");
+    }
+
+    /// 媒体标记行解析：与 parse_events 的产出格式互为镜像（5 段：前导 US + media 哨兵 + kind + mxc + room）。
+    /// 曾按 3 段解析导致条件永假——matrix 纯媒体消息从未下载，标记行原样进了模型上下文。
+    #[test]
+    fn 媒体标记解析_与产出格式镜像() {
+        // 产出方原样格式（parse_events 的 format! 逐字对照）
+        let raw = format!("{US}media{US}image{US}mxc://x/abc{US}!r1:x");
+        let (kind, mxc) = parse_media_marker(&raw).expect("产出方格式必须可解析");
+        assert_eq!(kind, "image");
+        assert_eq!(mxc, "mxc://x/abc");
+        // 语音与文件
+        let (kind, _) = parse_media_marker(&format!("{US}media{US}voice{US}mxc://x/au{US}!r:x")).expect("语音标记可解析");
+        assert_eq!(kind, "voice");
+        // 哨兵缺失 / 段数不符 / 字段为空 → 不认（普通正文不被误判成媒体）
+        assert!(parse_media_marker(&format!("{US}image{US}mxc://x/abc")).is_none(), "3 段旧格式不认");
+        assert!(parse_media_marker(&format!("{US}media{US}image{US}mxc://x/abc")).is_none(), "缺 room 段不认");
+        assert!(parse_media_marker(&format!("{US}media{US}{US}mxc://x/abc{US}!r:x")).is_none(), "kind 为空不认");
+        assert!(parse_media_marker("普通文本消息").is_none());
+        assert!(parse_media_marker("").is_none());
     }
 }

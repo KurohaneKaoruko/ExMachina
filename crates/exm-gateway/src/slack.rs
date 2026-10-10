@@ -5,8 +5,12 @@
 //! 事件：`hello` → `events_api` 信封；**每条信封须在 3 秒内 ack**（回 `{"envelope_id":…}`），
 //! 故 ack 一律先发、再异步处理消息。忽略机器人自己发的消息（bot_id / subtype / bot_message）。
 //! 回复文本限 4000 字符 → 截 3800。`disconnect` 帧按服务端要求重连。
+//! 入站媒体：event.files → url_private_download 落 inbox；纯媒体消息占位正文兜底；
+//! 音频文件（audio/*）归 voice 并转写为文本注记（telegram 同款能力）。
+//! 出站 typing：Slack 机器人无输入中指示 API，能力矩阵恒关（不支持项见 platform::caps 注释）。
 //! 监督循环每 5 秒对账：新增账号拉起会话，删除/停用/凭证变更的账号回收任务。
 
+use crate::channel_util::{builtin_command, classify_attachment, first_seen, media_placeholder, voice_transcript_note};
 use crate::platform::{admit, report_status, spawn_reply, GateDecision, Channel, ChannelRun, InboundCtx, MediaItem};
 use exm_core::Core;
 use futures_util::{SinkExt, StreamExt};
@@ -92,6 +96,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
         return;
     };
     // 自检：机器人令牌有效性 + 工作区身份
+    let mut bot_user = String::new(); // 本 bot 的用户 id（U 开头）：message 事件的提及归一化用
     match client
         .post(format!("{API}/auth.test"))
         .header("Authorization", format!("Bearer {bot_token}"))
@@ -103,6 +108,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
             if v.get("ok").and_then(|x| x.as_bool()) == Some(true) {
                 let name = v.get("user").and_then(|x| x.as_str()).unwrap_or("?");
                 let team = v.get("team").and_then(|x| x.as_str()).unwrap_or("");
+                bot_user = v.get("user_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 println!("[slack:{}] 机器人已连结：{name}（{team}）", ch.id);
                 report_status(&ch.id, "ok", format!("机器人 {name}"));
             } else {
@@ -119,6 +125,8 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
         }
     }
 
+    // 断线退避：连续失败按 3→6→12…（封顶 300s）指数递增；Socket Mode 握手成功（hello）即复位
+    let mut fail_streak: u32 = 0;
     loop {
         // Socket Mode 连接地址（应用级令牌换取）
         let url = match client
@@ -189,6 +197,7 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                 "hello" => {
                     println!("[slack:{}] Socket Mode 已连结", ch.id);
                     report_status(&ch.id, "ok", "Socket Mode 已连结");
+                    fail_streak = 0;
                 }
                 "disconnect" => {
                     let reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("unknown");
@@ -205,15 +214,15 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                         }
                     }
                     let payload = v.get("payload").cloned().unwrap_or(Value::Null);
-                    let Some((channel, mentioned, text)) = parse_event(&payload) else { continue };
-                    if text.trim().is_empty() && payload.pointer("/event/files").and_then(|x| x.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
+                    let Some((channel, ts, mentioned, text)) = parse_event(&payload, &bot_user) else { continue };
+                    // 消息去重：Slack 对同一条消息会同时投 `message` 与 `app_mention` 双事件（同 ts），
+                    // 不去重会执行两轮；配合 parse_event 的提及归一化，无论哪个事件先到语义一致
+                    if !first_seen(&format!("slack:{}", ch.id), &ts) {
                         continue;
                     }
-                    if !ch.allowed_chats.is_empty() && !ch.allowed_chats.iter().any(|a| a == &channel) {
-                        eprintln!("[slack:{}] {channel} 不在白名单，已忽略", ch.id);
-                        continue;
-                    }
-                    // 入站媒体（组 6.4）：event.files → url_private_download（带 bot token）
+                    // 入站媒体（组 6.4）：event.files → url_private_download（带 bot token）。
+                    // 先盘附件再定正文：纯文件消息没有文字，需要占位正文兜底——
+                    // 曾漏接 media_placeholder，空正文直接进会话，「只发一个文件」石沉大海
                     let mut inbound: Vec<(String, String, String, String)> = Vec::new();
                     if let Some(files) = payload.pointer("/event/files").and_then(|x| x.as_array()) {
                         for f in files {
@@ -222,9 +231,23 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                             if url.is_empty() {
                                 continue;
                             }
-                            let kind = if f.get("mimetype").and_then(|x| x.as_str()).unwrap_or("").starts_with("image/") { "image" } else { "file" };
+                            let kind = classify_attachment(f.get("mimetype").and_then(|x| x.as_str()).unwrap_or(""));
                             inbound.push((kind.to_string(), url.to_string(), name.to_string(), bot_token.clone()));
                         }
+                    }
+                    let mut text = if text.trim().is_empty() {
+                        let kinds: Vec<&str> = inbound.iter().map(|(k, _, _, _)| k.as_str()).collect();
+                        media_placeholder(&kinds)
+                    } else {
+                        text
+                    };
+                    // 空守卫：附件条目全部缺 url 时占位也为空，无可执行内容直接丢弃
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    if !ch.allowed_chats.is_empty() && !ch.allowed_chats.iter().any(|a| a == &channel) {
+                        eprintln!("[slack:{}] {channel} 不在白名单，已忽略", ch.id);
+                        continue;
                     }
                     // DM（channel 以 D 开头）豁免群聊门控；app_mention 事件即提及信号
                     let is_group = !channel.starts_with('D');
@@ -245,19 +268,34 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                             continue;
                         }
                     }
+                    // 内置命令（/new /status）：闸门放行后、进入会话执行前拦截
+                    if let Some(reply) = builtin_command(&core, &ch, &channel, &text).await {
+                        let client2 = client.clone();
+                        let token2 = bot_token.clone();
+                        let chan = channel.clone();
+                        tokio::spawn(async move { send_message(&client2, &token2, &chan, &reply).await });
+                        continue;
+                    }
                     let core = core.clone();
                     let ch2 = ch.clone();
                     let client2 = client.clone();
                     let token2 = bot_token.clone();
                     tokio::spawn(async move {
-                        // 入站媒体（组 6.4）：下载落 inbox → 注入
+                        // 入站媒体（组 6.4）：下载落 inbox → 注入；语音顺带转写（telegram 同款能力）
                         let mut saved: Vec<(String, String, String)> = Vec::new();
+                        let mut transcript_note = String::new();
                         for (kind, url, name, tk) in inbound {
                             if let Some(bytes) = crate::platform::download_bytes_auth(&url, &tk).await {
-                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes).await {
-                                    saved.push((kind, p, name));
+                                if let Some(p) = crate::platform::save_inbound_media(&core, &ch2, &name, bytes.clone()).await {
+                                    saved.push((kind.clone(), p, name.clone()));
+                                }
+                                if kind == "voice" {
+                                    transcript_note.push_str(&voice_transcript_note(&core, bytes, &name).await);
                                 }
                             }
+                        }
+                        if !transcript_note.is_empty() {
+                            text.push_str(&transcript_note);
                         }
                         handle_message(&core, &ch2, &client2, &token2, &channel, &external_id, saved, text.trim()).await;
                     });
@@ -265,12 +303,18 @@ async fn session_loop(core: Arc<Core>, ch: Channel) {
                 _ => {}
             }
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 断线退避：指数递增（连结成功时已在 hello 处复位）
+        let wait = Duration::from_secs((3u64 << fail_streak.min(7)).min(300));
+        fail_streak = fail_streak.saturating_add(1);
+        tokio::time::sleep(wait).await;
     }
 }
 
-/// events_api payload → (频道 id, 是否提及(app_mention), 正文)。机器人自身消息与非文本消息一律忽略。
-fn parse_event(payload: &Value) -> Option<(String, bool, String)> {
+/// events_api payload → (频道 id, 消息 ts, 是否提及, 正文)。
+/// 机器人自身消息与非文本消息一律忽略。提及归一化：`app_mention` 事件直接算提及；
+/// `message` 事件扫正文里的 `<@{bot_user}>`——双事件投递下无论哪个先到，门控语义一致
+/// （否则 message 先到时群聊会被门控忽略，后到的 app_mention 又被去重丢弃，@ 机器人失效）。
+fn parse_event(payload: &Value, bot_user: &str) -> Option<(String, String, bool, String)> {
     let ev = payload.get("event")?;
     let t = ev.get("type").and_then(|x| x.as_str()).unwrap_or("");
     if t != "message" && t != "app_mention" {
@@ -281,11 +325,14 @@ fn parse_event(payload: &Value) -> Option<(String, bool, String)> {
         return None;
     }
     let channel = ev.get("channel").and_then(|x| x.as_str())?.to_string();
+    let ts = ev.get("ts").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let content = ev.get("text").and_then(|x| x.as_str()).unwrap_or("");
-    Some((channel, t == "app_mention", strip_mentions(content)))
+    let mentioned = t == "app_mention"
+        || (!bot_user.is_empty() && content.contains(&format!("<@{bot_user}>")));
+    Some((channel, ts, mentioned, strip_mentions(content)))
 }
 
-/// 剥掉 `<@U123>` 提及片段
+/// 剥掉 `<@U123>` 提及片段；未闭合片段保留原样（曾把前缀重复拼一遍）
 fn strip_mentions(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
@@ -293,7 +340,12 @@ fn strip_mentions(s: &str) -> String {
         out.push_str(&rest[..i]);
         match rest[i..].find('>') {
             Some(j) => rest = &rest[i + j + 1..],
-            None => break,
+            None => {
+                // 找不到收尾 > ：把标记连同后面正文原样保留，宁可带杂质也不吞正文
+                out.push_str(&rest[i..]);
+                rest = "";
+                break;
+            }
         }
     }
     out.push_str(rest);
@@ -394,14 +446,14 @@ async fn slack_send_media(
     if !resp.status().is_success() {
         return false;
     }
-    // ③ 完成登记（带频道与文案）
+    // ③ 完成登记（带频道与文案；文案同样走 mrkdwn 转义）
     let done: Value = match client
         .post(format!("{API}/files.completeV2"))
         .bearer_auth(bot_token)
         .form(&[
             ("files", file_id.as_str()),
             ("channel_id", channel),
-            ("initial_comment", item.caption.as_str()),
+            ("initial_comment", escape_mrkdwn(&item.caption).as_str()),
         ])
         .send()
         .await
@@ -415,6 +467,13 @@ async fn slack_send_media(
     done.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)
 }
 
+/// Slack mrkdwn 实体转义：`&` `<` `>` 是链接 / 提及 / 频道实体的语法边界，
+/// 回帖里的代码与泛型（`Vec<T>`、`a && b`）会被误解析成实体甚至整段吞掉——
+/// 出站前统一转义保证字面显示。先转 `&`，避免二次转义。
+fn escape_mrkdwn(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 async fn send_message(client: &reqwest::Client, bot_token: &str, channel: &str, text: &str) {
     if bot_token.trim().is_empty() {
         return;
@@ -422,7 +481,7 @@ async fn send_message(client: &reqwest::Client, bot_token: &str, channel: &str, 
     match client
         .post(format!("{API}/chat.postMessage"))
         .header("Authorization", format!("Bearer {bot_token}"))
-        .json(&json!({ "channel": channel, "text": text }))
+        .json(&json!({ "channel": channel, "text": escape_mrkdwn(text) }))
         .send()
         .await
     {
@@ -440,5 +499,56 @@ async fn send_message(client: &reqwest::Client, bot_token: &str, channel: &str, 
             eprintln!("[slack] 回复失败：HTTP {status} {body}");
         }
         Err(e) => eprintln!("[slack] 回复网络错误：{e}"),
+    }
+}
+
+// ---------------------------------------------------------------- 测试（纯函数部分）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 事件解析：message / app_mention 双事件都归一出提及信号；机器人与系统事件忽略
+    #[test]
+    fn 事件解析_双事件提及归一() {
+        let bot = "U_BOT";
+        // message 形态：正文 @ 了本 bot → 提及（app_mention 先到被去重时也不丢语义）
+        let msg = json!({ "event": { "type": "message", "channel": "C1", "ts": "1.2", "text": "<@U_BOT> 部署一下" } });
+        let (chan, ts, mentioned, text) = parse_event(&msg, bot).expect("message 事件应解析");
+        assert_eq!(chan, "C1");
+        assert_eq!(ts, "1.2", "ts 是去重键（双事件同 ts）");
+        assert!(mentioned, "正文 <@bot> 应归一为提及");
+        assert_eq!(text, "部署一下", "提及片段剥掉");
+
+        // app_mention 形态：直接算提及
+        let mention = json!({ "event": { "type": "app_mention", "channel": "C1", "ts": "1.2", "text": "<@U_BOT> 在吗" } });
+        let (_, _, mentioned, _) = parse_event(&mention, bot).expect("app_mention 应解析");
+        assert!(mentioned);
+
+        // 未提及的频道消息：不放宽
+        let plain = json!({ "event": { "type": "message", "channel": "C1", "ts": "2.0", "text": "大家聊" } });
+        let (_, _, mentioned, _) = parse_event(&plain, bot).expect("普通消息应解析");
+        assert!(!mentioned);
+
+        // bot_id / subtype 事件忽略（含自己发的 bot_message）
+        let self_msg = json!({ "event": { "type": "message", "bot_id": "B1", "channel": "C1", "text": "回声" } });
+        assert!(parse_event(&self_msg, bot).is_none());
+        let edited = json!({ "event": { "type": "message", "subtype": "message_changed", "channel": "C1", "text": "x" } });
+        assert!(parse_event(&edited, bot).is_none());
+        // 非文本事件忽略
+        let reaction = json!({ "event": { "type": "reaction_added", "channel": "C1" } });
+        assert!(parse_event(&reaction, bot).is_none());
+    }
+
+    /// mrkdwn 实体转义：& < > 字面显示，先转 & 防二次转义
+    #[test]
+    fn 实体转义_字面显示防误解析() {
+        assert_eq!(escape_mrkdwn("a<b&c>d"), "a&lt;b&amp;c&gt;d");
+        assert_eq!(escape_mrkdwn("Vec<T> 与 && 以及 <@U1>"), "Vec&lt;T&gt; 与 &amp;&amp; 以及 &lt;@U1&gt;");
+        assert_eq!(escape_mrkdwn("普通中文"), "普通中文");
+        assert_eq!(escape_mrkdwn(""), "");
+        // 幂等性来自「先转 &」：已转义文本不会被二次转坏
+        assert_eq!(escape_mrkdwn("&lt;"), "&amp;lt;");
     }
 }

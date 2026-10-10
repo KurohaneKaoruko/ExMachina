@@ -7,16 +7,29 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
+    <header id="titlebar" data-tauri-drag-region>
+      <span class="tb-brand" data-tauri-drag-region>EXMACHINA</span>
+      <div class="tb-btns hidden" id="tb-btns">
+        <button id="tb-min" title="最小化">─</button>
+        <button id="tb-max" title="最大化 / 还原">▢</button>
+        <button id="tb-close" title="关闭（驻留托盘）">✕</button>
+      </div>
+    </header>
     <div id="app">
       <!-- 侧栏：会话列表（可收起） -->
       <aside id="sidebar">
         <div class="side-head">
-          <div class="brand">EXMACHINA</div>
           <button id="btn-new" class="btn-new" title="开始新对话">＋ 新对话</button>
         </div>
         <nav id="session-list" aria-label="会话列表"></nav>
         <div class="side-foot">
           <div id="conn-status" class="conn"><span class="dot"></span><span id="conn-text">连接中…</span></div>
+          <div class="side-links">
+            <button id="btn-code" class="side-link" title="编码工作台：工作区文件树 / 编辑 / 变更 / Git">▤ 编码</button>
+            <button id="btn-tasks" class="side-link" title="当前会话的任务图与台账">▣ 任务</button>
+            <button id="btn-approvals" class="side-link" title="待处理审批单（破坏性操作放行闸口）">⚠ 待审批<span id="approvals-badge" class="badge hidden">0</span></button>
+          </div>
           <button id="btn-settings" class="side-link" title="模型 / 组与个体 / 通道 / 定时 / 安全">⚙ 设置</button>
         </div>
       </aside>
@@ -27,6 +40,7 @@
           <button id="btn-side" class="icon-btn" title="显示 / 收起侧栏">☰</button>
           <button id="btn-back" class="icon-btn hidden" title="返回主会话">‹</button>
           <div id="target-chip" class="target-chip">…</div>
+          <button id="btn-session-menu" class="icon-btn" title="会话操作：重命名 / 分叉 / 撤销 / 归档">⋯</button>
           <div class="top-actions">
             <span id="run-state" class="run-state hidden"><span class="spinner"></span>运行中</span>
             <button id="btn-right" class="btn-right" title="子个体执行面板">执行面板</button>
@@ -60,19 +74,77 @@
 
       <!-- 右栏：子个体执行面板（任务派发图 + 各子个体实时流） -->
       <aside id="rightpanel">
-        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span></div>
+        <div class="rp-head">任务执行 <span id="rp-count" class="rp-count"></span><button id="rp-full" class="rp-full" title="整页任务视图（任务图 + 台账）">任务视图 ›</button></div>
         <div id="rp-body"></div>
       </aside>
     </div>
     <!-- 设置（独立整页）：原生管理面，直连环口 API -->
     <div id="settings-page" class="hidden">
       <aside class="sp-nav">
-        <div class="sp-brand">EXMACHINA</div>
         <button id="sp-back" class="sp-back">‹ 返回对话</button>
         <nav id="sp-tabs"></nav>
       </aside>
       <main class="sp-main"><div id="sp-body"></div></main>
     </div>
+
+    <!-- 编码（独立整页）：文件树 + 编辑器 + 变更/Git 面板，直连 fs / git 环口 -->
+    <div id="code-page" class="hidden">
+      <aside class="cp-side">
+        <button id="cp-back" class="sp-back">‹ 返回对话</button>
+        <div class="cp-side-head">工作区<span id="cp-ws-name" class="cp-ws-name">…</span></div>
+        <div id="cp-tree"></div>
+        <div class="cp-side-foot"><button id="cp-tree-refresh" class="set-btn">↻ 刷新</button></div>
+      </aside>
+      <main class="cp-main">
+        <header class="cp-editor-head">
+          <span id="cp-file-path" class="cp-file-path">未打开文件</span>
+          <span id="cp-file-state" class="cp-file-state"></span>
+          <span class="cp-editor-ops">
+            <button id="cp-reload" class="set-btn">重新加载</button>
+            <button id="cp-save" class="set-btn">保存（Ctrl+S）</button>
+          </span>
+        </header>
+        <!-- 只读预览提示条：截断 / 非 UTF-8 文件常驻警示（textarea 同步置 readOnly） -->
+        <div id="cp-readonly-bar" class="cp-readonly-bar hidden">该文件为只读预览（超过 200KB 截断或非 UTF-8 内容，保存已禁用）</div>
+        <div id="cp-editor-empty" class="cp-editor-empty">在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
+        <!-- 编辑器三明治：行号列（左）/ 当前行高亮条（底）/ 文本层（顶）；滚动由 JS 同步 -->
+        <div id="cp-editor-wrap" class="hidden">
+          <div id="cp-curline" aria-hidden="true" class="hidden"></div>
+          <div id="cp-lines" aria-hidden="true"></div>
+          <textarea id="cp-editor" spellcheck="false" wrap="off"></textarea>
+        </div>
+      </main>
+      <aside class="cp-right">
+        <div id="cp-tabs" class="cp-tabs">
+          <button class="cp-tab on" data-tab="changes">工作区变更</button>
+          <button class="cp-tab" data-tab="git">Git</button>
+        </div>
+        <div class="cp-right-body">
+          <div id="cp-changes"></div>
+          <div id="cp-git" class="hidden"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 任务（独立整页）：当前会话任务图 + 台账 -->
+    <div id="tasks-page" class="hidden">
+      <aside class="sp-nav">
+        <button id="tp-back" class="sp-back">‹ 返回对话</button>
+        <div class="tp-nav-title">任务视图</div>
+        <div class="tp-nav-sub">当前会话的任务图（graph 接口 + graph.updated 推送）与任务台账（goal / 验收 / 证据 / 风险）</div>
+      </aside>
+      <main class="sp-main"><div id="tp-body"></div></main>
+    </div>
+
+    <!-- 通用模态：会话操作（重命名 / 分叉 / 撤销 / 归档）等轻量交互 -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head"><span id="modal-title"></span><button id="modal-close" class="modal-close" title="关闭">✕</button></div>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </div>
+    <!-- 统一 toast 容器：多条提示纵向堆叠，互不遮挡 -->
+    <div id="toasts" class="toasts"></div>
     <script src="app.js"></script>
   </body>
 </html>

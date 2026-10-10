@@ -826,6 +826,17 @@ struct MemoryConfigFile {
     semantic_model: Option<String>,
 }
 
+/// 半衰期清洗：必须为有限正数（天），非法值（0 / 负数 / NaN / ∞）回落默认 30 天。
+/// 为什么在配置层清洗而不只靠 decay() 内部兜底：设置页与 /api/config 回显的是配置值，
+/// decay 内部会把非法半衰期按 1 天处理——「显示 0 天、实际按 1 天衰减」属于所见非所跑，
+/// 展示与行为必须同源。
+fn sanitize_half_life_days(v: Option<f64>) -> f64 {
+    match v {
+        Some(x) if x.is_finite() && x > 0.0 => x,
+        _ => 30.0,
+    }
+}
+
 /// 安装清单：记录本次安装的剖面与渠道开关（与运行配置解耦）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1031,7 +1042,7 @@ impl ExmConfig {
             memory_md_max_chars: file.memory_md_max_chars.unwrap_or(5000),
             memory_enabled: file_mem.enabled.unwrap_or(true),
             memory_recall_limit: file_mem.recall_limit.unwrap_or(5),
-            memory_half_life_days: file_mem.half_life_days.unwrap_or(30.0),
+            memory_half_life_days: sanitize_half_life_days(file_mem.half_life_days),
             memory_semantic_model: file_mem.semantic_model.clone().unwrap_or_default(),
             speech_model: file_cap.speech.unwrap_or_default(),
             stt_model: file_cap.transcribe.unwrap_or_default(),
@@ -1601,5 +1612,17 @@ mod config_tests {
             assert!(keys.contains(&expected), "config_schema 缺少组 {}", expected);
         }
         assert_eq!(schema["configVersion"], CONFIG_VERSION);
+    }
+
+    /// 半衰期配置清洗：非法值（0/负数/NaN/∞）回落默认 30 天，合法值原样透传。
+    /// 保证设置页显示的半衰期与 decay 实际执行的一致（所见即所跑）。
+    #[test]
+    fn 半衰期配置_非法值回落默认() {
+        assert_eq!(sanitize_half_life_days(None), 30.0, "未配置取默认");
+        assert_eq!(sanitize_half_life_days(Some(7.0)), 7.0, "合法值透传");
+        assert_eq!(sanitize_half_life_days(Some(0.1)), 0.1, "小于 1 天也是合法正数（decay 内部另有下限）");
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(sanitize_half_life_days(Some(bad)), 30.0, "非法值 {bad} 应回落默认 30 天");
+        }
     }
 }
