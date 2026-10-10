@@ -1,15 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- EXMACHINA · 中枢圆环 + 四向连结弧（智能体环绕中枢运转） -->
   <rect width="512" height="512" fill="#000000"/>
-
-  <!-- 中枢圆环（exm-core） -->
-  <circle cx="256" cy="256" r="72" fill="none" stroke="#ffffff" stroke-width="50"/>
-
-  <!-- 四段连结弧（智能体） -->
+  <circle cx="256" cy="256" r="97" fill="none" stroke="#ffffff" stroke-width="50"/>
   <g fill="none" stroke="#ffffff" stroke-width="46">
-    <path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/>
-    <path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/>
-    <path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/>
-    <path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/>
+    <path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72"/>
+    <path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05"/>
+    <path d="M 108.28 229.95 A 150 150 0 0 1 282.05 108.28"/>
+    <path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95"/>
   </g>
 </svg>
