@@ -1,40 +1,65 @@
-/** 品牌徽记 —— 中枢环 + 四向连结弧 + 核心方块（智能体环绕中枢运转）。
+/** 品牌徽记 —— 中枢环 + 外观弧槽（与 desktop/ui/mark.js 同一套几何，400 口径）。
  *
- *  纯 SVG + CSS 动画（transform/opacity only）：
- *  - 四弧组慢旋（emblem-rotor），虚线轨道反向慢旋（emblem-orbit）
- *  - 中枢环呼吸（emblem-breathe），核心方块 LED 脉冲（复用 led-pulse）
- *  - animated=false 时全部静止；prefers-reduced-motion 下全局降级
+ *  ── 几何口径（改之前先回 mark.js 对齐，别只改这一处） ──
+ *  画布 400×400，圆心 (200,200)，全部线宽 = 24.5（线宽:半径 ≈ 0.186）。
+ *  中枢环：r = 56.5（内缘 44.25 / 外缘 68.75）。
+ *  外圈 8 个 45° 槽位，边界落在 22.5° + k·45°：
+ *      0° / 180°       → 远弧 r = 131.5
+ *      45/135/225/315° → 近弧 r = 107
+ *      90° / 270°      → 空槽（上下各一个缺口）
+ *  远弧 − 近弧 = 24.5 = 一个线宽 → **近弧外缘与远弧内缘共线于 r = 119.25**，
+ *  相邻槽位在 22.5° 处共用径向切边，连成阶梯状的整块；全部弧与环同亮度（无明度阶梯）。
+ *
+ *  ── 动效（全部不旋转）──
+ *  旋转会让徽记的缺口相位一直在变，读不成图形 —— 这是「加载页别自转」的由来。
+ *    animated（常态）：整枚徽记缓慢呼吸，4.2s 一拍，用于空态 / 登录页等陪伴态。
+ *    charging（加载态）：八段弧槽按序充能（相位由槽位序号 --mk-i 决定），中枢环同拍呼吸，
+ *                        用于开屏「连接中」与视图懒加载兜底。
+ *  只走 transform / opacity；prefers-reduced-motion 下全局降级为静止。
  *
  *  颜色走 currentColor：父级给 color 即可联动强调色体系。
- *
- *  ── 几何口径（与 public/icon.svg 同一套比例，只是 512 口径并补了中枢环） ──
- *  四弧：r=150，跨 70°，缺口居中于正交轴（弧心 45/135/225/315）；
- *        线宽 30 —— 即 线宽:半径 = 0.20，与 icon.svg 的 7:38 = 0.184 同量级。
- *  中枢环：r=78，线宽 22（外缘 89，与四弧内缘 135 之间留 46 的呼吸，即一个弧宽以上）。
- *  核心方块：56（icon.svg 的 14:128 等比放大），落在中枢环内孔（r=67）里。
- *  弧的不透明度自右上起顺时针递减 0.95 → 0.35：方向感来自明度阶梯（同 icon.svg）。
- *
- *  ⚠ 历史坑：此处曾用 r=150 / 线宽 44（0.293）。比值放大 1.6 倍后负空间被吃掉，
- *  缺口宽度只剩线宽的 1.2 倍，四弧粘连成「一块带缺口的圆饼」，小尺寸下更糊成一团。
- *  改比值时务必回到 icon.svg 量一遍，别再凭手感加粗。
  */
 import React from "react";
 
-/** 极坐标弧段（0° = 正上，顺时针）。EXMACHINA 图标口径：四段 70° 弧，正交方向留 20° 缺口 */
-function arcPath(r: number, a0: number, a1: number): string {
-  const rad = (d: number) => ((d - 90) * Math.PI) / 180;
-  const x0 = 256 + r * Math.cos(rad(a0));
-  const y0 = 256 + r * Math.sin(rad(a0));
-  const x1 = 256 + r * Math.cos(rad(a1));
-  const y1 = 256 + r * Math.sin(rad(a1));
-  return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 0 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+const MARK = {
+  view: 400,
+  c: 200,
+  ring: { r: 56.5, w: 24.5 },
+  arcW: 24.5,
+  span: 45,
+  /** 8 个 45° 槽位，按角度递增排列；r = null 即空槽。下标即充能动效的节拍序号。 */
+  slots: [
+    { at: 0, r: 131.5 },
+    { at: 45, r: 107 },
+    { at: 90, r: null },
+    { at: 135, r: 107 },
+    { at: 180, r: 131.5 },
+    { at: 225, r: 107 },
+    { at: 270, r: null },
+    { at: 315, r: 107 },
+  ],
+} as const;
+
+/** 极坐标 → 400 画布坐标（0° = 正右，逆时针为正；SVG 的 y 向下故取负） */
+function pt(deg: number, r: number): [number, number] {
+  const a = (deg * Math.PI) / 180;
+  return [MARK.c + r * Math.cos(a), MARK.c - r * Math.sin(a)];
+}
+
+/** 单个槽位的弧 path（槽心角 at、半径 r，展开 MARK.span 度，线端平切） */
+function arcPath(r: number, at: number): string {
+  const [x0, y0] = pt(at - MARK.span / 2, r);
+  const [x1, y1] = pt(at + MARK.span / 2, r);
+  return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 0 0 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
 }
 
 export interface EmblemProps {
   /** 渲染边长（px） */
   size?: number;
-  /** 开启旋转 / 呼吸动效（默认开） */
+  /** 常态动效：整枚徽记缓慢呼吸（默认开） */
   animated?: boolean;
+  /** 加载态动效：八段弧槽按序充能，比常态更明显；传入时不再叠加 animated */
+  charging?: boolean;
   /** 幽灵态：空态淡纹，整体压暗且不吸引视线 */
   faint?: boolean;
   className?: string;
@@ -43,69 +68,45 @@ export interface EmblemProps {
 export function Emblem({
   size = 96,
   animated = true,
+  charging = false,
   faint = false,
   className,
 }: EmblemProps): React.ReactElement {
-  // 四弧：弧心 45/135/225/315（缺口正对上下左右），明度自右上起顺时针递减
-  const arcs: Array<[number, number]> = [
-    [45, 0.95],
-    [135, 0.75],
-    [225, 0.55],
-    [315, 0.35],
-  ];
-  // 外圈刻度：每 7.5° 一刻，每 30° 一长刻（量度感）
-  const ticks = Array.from({ length: 48 }, (_, i) => i * 7.5);
+  const cls =
+    "emblem" +
+    (animated && !charging ? " emblem-animated" : "") +
+    (charging ? " emblem-charging" : "") +
+    (faint ? " emblem-faint" : "") +
+    (className ? ` ${className}` : "");
   return (
     <svg
-      className={`emblem${animated ? " emblem-animated" : ""}${faint ? " emblem-faint" : ""}${className ? ` ${className}` : ""}`}
-      viewBox="0 0 512 512"
+      className={cls}
+      viewBox={`0 0 ${MARK.view} ${MARK.view}`}
       width={size}
       height={size}
       aria-hidden="true"
       focusable="false"
     >
-      {/* 外圈刻度环（静）：长刻主线 + 短刻辅线 */}
-      <g stroke="currentColor" fill="none">
-        {ticks.map((deg) => {
-          const major = deg % 30 === 0;
-          const rad = ((deg - 90) * Math.PI) / 180;
-          const r1 = 210;
-          const r2 = major ? 226 : 218;
-          return (
-            <line
-              key={deg}
-              x1={256 + Math.cos(rad) * r1}
-              y1={256 + Math.sin(rad) * r1}
-              x2={256 + Math.cos(rad) * r2}
-              y2={256 + Math.sin(rad) * r2}
-              strokeWidth={major ? 3 : 1.6}
-              opacity={major ? 0.34 : 0.16}
-            />
-          );
-        })}
-      </g>
-      {/* 虚线轨道（反向慢旋）：表示「连结在持续建立」 */}
       <circle
-        className="emblem-orbit"
-        cx={256}
-        cy={256}
-        r={188}
+        className="emblem-ring"
+        cx={MARK.c}
+        cy={MARK.c}
+        r={MARK.ring.r}
         fill="none"
         stroke="currentColor"
-        strokeWidth={2}
-        strokeDasharray="3 14"
-        opacity={0.3}
+        strokeWidth={MARK.ring.w}
       />
-      {/* 四向连结弧（正向慢旋）：智能体 */}
-      <g className="emblem-rotor" fill="none" stroke="currentColor">
-        {arcs.map(([mid, opacity]) => (
-          <path key={mid} d={arcPath(150, mid - 35, mid + 35)} strokeWidth={30} opacity={opacity} />
-        ))}
-      </g>
-      {/* 中枢环 + 核心 LED（呼吸） */}
-      <g className="emblem-core">
-        <circle cx={256} cy={256} r={78} fill="none" stroke="currentColor" strokeWidth={22} opacity={0.95} />
-        <rect className="emblem-core-dot" x={228} y={228} width={56} height={56} fill="currentColor" />
+      <g fill="none" stroke="currentColor" strokeWidth={MARK.arcW} strokeLinecap="butt">
+        {MARK.slots.map((s, i) =>
+          s.r === null ? null : (
+            <path
+              key={s.at}
+              className="emblem-slot"
+              style={{ "--mk-i": i } as React.CSSProperties}
+              d={arcPath(s.r, s.at)}
+            />
+          ),
+        )}
       </g>
     </svg>
   );

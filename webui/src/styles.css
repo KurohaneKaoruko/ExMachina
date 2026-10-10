@@ -213,25 +213,23 @@ body {
 }
 .app-sider .ant-menu-item-selected .anticon { color: var(--accent); }
 
-/* ============ 品牌徽记（四弧纹样，纯白线条版） ============ */
-/* Emblem 组件走 currentColor：父级给 color 即可。登录页/加载态/空态均为纯白线条。 */
+/* ============ 品牌徽记（中枢环 + 外观弧槽，纯白线条版） ============ */
+/* Emblem 组件走 currentColor：父级给 color 即可。几何口径见 Emblem.tsx 与 desktop/ui/mark.js。 */
 .emblem { display: block; }
-.emblem-animated .emblem-rotor {
-  transform-origin: center;
-  transform-box: fill-box;
-  animation: emblem-spin 36s linear infinite;
+/* 常态动效：整枚徽记缓慢呼吸（不旋转 —— 旋转会让缺口相位一直在变，读不成图形）。 */
+.emblem-animated .emblem-ring,
+.emblem-animated .emblem-slot { animation: emblem-breathe 4.2s ease-in-out infinite; }
+/* 加载态：八段弧槽按序充能（相位来自槽位序号 --mk-i），中枢环同拍呼吸。 */
+.emblem-charging .emblem-slot {
+  animation: emblem-charge 1.9s ease-in-out infinite;
+  animation-delay: calc(var(--mk-i, 0) * 0.13s);
 }
-.emblem-animated .emblem-orbit {
-  transform-origin: center;
-  transform-box: fill-box;
-  animation: emblem-spin-rev 24s linear infinite;
-}
-.emblem-animated .emblem-core-dot { animation: led-pulse 2.4s ease-in-out infinite; }
-/* 幽灵态：空态淡纹。0.16 在 512 口径的四弧（线宽:半径 ≈ 0.2）上会把缺口一起糊掉，
-   整枚徽记退化成一团灰；给到 0.3 后仍明显退居文案之后，但四弧与中枢环读得出来。 */
+.emblem-charging .emblem-ring { animation: emblem-breathe 1.9s ease-in-out infinite; }
+@keyframes emblem-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes emblem-charge  { 0% { opacity: 0.16; } 16% { opacity: 1; } 62% { opacity: 0.16; } 100% { opacity: 0.16; } }
+/* 幽灵态：空态淡纹。0.16 会把缺口一起糊掉，整枚徽记退化成一团灰；
+   给到 0.3 后仍明显退居文案之后，但弧槽与中枢环读得出来。 */
 .emblem-faint { opacity: 0.3; }
-@keyframes emblem-spin { to { transform: rotate(360deg); } }
-@keyframes emblem-spin-rev { to { transform: rotate(-360deg); } }
 
 /* 懒加载兜底：徽记 + 等宽状态行（替代裸 Spin） */
 .view-loading {
@@ -2278,9 +2276,7 @@ input, textarea { caret-color: var(--accent); }
 .readout .v.v-live { color: var(--green); animation: state-live 1.8s ease-in-out infinite; }
 @keyframes state-live { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
-/* 徽记中枢呼吸（叠加在 core-dot LED 脉冲之上） */
-.emblem-animated .emblem-core { animation: emblem-core-breathe 4s ease-in-out infinite; }
-@keyframes emblem-core-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
+/* 徽记的呼吸统一由 .emblem-animated / .emblem-charging 控制（见文件顶部的徽记段） */
 
 /* message 通知行：悬浮层实线框纪律 + 左缘语义条（保存成功/失败一眼可辨） */
 .ant-message .ant-message-notice-content {

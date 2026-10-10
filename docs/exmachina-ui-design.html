@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EXMACHINA — Swarm Command</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   EXMACHINA · Swarm Command —— 静态设计稿（单层样式表）
+   纪律：纯黑底 / 单色强调 / 全站直角 / 零渐变零柔光；
+         动效只走 transform 与 opacity（合成器路径），并支持 reduced-motion 降级。
+         linear-gradient(C 0 0) 与 border 只作「画一条纯色线段」用，不产生色彩过渡。
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root{
+  --bg:#000; --panel:#000; --panel2:#000;
+  --line:#222828; --line-soft:#202525; --line-row:#1b292a;
+  --teal:#245b5d; --active:#347f81; --glow:#86babb;
+  --text:#d7dddd; --muted:#7a8585; --dim:#505959;
+  --red:#e45a63; --yellow:#d3b65a;
+  --mono:"JetBrains Mono","Cascadia Code",Consolas,monospace;
+  --sans:Inter,"Segoe UI",Arial,sans-serif;
+  --ease-machine:cubic-bezier(.16,1,.3,1);
+  --ease-snap:cubic-bezier(.2,.8,.2,1);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px}
+body{overflow-x:hidden}
+button,input{font:inherit}
+button{cursor:pointer;color:inherit;-webkit-tap-highlight-color:transparent}
+button:focus-visible,input:focus-visible{outline:1px solid var(--glow);outline-offset:3px}
+
+/* ── 骨架 ───────────────────────────────────────────────────────────────── */
+.app{min-height:100vh;display:grid;grid-template-rows:48px 1fr}
+.shell{display:grid;grid-template-columns:68px minmax(0,1fr);min-height:calc(100vh - 48px)}
+
+/* ── 顶栏 ───────────────────────────────────────────────────────────────── */
+.topbar{
+  height:48px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:20px;
+  padding:0 20px;background:var(--bg);position:sticky;top:0;z-index:5;
+}
+.brand{display:flex;align-items:center;gap:10px;min-width:220px}
+/* 品牌徽记：中枢环 + 外观弧槽。几何口径与 desktop/ui/mark.js 完全一致
+   （400 画布 / 圆心 200,200 / 线宽 24.5；0°·180° 远弧 r=131.5，45/135/225/315° 近弧 r=107，
+    90°/270° 空槽）。改口径请先改 mark.js，再同步这里的 6 条 path。 */
+.brand-mark{width:22px;height:22px;flex:none;color:#6f999a}
+.brand-mark svg{display:block;width:100%;height:100%}
+.brand-name{font:600 13px var(--mono);letter-spacing:.16em}
+.brand-sub{font:9px var(--mono);color:var(--muted);letter-spacing:.12em;margin-top:3px}
+.top-status{display:flex;align-items:center;gap:8px;font:10px var(--mono);color:var(--muted);letter-spacing:.06em}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--glow)}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:18px;font:10px var(--mono);color:var(--muted)}
+.top-right .alert{color:var(--yellow)}
+.clock{color:var(--text)}
+
+/* ── 左侧导航轨 ─────────────────────────────────────────────────────────── */
+.rail{
+  border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;
+  padding:14px 0;gap:8px;background:var(--bg);
+}
+.navbtn{
+  width:42px;height:42px;border:1px solid transparent;background:transparent;color:#688080;
+  display:grid;place-items:center;position:relative;transition:color .15s,border-color .15s;
+}
+.navbtn:hover{color:var(--glow);border-color:#24494a}
+.navbtn.active{color:#a3c2c2;border-color:#3c5151}
+.navbtn.active:before{content:"";position:absolute;left:-13px;height:20px;width:1px;background:#6f999a}
+.navbtn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.navbtn:active{transform:scale(.96)}
+.rail-spacer{flex:1}
+
+/* ── 主区 ───────────────────────────────────────────────────────────────── */
+.main{padding:18px 20px 22px;min-width:0;max-width:1800px;width:100%;margin:0 auto}
+
+.pagehead{display:flex;align-items:flex-end;gap:18px;margin-bottom:16px}
+.eyebrow{font:10px var(--mono);color:var(--active);letter-spacing:.18em;text-transform:uppercase;margin-bottom:7px}
+.page-title{font:500 22px var(--mono);letter-spacing:.08em;margin:0}
+.page-sub{font:11px var(--mono);color:var(--muted);margin-top:7px}
+.page-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+.btn{
+  position:relative;border:1px solid #303838;background:transparent;padding:8px 12px;
+  font:10px var(--mono);letter-spacing:.06em;color:#b9c3c3;transition:border-color .15s,color .15s;
+}
+.btn:hover{border-color:#779798;color:#e4ebeb}
+.btn:active{transform:scale(.96)}
+.btn.small{padding:6px 9px}
+.btn.primary,.btn.primary:hover{background:transparent;border-color:#526a6b;color:#d0dada;font-weight:500}
+/* 派发反馈：按钮底缘一道扫出的纯色线（宽高动画走 transform，不触发布局） */
+.btn.is-dispatching:before{
+  content:"";position:absolute;left:8px;right:8px;bottom:0;height:1px;background:var(--glow);
+  transform-origin:left;animation:commandUnderline .42s ease-out both;
+}
+
+/* ── 指标带 ─────────────────────────────────────────────────────────────── */
+.metrics{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:14px;
+}
+.metric{padding:11px 14px;border-right:1px solid var(--line);position:relative;min-height:70px;transition:transform .3s}
+.metric:last-child{border-right:0}
+.metric:before{content:"";position:absolute;top:-1px;left:14px;width:17px;height:1px;background:#3a6668}
+.metric:hover{transform:translateY(-1px)}
+.metric-label{font:9px var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+.metric-value{font:22px var(--mono);margin-top:7px;letter-spacing:.02em;transition:color .3s}
+.metric-value span{font-size:10px;color:var(--muted);margin-left:6px}
+.metric-value.good{color:var(--text)}
+.metric-value.warn{color:var(--yellow)}
+.metric-value.bad{color:var(--red)}
+.metric.updated .metric-value{animation:valueUpdate .45s var(--ease-machine)}
+
+/* ── 工作区 ─────────────────────────────────────────────────────────────── */
+.workspace{display:grid;grid-template-columns:minmax(0,1fr) 285px;gap:14px;min-height:520px}
+.panel{
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg);
+  min-width:0;position:relative;transition:border-color .3s;
+}
+.panel:hover,.panel:focus-within{border-color:#354141}
+.panel-head{
+  display:flex;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line-soft);
+  gap:12px;min-height:44px;background:var(--bg);
+}
+.panel-title{font:11px var(--mono);letter-spacing:.1em;color:#b8caca}
+.panel-tag{font:9px var(--mono);color:var(--muted);margin-left:auto}
+.panel-body{padding:12px}
+
+/* ── 集群拓扑 ───────────────────────────────────────────────────────────── */
+.graph-panel{display:flex;flex-direction:column;min-height:520px}
+.graph-wrap{position:relative;flex:1;min-height:430px;overflow:hidden;background:var(--bg);isolation:isolate}
+/* 扫描光带：1px 纯色线（border-top 充当线段）+ 只动 transform 的匀速下移 */
+.graph-wrap:before{
+  content:"";position:absolute;left:0;right:0;top:-2px;height:100%;
+  border-top:1px solid #426e70;opacity:.45;pointer-events:none;z-index:1;
+  animation:radarSweep 8s linear infinite;
+}
+.graph-wrap.scanning:before{animation:radarSweep 1.05s linear 1;opacity:.75}
+.graph-annotation{position:absolute;font:9px var(--mono);letter-spacing:.08em;color:#547575;z-index:1}
+.ann-tl{top:17px;left:18px}
+.ann-tr{top:17px;right:18px;text-align:right}
+.ann-bl{bottom:16px;left:18px}
+.ann-br{bottom:16px;right:18px;text-align:right}
+.graph-svg{position:absolute;inset:0;width:100%;height:100%;min-height:430px}
+.graph-svg .edge{fill:none;stroke:#24595a;stroke-width:1.3;opacity:.85;transition:stroke .25s,opacity .25s,stroke-width .25s}
+.graph-svg .edge.active{stroke:#285f61;stroke-width:1.2;stroke-dasharray:3 7;animation:flow 5s linear infinite}
+.graph-svg .edge.warn{stroke:var(--red);stroke-dasharray:3 5}
+.graph-svg .edge.is-traversing{stroke:#8cb7b8;stroke-width:1.8;stroke-dasharray:5 7;animation:edgeRun .65s linear infinite}
+.graph-svg .node{cursor:pointer;transform-box:fill-box;transform-origin:center}
+.graph-svg .node .halo{fill:#000;stroke:#536767;opacity:.9;transition:r .3s,stroke .25s,fill .25s}
+.graph-svg .node .core{fill:#101717;stroke:#6c9899;stroke-width:1.3}
+.graph-svg .node .core.hot{fill:#1a2929;stroke:#9bbfc0}
+.graph-svg .node .node-label{fill:#c9dada;font:10px var(--mono);letter-spacing:.04em}
+.graph-svg .node .node-meta{fill:#688989;font:8px var(--mono)}
+.graph-svg .node:hover .halo{stroke:#9bbfc0}
+.graph-svg .node:active{filter:brightness(1.6)}
+.graph-svg .node.selected .halo{stroke:var(--yellow);fill:#000;opacity:1;animation:nodeLock .55s var(--ease-machine) both}
+.graph-svg .node.selected .core{fill:#171714;stroke:var(--yellow);animation:coreAcquire .45s var(--ease-machine) both}
+.graph-svg .node.warn .core{fill:#1b0e10;stroke:var(--red)}
+.node-ripple{fill:none;stroke:#8dbbbc;stroke-width:1.5;pointer-events:none;animation:rippleOut .85s var(--ease-machine) forwards}
+.graph-toast-label{font:9px var(--mono);letter-spacing:.12em;fill:#9bbfc0;opacity:0;animation:labelFlash 1.3s ease forwards}
+
+.graph-legend{
+  display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:10px 14px;
+  border-top:1px solid var(--line-soft);font:9px var(--mono);color:var(--muted);background:var(--bg);
+}
+.legend-item{display:flex;gap:6px;align-items:center}
+.legend-dot{width:6px;height:6px;border-radius:50%;background:var(--glow)}
+.legend-dot.yellow{background:var(--yellow)}
+.legend-dot.red{background:var(--red)}
+.legend-line{width:17px;height:1px;background:#426e70}
+
+/* ── 右列 ───────────────────────────────────────────────────────────────── */
+.sidecol{display:flex;flex-direction:column;gap:14px}
+.side-panel{flex:1}
+.agent-card{
+  padding:14px;border-bottom:1px solid var(--line-soft);position:relative;overflow:hidden;
+  transition:background .3s,border-color .3s,transform .3s;
+}
+.agent-card:last-child{border-bottom:0}
+/* 悬浮左缘起笔：竖线从下往上长出（scaleY），不占布局 */
+.agent-card:before{
+  content:"";position:absolute;top:0;bottom:0;left:0;width:1px;background:#587f80;
+  transform:scaleY(0);transform-origin:bottom;transition:transform .35s var(--ease-machine);
+}
+.agent-card:hover{transform:translateX(-2px)}
+.agent-card:hover:before{transform:scaleY(1)}
+.agent-top{display:flex;align-items:center;gap:9px}
+.agent-icon{
+  width:29px;height:29px;border:1px solid #394747;display:grid;place-items:center;
+  color:#a9c2c2;font:11px var(--mono);transform:rotate(45deg);
+  transition:transform .45s var(--ease-machine),border-color .3s;
+}
+.agent-icon span{transform:rotate(-45deg)}
+.agent-card:hover .agent-icon{transform:rotate(135deg);border-color:#799899}
+.agent-name{font:11px var(--mono);color:#d4e2e2}
+.agent-role{font:9px var(--mono);color:var(--muted);margin-top:4px}
+.state{margin-left:auto;font:8px var(--mono);letter-spacing:.06em;color:#9abbbb}
+.state.warn{color:var(--yellow)}
+.state.red{color:var(--red)}
+.agent-detail{display:flex;justify-content:space-between;margin-top:13px;font:9px var(--mono);color:var(--muted)}
+.bar{height:2px;background:#202626;margin-top:7px}
+.bar span{display:block;height:100%;background:#547f80}
+.bar span.warn{background:var(--yellow)}
+
+/* ── 底部两栏 ───────────────────────────────────────────────────────────── */
+.bottomgrid{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-top:14px}
+.event-list{padding:0 14px}
+.event{
+  display:grid;grid-template-columns:54px 8px minmax(0,1fr) auto;gap:10px;align-items:start;
+  padding:11px 0;border-bottom:1px solid var(--line-row);transition:padding-left .25s;
+}
+.event:last-child{border-bottom:0}
+.event:hover{padding-left:6px}
+.event-time{font:9px var(--mono);color:var(--dim)}
+.event-marker{width:6px;height:6px;border-radius:50%;background:var(--glow);margin-top:3px}
+.event-marker.yellow{background:var(--yellow)}
+.event-marker.red{background:var(--red)}
+.event-text{font-size:11px;color:#b6c7c7;line-height:1.45}
+.event-text small{display:block;font:9px var(--mono);color:var(--muted);margin-top:4px}
+.event-code{font:8px var(--mono);color:var(--muted);white-space:nowrap}
+
+.task{
+  display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:10px;align-items:center;
+  padding:12px 0;border-bottom:1px solid var(--line-row);transition:padding-left .25s;
+}
+.task:last-child{border-bottom:0}
+.task:hover{padding-left:6px}
+/* 状态点：呼吸环用伪元素的 transform/opacity 做，不再动 box-shadow（避免逐帧重绘） */
+.task-dot{width:6px;height:6px;background:var(--active);position:relative}
+.task-dot:after{
+  content:"";position:absolute;inset:-7px;border:1px solid rgba(57,170,166,.4);border-radius:50%;
+  opacity:0;animation:statusPing 2.8s ease-out infinite;
+}
+.task-dot.yellow{background:var(--yellow)}
+.task-dot.yellow:after{border-color:rgba(211,182,90,.4);animation-name:statusPingYellow}
+.task-dot.red{background:var(--red)}
+.task-dot.red:after{border-color:rgba(228,90,99,.4);animation-name:statusPingRed}
+.task-name{font:10px var(--mono);color:#c4d4d4}
+.task-meta{font:9px var(--mono);color:var(--muted);margin-top:5px}
+.task-status{font:8px var(--mono);color:var(--glow)}
+.task-status.warn{color:var(--yellow)}
+.task-status.red{color:var(--red)}
+
+/* ── 浮层 ───────────────────────────────────────────────────────────────── */
+.toast{
+  position:fixed;right:22px;bottom:22px;padding:12px 16px;border:1px solid #344747;background:#0d191a;
+  color:#bbcece;font:10px var(--mono);z-index:20;opacity:0;transform:translateY(8px);pointer-events:none;
+  transition:opacity .25s,transform .35s var(--ease-machine);
+}
+.toast.show{opacity:1;transform:translateY(0);animation:toastIn .38s var(--ease-machine) both}
+
+.modal-backdrop{
+  position:fixed;inset:0;background:rgba(0,0,0,.86);z-index:10;display:none;
+  align-items:center;justify-content:center;padding:20px;opacity:0;transition:opacity .22s;
+}
+.modal-backdrop.show{display:flex;opacity:1}
+.modal{
+  width:min(480px,100%);border:1px solid #455858;background:#0b1112;
+  transform:translateY(20px) scale(.97);opacity:0;transition:transform .4s var(--ease-machine),opacity .3s;
+}
+.modal-backdrop.show .modal{transform:none;opacity:1}
+.modal-head{padding:14px 16px;border-bottom:1px solid var(--line);font:11px var(--mono);display:flex;justify-content:space-between;position:relative}
+.modal-head:after{content:"";position:absolute;bottom:-1px;left:0;width:30%;height:1px;background:#6f999a;animation:modalLine .5s var(--ease-machine)}
+.modal-body{padding:18px;line-height:1.8;color:#a9bcbc}
+.modal-body strong{color:#b2cccc;font-family:var(--mono);font-weight:500}
+.modal-foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+
+/* ── 交互反馈 ───────────────────────────────────────────────────────────── */
+.click-ripple{
+  position:absolute;width:12px;height:12px;border:1px solid var(--glow);border-radius:50%;
+  transform:translate(-50%,-50%) scale(0);animation:clickRipple .6s ease-out forwards;
+  pointer-events:none;z-index:10;
+}
+.btn{overflow:hidden;isolation:isolate}
+
+/* ── 入场编排 ───────────────────────────────────────────────────────────── */
+.pagehead,.metrics,.workspace,.bottomgrid{animation:interfaceEnter .65s var(--ease-machine) both}
+.metrics{animation-delay:.04s}
+.workspace{animation-delay:.09s}
+.bottomgrid{animation-delay:.15s}
+/* 导航切换时的重播（由脚本改 .main 的 animation 触发） */
+.main[data-enter]{animation:interfaceEnter .55s var(--ease-machine) both}
+
+/* ── 关键帧（全部只改 transform / opacity） ─────────────────────────────── */
+@keyframes flow{to{stroke-dashoffset:-32}}
+@keyframes edgeRun{to{stroke-dashoffset:-32}}
+@keyframes radarSweep{from{transform:translateY(0)}to{transform:translateY(100%)}}
+@keyframes pulse{0%,100%{opacity:.65}50%{opacity:1}}
+@keyframes nodeLock{0%{r:27px;opacity:.5}45%{r:42px;opacity:1}100%{r:29px;opacity:1}}
+@keyframes coreAcquire{0%{transform:scale(.75)}55%{transform:scale(1.18)}100%{transform:scale(1)}}
+@keyframes rippleOut{0%{r:12px;opacity:.95}100%{r:54px;opacity:0}}
+@keyframes labelFlash{0%{opacity:0;transform:translateY(4px)}20%,70%{opacity:1}100%{opacity:0}}
+@keyframes interfaceEnter{0%{opacity:0;transform:translateY(12px)}100%{opacity:1;transform:none}}
+@keyframes valueUpdate{0%{opacity:.35;transform:translateY(5px)}100%{opacity:1;transform:none}}
+@keyframes statusPing{0%{transform:scale(.35);opacity:.85}70%,100%{transform:scale(1);opacity:0}}
+@keyframes statusPingYellow{0%{transform:scale(.35);opacity:.85}70%,100%{transform:scale(1);opacity:0}}
+@keyframes statusPingRed{0%{transform:scale(.35);opacity:.85}70%,100%{transform:scale(1);opacity:0}}
+@keyframes toastIn{0%{opacity:.55}100%{opacity:1}}
+@keyframes modalLine{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes clickRipple{to{transform:translate(-50%,-50%) scale(8);opacity:0}}
+@keyframes commandUnderline{from{transform:scaleX(0);opacity:.8}to{transform:scaleX(1);opacity:0}}
+.pulse{animation:pulse 2.5s ease-in-out infinite}
+
+/* ── 响应式 ─────────────────────────────────────────────────────────────── */
+@media(max-width:1000px){
+  .workspace{grid-template-columns:1fr}
+  .sidecol{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .graph-wrap{min-height:400px}
+  .graph-svg{min-height:400px}
+  .bottomgrid{grid-template-columns:1fr}
+}
+@media(max-width:650px){
+  .topbar{padding:0 12px;gap:10px}
+  .brand{min-width:auto}
+  .brand-sub,.top-status .status-extra,.top-right .clock{display:none}
+  .shell{grid-template-columns:48px minmax(0,1fr)}
+  .navbtn{width:34px;height:38px}
+  .main{padding:14px 10px}
+  .pagehead{align-items:flex-start;flex-wrap:wrap}
+  .page-actions{width:100%;margin-left:0}
+  .metrics{grid-template-columns:repeat(2,1fr)}
+  .metric:nth-child(2){border-right:0}
+  .metric:nth-child(-n+2){border-bottom:1px solid var(--line)}
+  .sidecol{grid-template-columns:1fr}
+  .graph-wrap{min-height:350px}
+  .graph-svg{min-height:350px}
+  .page-title{font-size:18px}
+  .top-right{gap:8px}
+}
+
+/* ── 动效降级 ───────────────────────────────────────────────────────────── */
+@media(prefers-reduced-motion:reduce){
+  *,*:before,*:after{
+    animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important;scroll-behavior:auto!important;
+  }
+  .graph-wrap:before{animation:none!important}
+}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 400 400">
+        <circle cx="200" cy="200" r="56.5" fill="none" stroke="currentColor" stroke-width="24.5"/>
+        <g fill="none" stroke="currentColor" stroke-width="24.5" stroke-linecap="butt">
+          <path d="M 321.49 250.32 A 131.5 131.5 0 0 0 321.49 149.68"/>
+          <path d="M 298.86 159.05 A 107.0 107.0 0 0 0 240.95 101.14"/>
+          <path d="M 159.05 101.14 A 107.0 107.0 0 0 0 101.14 159.05"/>
+          <path d="M 78.51 149.68 A 131.5 131.5 0 0 0 78.51 250.32"/>
+          <path d="M 101.14 240.95 A 107.0 107.0 0 0 0 159.05 298.86"/>
+          <path d="M 240.95 298.86 A 107.0 107.0 0 0 0 298.86 240.95"/>
+        </g>
+      </svg>
+    </div>
+    <div><div class="brand-name">EXMACHINA</div><div class="brand-sub">COLLECTIVE INTELLIGENCE SYSTEM</div></div>
+  </div>
+  <div class="top-status"><span class="dot" aria-hidden="true"></span><span>SYSTEM ONLINE</span><span class="status-extra">/ GATEWAY CONNECTED</span></div>
+  <div class="top-right"><span class="alert">03 PENDING</span><span class="clock" id="clock">--:--:-- UTC</span><span>NODE / 01</span></div>
+</header>
+<div class="shell">
+<nav class="rail" aria-label="主导航">
+  <button class="navbtn active" aria-current="page" aria-label="集群总览" title="集群总览" data-page="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg></button>
+  <button class="navbtn" aria-label="任务编排" title="任务编排" data-page="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="3" width="6" height="5"/><rect x="15.5" y="16" width="6" height="5"/><rect x="15.5" y="3" width="6" height="5"/><path d="M8.5 5.5h7M18.5 8v4H5.5v4"/></svg></button>
+  <button class="navbtn" aria-label="智能体" title="智能体" data-page="agents"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M10 9.5 6.5 14.5M14 9.5l3.5 5M7.5 17h9"/></svg></button>
+  <button class="navbtn" aria-label="对话" title="对话" data-page="chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4.5h18v13H9l-5 3v-3H3z"/><path d="M7 9h10M7 13h7"/></svg></button>
+  <button class="navbtn" aria-label="记忆系统" title="记忆系统" data-page="memory"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg></button>
+  <button class="navbtn" aria-label="审计" title="审计" data-page="audit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h10l4 4v14H5z"/><path d="M15 3v5h4M8 12h8M8 16h8"/></svg></button>
+  <div class="rail-spacer"></div>
+  <button class="navbtn" aria-label="设置" title="设置" data-page="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.2 1-1.5 2.6-1.5-.6a7 7 0 0 1-1.6.9l-.3 1.6h-3l-.3-1.6a7 7 0 0 1-1.6-.9l-1.5.6-1.5-2.6 1.2-1a7 7 0 0 1 0-1.9l-1.2-1 1.5-2.6 1.5.6a7 7 0 0 1 1.6-.9l.3-1.6h3l.3 1.6a7 7 0 0 1 1.6.9l1.5-.6 1.5 2.6-1.2 1a7 7 0 0 1 0 1.8z" transform="translate(-1 -1) scale(1.08)"/></svg></button>
+</nav>
+<main class="main">
+  <div class="pagehead">
+    <div><div class="eyebrow" id="eyebrow">01 / SWARM INTELLIGENCE</div><h1 class="page-title" id="pageTitle">集群态势总览</h1><div class="page-sub" id="pageSub">COLLECTIVE STATUS // LIVE TELEMETRY</div></div>
+    <div class="page-actions"><button class="btn" id="refreshBtn">↻ 刷新态势</button><button class="btn" id="auditBtn">查看事件日志 ↗</button><button class="btn primary" id="dispatchBtn">＋ 新建任务</button></div>
+  </div>
+  <section class="metrics">
+    <div class="metric"><div class="metric-label">ACTIVE AGENTS / 活跃个体</div><div class="metric-value good">08 <span>/ 12 TOTAL</span></div></div>
+    <div class="metric"><div class="metric-label">TASKS IN FLIGHT / 执行中</div><div class="metric-value">04 <span>+2 QUEUED</span></div></div>
+    <div class="metric"><div class="metric-label">PENDING APPROVAL / 待审批</div><div class="metric-value warn">03 <span>REQUIRES ACTION</span></div></div>
+    <div class="metric"><div class="metric-label">SYSTEM HEALTH / 系统健康</div><div class="metric-value good">98.6<span>% NOMINAL</span></div></div>
+  </section>
+  <section class="workspace" id="overviewContent">
+    <div class="panel graph-panel">
+      <div class="panel-head"><span class="panel-title">集群拓扑 / SWARM TOPOLOGY</span><span class="panel-tag">LINKS 18　·　NODES 12</span><span class="panel-tag" style="color:var(--glow)">● LIVE</span></div>
+      <div class="graph-wrap">
+        <div class="graph-annotation ann-tl">LAYER 00 // COMMAND CORE</div><div class="graph-annotation ann-tr">SYNC RATE <span style="color:var(--glow)">98.4%</span><br>LATENCY 012 MS</div>
+        <div class="graph-annotation ann-bl">TOPOLOGY / AUTO-LAYOUT ENABLED</div><div class="graph-annotation ann-br">LAST SYNC <span id="syncTime">00:00:00</span></div>
+        <svg class="graph-svg" viewBox="0 0 820 470" role="img" aria-label="交互式智能体集群拓扑图">
+          <g id="edges">
+            <path class="edge active" d="M410 205 L235 125"/><path class="edge" d="M410 205 L585 125"/><path class="edge active" d="M410 205 L410 90"/><path class="edge" d="M410 205 L250 305"/><path class="edge" d="M410 205 L585 305"/><path class="edge" d="M235 125 L115 205"/><path class="edge" d="M235 125 L260 55"/><path class="edge" d="M585 125 L705 205"/><path class="edge active" d="M585 125 L560 55"/><path class="edge" d="M250 305 L115 370"/><path class="edge warn" d="M250 305 L330 385"/><path class="edge" d="M585 305 L705 370"/><path class="edge active" d="M585 305 L510 390"/><path class="edge" d="M115 205 L85 290"/><path class="edge" d="M705 205 L740 290"/><path class="edge" d="M330 385 L410 425"/><path class="edge" d="M510 390 L410 425"/>
+          </g>
+          <g class="node selected" data-node="core" transform="translate(410 205)">
+            <circle class="halo pulse" r="47"/><circle class="halo" r="36" stroke-dasharray="3 5"/><circle class="core hot" r="23"/><path d="M-9 0H9M0-9V9" stroke="#a0eeea" stroke-width="1"/><text class="node-label" text-anchor="middle" y="64">EXM / CORE</text><text class="node-meta" text-anchor="middle" y="77">ORCHESTRATOR</text>
+          </g>
+          <g class="node" data-node="planner" transform="translate(235 125)"><circle class="halo" r="29"/><circle class="core" r="13"/><circle r="4" fill="#63d6d0"/><text class="node-label" text-anchor="middle" y="-42">PLANNER-01</text><text class="node-meta" text-anchor="middle" y="-30">TASK DECOMPOSITION</text></g>
+          <g class="node" data-node="executor" transform="translate(585 125)"><circle class="halo" r="29"/><circle class="core hot" r="13"/><circle r="4" fill="#63d6d0"/><text class="node-label" text-anchor="middle" y="-42">EXECUTOR-02</text><text class="node-meta" text-anchor="middle" y="-30">ACTIVE / 02</text></g>
+          <g class="node" data-node="reviewer" transform="translate(410 90)"><circle class="halo" r="24"/><circle class="core" r="11"/><path d="M-4 0h8M0-4v8" stroke="#63d6d0"/><text class="node-label" text-anchor="middle" y="-35">REVIEWER</text></g>
+          <g class="node" data-node="research" transform="translate(250 305)"><circle class="halo" r="27"/><circle class="core" r="12"/><circle r="3" fill="#63d6d0"/><text class="node-label" text-anchor="middle" y="45">RESEARCH-03</text><text class="node-meta" text-anchor="middle" y="57">COLLECTING EVIDENCE</text></g>
+          <g class="node warn" data-node="coder" transform="translate(585 305)"><circle class="halo" r="27"/><circle class="core" r="12"/><path d="M-4 -3l-4 3 4 3M4 -3l4 3-4 3" stroke="#f0444d" fill="none"/><text class="node-label" text-anchor="middle" y="45">CODER-04</text><text class="node-meta" text-anchor="middle" y="57" fill="#f0444d">AWAITING APPROVAL</text></g>
+          <g class="node" data-node="memory" transform="translate(115 205)"><circle class="halo" r="20"/><circle class="core" r="9"/><text class="node-label" x="-7" y="36" text-anchor="middle">MEM</text></g>
+          <g class="node" data-node="tools" transform="translate(705 205)"><circle class="halo" r="20"/><circle class="core" r="9"/><text class="node-label" x="5" y="36" text-anchor="middle">TOOLS</text></g>
+          <g class="node" data-node="indexer" transform="translate(260 55)"><circle class="halo" r="16"/><circle class="core" r="7"/><text class="node-meta" text-anchor="middle" y="-24">INDEXER</text></g>
+          <g class="node" data-node="sync" transform="translate(560 55)"><circle class="halo" r="16"/><circle class="core" r="7"/><text class="node-meta" text-anchor="middle" y="-24">SYNC-REPORT</text></g>
+          <g class="node" data-node="queue" transform="translate(115 370)"><circle class="halo" r="18"/><circle class="core" r="8"/><text class="node-meta" text-anchor="middle" y="31">QUEUE</text></g>
+          <g class="node warn" data-node="audit" transform="translate(330 385)"><circle class="halo" r="18"/><circle class="core" r="8"/><text class="node-meta" text-anchor="middle" y="31">RISK / AUDIT</text></g>
+          <g class="node" data-node="memory2" transform="translate(705 370)"><circle class="halo" r="18"/><circle class="core" r="8"/><text class="node-meta" text-anchor="middle" y="31">SHARED MEM</text></g>
+          <g class="node" data-node="validator" transform="translate(510 390)"><circle class="halo" r="18"/><circle class="core" r="8"/><text class="node-meta" text-anchor="middle" y="31">VALIDATOR</text></g>
+          <g class="node" data-node="report" transform="translate(410 425)"><rect x="-7" y="-7" width="14" height="14" fill="#101717" stroke="#86babb"/><text class="node-label" text-anchor="middle" y="27">RESULT BUS</text></g>
+          <circle cx="410" cy="205" r="63" fill="none" stroke="#2b6262" stroke-width=".6" stroke-dasharray="1 8"/>
+        </svg>
+      </div>
+      <div class="graph-legend"><span class="legend-item"><i class="legend-dot"></i> ACTIVE</span><span class="legend-item"><i class="legend-dot yellow"></i> NEEDS ATTENTION</span><span class="legend-item"><i class="legend-dot red"></i> BLOCKED / ERROR</span><span class="legend-item"><i class="legend-line"></i> DEPENDENCY LINK</span><span style="margin-left:auto">SELECT NODE TO INSPECT</span></div>
+    </div>
+    <aside class="sidecol">
+      <div class="panel side-panel">
+        <div class="panel-head"><span class="panel-title">个体状态 / AGENT STATUS</span><span class="panel-tag">08 ONLINE</span></div>
+        <div class="agent-card"><div class="agent-top"><div class="agent-icon"><span>EX</span></div><div><div class="agent-name">ORCHESTRATOR</div><div class="agent-role">指挥体 / 集群调度</div></div><span class="state">● ACTIVE</span></div><div class="agent-detail"><span>LOAD</span><span>42%</span></div><div class="bar"><span style="width:42%"></span></div></div>
+        <div class="agent-card"><div class="agent-top"><div class="agent-icon"><span>P1</span></div><div><div class="agent-name">PLANNER-01</div><div class="agent-role">任务规划 / DAG</div></div><span class="state">● ACTIVE</span></div><div class="agent-detail"><span>LOAD</span><span>67%</span></div><div class="bar"><span style="width:67%"></span></div></div>
+        <div class="agent-card"><div class="agent-top"><div class="agent-icon"><span>C4</span></div><div><div class="agent-name">CODER-04</div><div class="agent-role">代码执行 / 工作区</div></div><span class="state warn">◆ REVIEW</span></div><div class="agent-detail"><span>WAITING FOR APPROVAL</span><span style="color:var(--yellow)">01</span></div><div class="bar"><span class="warn" style="width:83%"></span></div></div>
+        <div class="agent-card"><div class="agent-top"><div class="agent-icon"><span>R3</span></div><div><div class="agent-name">RESEARCH-03</div><div class="agent-role">检索 / 证据收集</div></div><span class="state">● ACTIVE</span></div><div class="agent-detail"><span>LOAD</span><span>28%</span></div><div class="bar"><span style="width:28%"></span></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span class="panel-title">选中对象 / INSPECTOR</span><span class="panel-tag" id="inspectType">CORE</span></div>
+        <div class="panel-body" id="inspector"><div class="eyebrow">SYSTEM ENTITY</div><div style="font:16px var(--mono);margin:8px 0 10px">EXM / CORE</div><div style="color:var(--muted);line-height:1.6;font-size:11px">负责任务分解、个体调度与结果汇总的核心指挥节点。</div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><div class="metric-label">STATE</div><div style="color:var(--glow);font:11px var(--mono);margin-top:6px">NOMINAL</div></div><div><div class="metric-label">LINKS</div><div style="font:11px var(--mono);margin-top:6px">05 ACTIVE</div></div></div><button class="btn small" style="margin-top:14px;width:100%" id="detailBtn">打开对象详情 ↗</button></div>
+      </div>
+    </aside>
+  </section>
+  <section class="bottomgrid">
+    <div class="panel"><div class="panel-head"><span class="panel-title">实时事件流 / EVENT STREAM</span><span class="panel-tag">LAST 60 SEC</span><button class="btn small" style="margin-left:auto" id="allEvents">全部事件</button></div><div class="event-list">
+      <div class="event"><div class="event-time">22:14:08</div><i class="event-marker"></i><div class="event-text">SyncReport received <small>EXECUTOR-02 · TASK-8F2A · RESULT VALIDATED</small></div><div class="event-code">SYNC_OK</div></div>
+      <div class="event"><div class="event-time">22:13:52</div><i class="event-marker yellow"></i><div class="event-text">工具执行等待人工审批 <small>CODER-04 · shell command · WORKSPACE</small></div><div class="event-code" style="color:var(--yellow)">APPROVAL</div></div>
+      <div class="event"><div class="event-time">22:13:31</div><i class="event-marker"></i><div class="event-text">任务依赖已满足，进入执行阶段 <small>PLANNER-01 · TASK-8F2A</small></div><div class="event-code">TASK_RUN</div></div>
+      <div class="event"><div class="event-time">22:12:59</div><i class="event-marker red"></i><div class="event-text">风险策略触发检查 <small>RISK ENGINE · POLICY REVIEW REQUIRED</small></div><div class="event-code" style="color:var(--red)">RISK</div></div>
+    </div></div>
+    <div class="panel"><div class="panel-head"><span class="panel-title">任务队列 / TASK QUEUE</span><span class="panel-tag">04 IN FLIGHT</span><button class="btn small" style="margin-left:auto" id="viewTasks">查看 DAG ↗</button></div><div class="panel-body" style="padding-top:0;padding-bottom:0">
+      <div class="task"><i class="task-dot"></i><div><div class="task-name">TASK-8F2A / 分析模块依赖</div><div class="task-meta">PLANNER-01 → EXECUTOR-02 · 00:42</div></div><div class="task-status">RUNNING</div></div>
+      <div class="task"><i class="task-dot yellow"></i><div><div class="task-name">TASK-71BC / 工作区变更检查</div><div class="task-meta">CODER-04 · WAITING APPROVAL</div></div><div class="task-status warn">REVIEW</div></div>
+      <div class="task"><i class="task-dot"></i><div><div class="task-name">TASK-3D09 / 检索相关证据</div><div class="task-meta">RESEARCH-03 · 12 SOURCES</div></div><div class="task-status">RUNNING</div></div>
+      <div class="task"><i class="task-dot red"></i><div><div class="task-name">TASK-0A66 / 风险冲突裁决</div><div class="task-meta">RISK ENGINE · NEEDS RESOLUTION</div></div><div class="task-status red">BLOCKED</div></div>
+    </div></div>
+  </section>
+</main>
+</div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite">ACTION ACCEPTED</div>
+<div class="modal-backdrop" id="modal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><span id="modalTitle">CREATE TASK / 新建任务</span><button class="btn small" id="closeModal">✕</button></div><div class="modal-body" id="modalBody"><label for="taskInput">任务目标</label><input id="taskInput" placeholder="输入需要集群执行的目标…" style="display:block;width:100%;margin-top:8px;background:#080d0e;border:1px solid #315051;padding:12px;color:var(--text)"><p style="font-size:10px;color:var(--muted)">这是静态 UI 设计稿；提交动作仅用于演示交互，不会调用后端。</p></div><div class="modal-foot"><button class="btn" id="cancelModal">取消</button><button class="btn primary" id="confirmModal">确认</button></div></div></div>
+
+<script>
+"use strict";
+/* ── 数据与状态 ─────────────────────────────────────────────────────────── */
+const details = {
+  core:{type:"CORE",name:"EXM / CORE",desc:"负责任务分解、个体调度与结果汇总的核心指挥节点。",state:"NOMINAL",links:"05 ACTIVE"},
+  planner:{type:"AGENT",name:"PLANNER-01",desc:"负责将目标拆解为可执行任务，并建立依赖关系。",state:"ACTIVE",links:"04 LINKS"},
+  executor:{type:"AGENT",name:"EXECUTOR-02",desc:"正在执行已派发任务，并准备提交 SyncReport。",state:"ACTIVE",links:"03 LINKS"},
+  reviewer:{type:"AGENT",name:"REVIEWER",desc:"检查执行结果、验收条件与输出质量。",state:"IDLE",links:"02 LINKS"},
+  research:{type:"AGENT",name:"RESEARCH-03",desc:"正在收集任务相关证据与外部信息。",state:"ACTIVE",links:"03 LINKS"},
+  coder:{type:"AGENT",name:"CODER-04",desc:"代码工作区存在待审批操作，审批通过后才能继续。",state:"WAITING APPROVAL",links:"03 LINKS"},
+  memory:{type:"SUBSYSTEM",name:"MEMORY BUS",desc:"负责在可用范围内提供记忆检索与上下文信息。",state:"ONLINE",links:"02 LINKS"},
+  tools:{type:"SUBSYSTEM",name:"TOOL GATEWAY",desc:"工具接入与调用路径。敏感操作应遵循审批策略。",state:"ONLINE",links:"04 LINKS"},
+  indexer:{type:"SUBSYSTEM",name:"INDEXER",desc:"索引与检索辅助节点。",state:"ONLINE",links:"01 LINK"},
+  sync:{type:"SUBSYSTEM",name:"SYNC-REPORT",desc:"任务执行结果回流通道。",state:"ONLINE",links:"02 LINKS"},
+  queue:{type:"QUEUE",name:"TASK QUEUE",desc:"等待调度或满足前置依赖的任务。",state:"QUEUED",links:"03 TASKS"},
+  audit:{type:"AUDIT",name:"RISK / AUDIT",desc:"检测到需要进一步确认的风险事件。",state:"REVIEW REQUIRED",links:"02 EVENTS"},
+  memory2:{type:"SUBSYSTEM",name:"SHARED MEMORY",desc:"集群共享记忆入口。",state:"ONLINE",links:"02 LINKS"},
+  validator:{type:"SUBSYSTEM",name:"VALIDATOR",desc:"对任务输出进行规则与验收检查。",state:"ONLINE",links:"02 LINKS"},
+  report:{type:"BUS",name:"RESULT BUS",desc:"任务结果与状态回流的汇聚节点。",state:"ACTIVE",links:"03 LINKS"},
+};
+const pages = {
+  overview:["01 / SWARM INTELLIGENCE","集群态势总览","COLLECTIVE STATUS // LIVE TELEMETRY"],
+  tasks:["02 / TASK ORCHESTRATION","任务编排","DEPENDENCY GRAPH // EXECUTION FLOW"],
+  agents:["03 / INDIVIDUAL UNITS","智能体管理","AGENT REGISTRY // CAPABILITIES"],
+  chat:["04 / COMMAND CHANNEL","集群对话","COMMAND INPUT // MESSAGE STREAM"],
+  memory:["05 / COLLECTIVE MEMORY","记忆系统","SHARED KNOWLEDGE // RETRIEVAL"],
+  audit:["06 / TRACEABILITY","证据与审计","EVENT LEDGER // RISK REVIEW"],
+  settings:["07 / SYSTEM CONFIGURATION","系统设置","CONFIGURATION // ACCESS CONTROL"],
+};
+
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
+const toastEl = $("#toast");
+let toastTimer;
+function notify(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2300);
+}
+
+/* ── 拓扑：选中节点 → 右栏检视 + 信号捕获反馈 ──────────────────────────── */
+function inspect(id){
+  const d = details[id] || details.core;
+  $$(".node").forEach((n) => n.classList.toggle("selected", n.dataset.node === id));
+  $("#inspectType").textContent = d.type;
+  const warn = d.state.includes("REVIEW") || d.state.includes("WAITING");
+  $("#inspector").innerHTML =
+    `<div class="eyebrow">SYSTEM ENTITY / ${d.type}</div>` +
+    `<div style="font:16px var(--mono);margin:8px 0 10px">${d.name}</div>` +
+    `<div style="color:var(--muted);line-height:1.6;font-size:11px">${d.desc}</div>` +
+    `<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px">` +
+    `<div><div class="metric-label">STATE</div><div style="color:${warn ? "var(--yellow)" : "var(--glow)"};font:10px var(--mono);margin-top:6px">${d.state}</div></div>` +
+    `<div><div class="metric-label">CONNECTIONS</div><div style="font:11px var(--mono);margin-top:6px">${d.links}</div></div></div>` +
+    `<button class="btn small" style="margin-top:14px;width:100%" id="detailBtn">打开对象详情 ↗</button>`;
+  $("#detailBtn").onclick = () => notify("对象详情：" + d.name + "（演示）");
+
+  // 捕获涟漪 + 信号标签：直接挂在被选节点上，用 transform 缩放，不逐帧改属性
+  const node = $('.node[data-node="' + CSS.escape(id) + '"]');
+  if (!node) return;
+  const m = node.transform.baseVal.consolidate();
+  if (!m) return;
+  const { e: cx, f: cy } = m.matrix;
+  const svg = $(".graph-svg");
+  const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  ring.setAttribute("cx", cx); ring.setAttribute("cy", cy); ring.setAttribute("r", "12");
+  ring.setAttribute("class", "node-ripple");
+  svg.appendChild(ring);
+  setTimeout(() => ring.remove(), 900);
+  const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  label.setAttribute("x", cx + 18); label.setAttribute("y", cy - 22);
+  label.setAttribute("class", "graph-toast-label");
+  label.textContent = "SIGNAL ACQUIRED";
+  svg.appendChild(label);
+  setTimeout(() => label.remove(), 1400);
+
+  // 沿依赖链依次点亮三条边
+  $$(".edge").forEach((edge, i) => {
+    edge.classList.remove("is-traversing");
+    if (i < 3) setTimeout(() => edge.classList.add("is-traversing"), i * 65);
+    setTimeout(() => edge.classList.remove("is-traversing"), 650 + i * 65);
+  });
+}
+$$(".node").forEach((n) => n.addEventListener("click", () => inspect(n.dataset.node)));
+
+/* ── 顶栏按钮 ───────────────────────────────────────────────────────────── */
+$("#refreshBtn").onclick = () => {
+  $("#syncTime").textContent = new Date().toLocaleTimeString("en-GB", { hour12:false });
+  const graph = $(".graph-wrap");
+  if (graph){ graph.classList.remove("scanning"); void graph.offsetWidth; graph.classList.add("scanning"); setTimeout(() => graph.classList.remove("scanning"), 1200); }
+  // 指标逐格重播「数值刷新」动效
+  $$(".metric").forEach((m, i) => setTimeout(() => { m.classList.remove("updated"); void m.offsetWidth; m.classList.add("updated"); }, i * 100));
+  notify("态势视图已刷新（演示）");
+};
+$("#auditBtn").onclick = () => notify("事件日志入口（演示）");
+$("#allEvents").onclick = () => notify("打开完整事件流（演示）");
+$("#viewTasks").onclick = () => switchPage("tasks");
+
+/* ── 新建任务：模态 ─────────────────────────────────────────────────────── */
+const modal = $("#modal");
+function closeModal(){ modal.classList.remove("show"); }
+$("#dispatchBtn").onclick = () => {
+  const b = $("#dispatchBtn");
+  b.classList.remove("is-dispatching"); void b.offsetWidth; b.classList.add("is-dispatching");
+  setTimeout(() => b.classList.remove("is-dispatching"), 460);
+  modal.classList.add("show");
+  $("#taskInput")?.focus();
+};
+$("#closeModal").onclick = closeModal;
+$("#cancelModal").onclick = closeModal;
+$("#confirmModal").onclick = () => {
+  const input = $("#taskInput");
+  const value = input?.value?.trim();
+  closeModal();
+  if (!value){ notify("请输入任务目标"); return; }
+  notify("任务已加入演示队列");
+  // 事件流顶部插入一条（与列表行保持同一结构）
+  const list = $(".event-list");
+  if (!list) return;
+  const row = document.createElement("div");
+  row.className = "event";
+  row.style.animation = "interfaceEnter .45s var(--ease-machine) both";
+  row.innerHTML = `<div class="event-time">${new Date().toLocaleTimeString("en-GB",{hour12:false})}</div><i class="event-marker"></i><div class="event-text"></div><div class="event-code">TASK_NEW</div>`;
+  const text = row.querySelector(".event-text");
+  text.textContent = "新任务已加入演示队列";
+  const small = document.createElement("small");
+  small.textContent = value;
+  text.appendChild(small);
+  list.prepend(row);
+};
+modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeModal();
+  if (e.key === "Enter" && modal.classList.contains("show") && document.activeElement?.id === "taskInput") $("#confirmModal").click();
+});
+
+/* ── 导航（原型：只换页头 + 重播入场） ─────────────────────────────────── */
+function switchPage(p){
+  const d = pages[p] || pages.overview;
+  $("#eyebrow").textContent = d[0];
+  $("#pageTitle").textContent = d[1];
+  $("#pageSub").textContent = d[2];
+  $$(".navbtn[data-page]").forEach((b) => {
+    const on = b.dataset.page === p;
+    b.classList.toggle("active", on);
+    if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+  });
+  const main = $(".main");
+  main.removeAttribute("data-enter"); void main.offsetWidth; main.setAttribute("data-enter", "");
+  if (p !== "overview") notify(d[1] + "：当前为总览原型，页面入口为演示");
+}
+$$(".navbtn[data-page]").forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.page)));
+
+/* ── 点击涟漪（按钮 / 导航） ────────────────────────────────────────────── */
+document.addEventListener("click", (e) => {
+  const target = e.target.closest(".btn,.navbtn");
+  if (!target) return;
+  const r = target.getBoundingClientRect();
+  const ripple = document.createElement("span");
+  ripple.className = "click-ripple";
+  ripple.style.left = (e.clientX - r.left) + "px";
+  ripple.style.top = (e.clientY - r.top) + "px";
+  target.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 700);
+});
+
+/* ── 连线保活：悬停节点时轻微提亮部分依赖边 ────────────────────────────── */
+(function () {
+  const svg = $(".graph-svg");
+  if (!svg) return;
+  const paths = $$(".edge", svg);
+  $$(".node", svg).forEach((n, i) => {
+    n.addEventListener("mouseenter", () => paths.forEach((p, j) => { if (j % Math.max(2, (i % 5) + 2) === 0) p.style.opacity = ".98"; }));
+    n.addEventListener("mouseleave", () => paths.forEach((p) => { p.style.opacity = ""; }));
+  });
+})();
+
+/* ── 时钟 ───────────────────────────────────────────────────────────────── */
+(function tick(){
+  $("#clock").textContent = new Date().toLocaleTimeString("en-GB", { hour12:false }) + " LOCAL";
+  $("#syncTime").textContent = new Date().toLocaleTimeString("en-GB", { hour12:false });
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

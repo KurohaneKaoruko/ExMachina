@@ -4,26 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EXMACHINA</title>
+    <!-- 徽记几何唯一定义（400 口径）：必须在 app.js 之前加载，启动画面才能首帧就有图形 -->
+    <script src="mark.js"></script>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <!-- 启动画面：连结动画（网关就绪后淡出；最少展示 1.6s 保证品牌瞬间） -->
+    <!-- 启动画面：连结动画（网关就绪后淡出；最少展示 1.6s 保证品牌瞬间）
+         动效不旋转：八段弧槽按序「充能」，中枢环同步呼吸（见 style.css 的 mk-charge） -->
     <div id="splash">
-      <svg class="splash-svg" viewBox="0 0 512 512" aria-hidden="true">
-        <circle class="splash-core" cx="256" cy="256" r="78" fill="none" stroke="#ffffff" stroke-width="22"/>
-        <g class="splash-arcs" fill="none" stroke="#ffffff" stroke-width="30">
-          <path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95" opacity="0.95"/>
-          <path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72" opacity="0.75"/>
-          <path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05" opacity="0.55"/>
-          <path d="M 108.28 229.95 A 150 150 0 0 1 229.95 108.28" opacity="0.35"/>
-        </g>
-      </svg>
+      <div class="splash-svg" data-mark="210"></div>
       <div class="splash-word">EXMACHINA</div>
       <div class="splash-status" id="splash-status">连结中</div>
     </div>
+    <script>fillMarks();</script>
     <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
     <header id="titlebar" data-tauri-drag-region>
-      <span class="tb-brand" data-tauri-drag-region><svg class="tb-mark" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="78" fill="none" stroke="currentColor" stroke-width="22"/><g fill="none" stroke="currentColor" stroke-width="30"><path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95" opacity="0.95"/><path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72" opacity="0.75"/><path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05" opacity="0.55"/><path d="M 108.28 229.95 A 150 150 0 0 1 229.95 108.28" opacity="0.35"/></g></svg>EXMACHINA</span>
+      <span class="tb-brand" data-tauri-drag-region><span class="tb-mark" data-mark="15"></span>EXMACHINA</span>
       <div class="tb-readouts" id="tb-readouts"></div>
       <div class="tb-btns hidden" id="tb-btns">
         <button id="tb-min" title="最小化">─</button>

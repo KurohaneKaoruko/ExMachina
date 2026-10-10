@@ -53,7 +53,7 @@ function ViewSuspense({ children }: { children: React.ReactNode }): React.ReactE
     <Suspense
       fallback={
         <div className="view-loading">
-          <Emblem size={56} animated />
+          <Emblem size={56} charging />
           <span className="view-loading-text">LOADING</span>
         </div>
       }
@@ -196,7 +196,7 @@ export default function App(): React.ReactElement {
       <div className="login-wrap">
         <div className="login-core">
           <div className="login-figure">
-            <Emblem size={92} animated />
+            <Emblem size={92} charging />
           </div>
           <span className="brand-name login-brand">EX·MACHINA</span>
           <div className="title-rule" style={{ marginTop: 12 }} />

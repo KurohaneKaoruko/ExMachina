@@ -1,19 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- 启动动画源文件：外弧组旋转（连结运转）+ 中枢圆环呼吸（核心跳动）
-       几何口径与 icons/icon.svg 一致：四弧 r=150 / 线宽 30（线宽:半径 ≈ 0.2），
-       缺口正对上下左右；弧的不透明度自右上起顺时针 0.95 → 0.35；中枢环 r=78 / 线宽 22。 -->
-  <rect width="512" height="512" fill="#000000"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <!-- 启动动画源文件（独立预览用；应用内实际动效见 mark.js + style.css 的 mk-charge）。
+       动效不旋转：八段弧槽按序充能，中枢环同拍呼吸。
+       几何口径与 mark.js 完全一致（400 画布 / 圆心 200,200 / 线宽 24.5）。 -->
+  <rect width="400" height="400" fill="#000000"/>
   <style>
-    .arcs { transform-origin: 256px 256px; animation: spin 2.8s linear infinite; }
-    .core { transform-origin: 256px 256px; animation: pulse 2.8s ease-in-out infinite; }
-    @keyframes spin  { to { transform: rotate(360deg); } }
-    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+    .slot { animation: charge 1.9s ease-in-out infinite; }
+    .slot:nth-child(1) { animation-delay: 0s; }
+    .slot:nth-child(2) { animation-delay: 0.13s; }
+    .slot:nth-child(3) { animation-delay: 0.39s; }
+    .slot:nth-child(4) { animation-delay: 0.52s; }
+    .slot:nth-child(5) { animation-delay: 0.65s; }
+    .slot:nth-child(6) { animation-delay: 0.91s; }
+    .core { animation: breathe 1.9s ease-in-out infinite; }
+    @keyframes charge  { 0% { opacity: 0.16; } 16% { opacity: 1; } 62% { opacity: 0.16; } 100% { opacity: 0.16; } }
+    @keyframes breathe { 0%, 100% { opacity: 0.42; } 50% { opacity: 1; } }
   </style>
-  <circle class="core" cx="256" cy="256" r="78" fill="none" stroke="#ffffff" stroke-width="22"/>
-  <g class="arcs" fill="none" stroke="#ffffff" stroke-width="30">
-    <path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95" opacity="0.95"/>
-    <path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72" opacity="0.75"/>
-    <path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05" opacity="0.55"/>
-    <path d="M 108.28 229.95 A 150 150 0 0 1 229.95 108.28" opacity="0.35"/>
+  <circle class="core" cx="200" cy="200" r="56.5" fill="none" stroke="#ffffff" stroke-width="24.5"/>
+  <g fill="none" stroke="#ffffff" stroke-width="24.5" stroke-linecap="butt">
+    <path class="slot" d="M 321.49 250.32 A 131.5 131.5 0 0 0 321.49 149.68"/>
+    <path class="slot" d="M 298.86 159.05 A 107.0 107.0 0 0 0 240.95 101.14"/>
+    <path class="slot" d="M 159.05 101.14 A 107.0 107.0 0 0 0 101.14 159.05"/>
+    <path class="slot" d="M 78.51 149.68 A 131.5 131.5 0 0 0 78.51 250.32"/>
+    <path class="slot" d="M 101.14 240.95 A 107.0 107.0 0 0 0 159.05 298.86"/>
+    <path class="slot" d="M 240.95 298.86 A 107.0 107.0 0 0 0 298.86 240.95"/>
   </g>
 </svg>

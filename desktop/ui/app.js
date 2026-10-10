@@ -490,48 +490,16 @@ liveEl.style.display = "none";
 // ────────────────────────────── 动效工具（品牌纹样 / stagger 编排） ──────────────────────────────
 // 纪律：只写 class 与 CSS 变量，动画本体全部在 style.css（transform/opacity 合成器路径）。
 
-// 品牌纹样：中枢环 + 四向弧（与 icons/icon.svg 同几何），用于空态 / 加载态 / 分区徽记。
+// 品牌纹样：中枢环 + 外观弧槽，用于空态 / 加载态 / 分区徽记。
 //
-// 几何只在这里定义一份，其余位置一律引用 markBody() —— 之前 app.js 里写了两份（brandMark
-// 与 captureDisc 各抄一份）、index.html 里又手抄一份，三份互相追不上，于是：
-//   · brandMark / captureDisc 的四弧整体偏了 10°（缺口落在 10/100/190/280），
-//     而同一应用里的标题栏、启动画面、图标都是 0/90/180/270 —— HUD 准星里一眼就是歪的；
-//   · index.html 那份把第 3 条弧的终点抄成 282.05 108.28（应为 229.95 108.28），
-//     该弧从 280° 一路画到 10°，把顶上的缺口整段糊没，徽记只剩三个缺口。
+// 几何唯一定义在 **mark.js**（400 口径，随 index.html 的 <head> 先于本文件加载），
+// 这里只消费全局的 markBody() / brandMark() / markBodyIn512() / fillMarks()，不再定义。
 //
-// 几何口径（改比值前先回 icons/icon.svg 量一遍，别凭手感加粗）：
-//   四弧 r=150 / 线宽 30（线宽:半径 ≈ 0.2，对齐 icon.svg 的 7:38），跨 70°，缺口居中于正交轴；
-//   中枢环 r=78 / 线宽 22，外缘 89 与四弧内缘 135 之间留 46 的呼吸（一个弧宽以上）；
-//   弧的不透明度自右上起顺时针 0.95 → 0.35，方向感来自明度阶梯。
-const MARK_ARC_SW = 30;
-const MARK_CORE_R = 78;
-const MARK_CORE_SW = 22;
-/** [路径, 不透明度] —— 缺口必须正好落在 0 / 90 / 180 / 270 */
-const MARK_ARCS = [
-  ["M 282.05 108.28 A 150 150 0 0 1 403.72 229.95", 0.95],
-  ["M 403.72 282.05 A 150 150 0 0 1 282.05 403.72", 0.75],
-  ["M 229.95 403.72 A 150 150 0 0 1 108.28 282.05", 0.55],
-  ["M 108.28 229.95 A 150 150 0 0 1 229.95 108.28", 0.35],
-];
-/** 512 口径的纹样本体（无外层 svg）：中枢环 + 四弧 */
-function markBody() {
-  return (
-    `<circle cx="256" cy="256" r="${MARK_CORE_R}" fill="none" stroke="currentColor" stroke-width="${MARK_CORE_SW}"/>` +
-    `<g fill="none" stroke="currentColor" stroke-width="${MARK_ARC_SW}">` +
-    MARK_ARCS.map(([d, o]) => `<path d="${d}" opacity="${o}"/>`).join("") +
-    `</g>`
-  );
-}
-function brandMark(cls = "", size = 16) {
-  return `<svg class="mark-svg ${cls}" width="${size}" height="${size}" viewBox="0 0 512 512" aria-hidden="true">${markBody()}</svg>`;
-}
-
-/** 由 HTML 声明的徽记位（<span data-mark="56">）：统一在此注入，HTML 里不再手抄几何 */
-function fillMarks() {
-  document.querySelectorAll("[data-mark]").forEach((el) => {
-    el.innerHTML = brandMark("", Number(el.dataset.mark) || 16);
-  });
-}
+// 之所以把定义搬出去：本文件里曾写过两份（brandMark 与 captureDisc 各抄一份）、
+// index.html 里又手抄一份，三份互相追不上，于是出过两次事故——
+//   · brandMark / captureDisc 的四弧整体偏了 10°，而标题栏、启动画面、图标都是正对的；
+//   · index.html 那份把一条弧的终点抄错，顶部缺口整段糊没，徽记只剩三个缺口。
+// 结论：徽记只留一处定义，任何位置要画徽记都用 <span data-mark="尺寸">。
 
 /** 空态捕获盘：四弧徽记 + 径向刻度环 + 扫描扇 + 准星（HUD「目标捕获」母题的完整表达） */
 function captureDisc(size = 360) {
@@ -560,7 +528,7 @@ function captureDisc(size = 360) {
       <line x1="14" y1="256" x2="54" y2="256" stroke-width="2"/>
       <line x1="458" y1="256" x2="498" y2="256" stroke-width="2"/>
     </g>
-    ${markBody()}
+    ${markBodyIn512()}
   </svg>`;
 }
 
@@ -2495,7 +2463,7 @@ function enterTasks() {
       ["SESS", String(S.sessions.length).padStart(2, "0")],
     ]);
   }
-  $("tp-body").innerHTML = `<div class="loading-hint"><span class="mark-spin mark-accent">${brandMark("", 22)}</span><span>加载任务图与台账…</span></div>`;
+  $("tp-body").innerHTML = `<div class="loading-hint"><span class="mark-charge mark-accent">${brandMark("", 22)}</span><span>加载任务图与台账…</span></div>`;
   refreshTasks();
 }
 
