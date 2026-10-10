@@ -547,7 +547,7 @@ export function ChatView(): React.ReactElement {
           {renderMessages.length === 0 && !running && (
             <div className="chat-acquire">
               <span className="capture-frame chat-acquire-figure">
-                <Emblem size={132} />
+                <Emblem size={224} />
               </span>
               <div className="chat-acquire-title">{t("chat.acquireTitle")}</div>
               <div className="chat-acquire-desc">{t("chat.acquireDesc")}</div>

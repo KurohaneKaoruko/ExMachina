@@ -14,7 +14,8 @@ export function BrandEmpty({
   return (
     <div className={`brand-empty${className ? ` ${className}` : ""}`}>
       <span className="capture-frame brand-empty-figure">
-        <Emblem size={72} faint className="brand-empty-emblem" />
+        {/* 84px：让徽记填到捕获框刻度环的 1.25 倍关系上；72px 时徽记半径小于刻度环半径，读成「小点套大圈」 */}
+        <Emblem size={84} faint className="brand-empty-emblem" />
       </span>
       <div className="brand-empty-desc">{description}</div>
     </div>

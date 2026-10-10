@@ -227,7 +227,9 @@ body {
   animation: emblem-spin-rev 24s linear infinite;
 }
 .emblem-animated .emblem-core-dot { animation: led-pulse 2.4s ease-in-out infinite; }
-.emblem-faint { opacity: 0.16; }
+/* 幽灵态：空态淡纹。0.16 在 512 口径的四弧（线宽:半径 ≈ 0.2）上会把缺口一起糊掉，
+   整枚徽记退化成一团灰；给到 0.3 后仍明显退居文案之后，但四弧与中枢环读得出来。 */
+.emblem-faint { opacity: 0.3; }
 @keyframes emblem-spin { to { transform: rotate(360deg); } }
 @keyframes emblem-spin-rev { to { transform: rotate(-360deg); } }
 
@@ -2409,7 +2411,9 @@ input, textarea { caret-color: var(--accent); }
 @keyframes cap-spin { to { transform: rotate(360deg); } }
 
 /* 品牌空态：徽记包进捕获框（各面板共用；尺寸只比徽记外扩一圈，不显著改变空态高度） */
-.brand-empty-figure { width: 124px; height: 124px; }
+/* 徽记 84px 时外缘（含自身刻度环）落在半径 37，捕获框的刻度环内缘在 41 —— 留 4px 呼吸。
+   框比徽记大太多（原 124px）时，刻度环会飘在一圈空档外，整枚读成「小点套大圈」。 */
+.brand-empty-figure { width: 104px; height: 104px; }
 
 /* 读数语义色：空态读数行与底边遥测条同口径（键青值白，状态转语义色） */
 .readout .v.ok { color: var(--green); }
@@ -2427,7 +2431,8 @@ input, textarea { caret-color: var(--accent); }
   padding: 30px 16px 40px;
   text-align: center;
 }
-.chat-acquire-figure { width: 248px; height: 248px; color: var(--accent); }
+/* 捕获框随徽记尺寸走：徽记 224px 时外缘半径 99，刻度环内缘 105 —— 同一套「框贴徽记」的关系 */
+.chat-acquire-figure { width: 232px; height: 232px; color: var(--accent); }
 .chat-acquire-figure .emblem { opacity: 0.9; }
 .chat-acquire-title {
   margin-top: 10px;

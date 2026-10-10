@@ -490,9 +490,47 @@ liveEl.style.display = "none";
 // ────────────────────────────── 动效工具（品牌纹样 / stagger 编排） ──────────────────────────────
 // 纪律：只写 class 与 CSS 变量，动画本体全部在 style.css（transform/opacity 合成器路径）。
 
-// 品牌纹样：中枢环 + 四向弧（与启动画面 icons/icon.svg 同几何），用于空态 / 加载态 / 分区徽记
+// 品牌纹样：中枢环 + 四向弧（与 icons/icon.svg 同几何），用于空态 / 加载态 / 分区徽记。
+//
+// 几何只在这里定义一份，其余位置一律引用 markBody() —— 之前 app.js 里写了两份（brandMark
+// 与 captureDisc 各抄一份）、index.html 里又手抄一份，三份互相追不上，于是：
+//   · brandMark / captureDisc 的四弧整体偏了 10°（缺口落在 10/100/190/280），
+//     而同一应用里的标题栏、启动画面、图标都是 0/90/180/270 —— HUD 准星里一眼就是歪的；
+//   · index.html 那份把第 3 条弧的终点抄成 282.05 108.28（应为 229.95 108.28），
+//     该弧从 280° 一路画到 10°，把顶上的缺口整段糊没，徽记只剩三个缺口。
+//
+// 几何口径（改比值前先回 icons/icon.svg 量一遍，别凭手感加粗）：
+//   四弧 r=150 / 线宽 30（线宽:半径 ≈ 0.2，对齐 icon.svg 的 7:38），跨 70°，缺口居中于正交轴；
+//   中枢环 r=78 / 线宽 22，外缘 89 与四弧内缘 135 之间留 46 的呼吸（一个弧宽以上）；
+//   弧的不透明度自右上起顺时针 0.95 → 0.35，方向感来自明度阶梯。
+const MARK_ARC_SW = 30;
+const MARK_CORE_R = 78;
+const MARK_CORE_SW = 22;
+/** [路径, 不透明度] —— 缺口必须正好落在 0 / 90 / 180 / 270 */
+const MARK_ARCS = [
+  ["M 282.05 108.28 A 150 150 0 0 1 403.72 229.95", 0.95],
+  ["M 403.72 282.05 A 150 150 0 0 1 282.05 403.72", 0.75],
+  ["M 229.95 403.72 A 150 150 0 0 1 108.28 282.05", 0.55],
+  ["M 108.28 229.95 A 150 150 0 0 1 229.95 108.28", 0.35],
+];
+/** 512 口径的纹样本体（无外层 svg）：中枢环 + 四弧 */
+function markBody() {
+  return (
+    `<circle cx="256" cy="256" r="${MARK_CORE_R}" fill="none" stroke="currentColor" stroke-width="${MARK_CORE_SW}"/>` +
+    `<g fill="none" stroke="currentColor" stroke-width="${MARK_ARC_SW}">` +
+    MARK_ARCS.map(([d, o]) => `<path d="${d}" opacity="${o}"/>`).join("") +
+    `</g>`
+  );
+}
 function brandMark(cls = "", size = 16) {
-  return `<svg class="mark-svg ${cls}" width="${size}" height="${size}" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/><path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/><path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/><path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/></g></svg>`;
+  return `<svg class="mark-svg ${cls}" width="${size}" height="${size}" viewBox="0 0 512 512" aria-hidden="true">${markBody()}</svg>`;
+}
+
+/** 由 HTML 声明的徽记位（<span data-mark="56">）：统一在此注入，HTML 里不再手抄几何 */
+function fillMarks() {
+  document.querySelectorAll("[data-mark]").forEach((el) => {
+    el.innerHTML = brandMark("", Number(el.dataset.mark) || 16);
+  });
 }
 
 /** 空态捕获盘：四弧徽记 + 径向刻度环 + 扫描扇 + 准星（HUD「目标捕获」母题的完整表达） */
@@ -522,8 +560,7 @@ function captureDisc(size = 360) {
       <line x1="14" y1="256" x2="54" y2="256" stroke-width="2"/>
       <line x1="458" y1="256" x2="498" y2="256" stroke-width="2"/>
     </g>
-    <circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/>
-    <g fill="none" stroke="currentColor" stroke-width="46"><path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/><path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/><path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/><path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/></g>
+    ${markBody()}
   </svg>`;
 }
 
@@ -3476,5 +3513,8 @@ async function init() {
   } catch (e) { alertErr(e); }
   hideSplash();
 }
+
+// 由 HTML 声明的徽记位先填上（不依赖网关；此前 index.html 手抄的那份抄漏了弧端点）
+fillMarks();
 
 init();

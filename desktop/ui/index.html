@@ -10,12 +10,12 @@
     <!-- 启动画面：连结动画（网关就绪后淡出；最少展示 1.6s 保证品牌瞬间） -->
     <div id="splash">
       <svg class="splash-svg" viewBox="0 0 512 512" aria-hidden="true">
-        <circle class="splash-core" cx="256" cy="256" r="72" fill="none" stroke="#ffffff" stroke-width="50"/>
-        <g class="splash-arcs" fill="none" stroke="#ffffff" stroke-width="46">
-          <path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72"/>
-          <path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05"/>
-          <path d="M 108.28 229.95 A 150 150 0 0 1 282.05 108.28"/>
-          <path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95"/>
+        <circle class="splash-core" cx="256" cy="256" r="78" fill="none" stroke="#ffffff" stroke-width="22"/>
+        <g class="splash-arcs" fill="none" stroke="#ffffff" stroke-width="30">
+          <path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95" opacity="0.95"/>
+          <path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72" opacity="0.75"/>
+          <path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05" opacity="0.55"/>
+          <path d="M 108.28 229.95 A 150 150 0 0 1 229.95 108.28" opacity="0.35"/>
         </g>
       </svg>
       <div class="splash-word">EXMACHINA</div>
@@ -23,7 +23,7 @@
     </div>
     <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
     <header id="titlebar" data-tauri-drag-region>
-      <span class="tb-brand" data-tauri-drag-region><svg class="tb-mark" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72"/><path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05"/><path d="M 108.28 229.95 A 150 150 0 0 1 282.05 108.28"/><path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95"/></g></svg>EXMACHINA</span>
+      <span class="tb-brand" data-tauri-drag-region><svg class="tb-mark" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="78" fill="none" stroke="currentColor" stroke-width="22"/><g fill="none" stroke="currentColor" stroke-width="30"><path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95" opacity="0.95"/><path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72" opacity="0.75"/><path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05" opacity="0.55"/><path d="M 108.28 229.95 A 150 150 0 0 1 229.95 108.28" opacity="0.35"/></g></svg>EXMACHINA</span>
       <div class="tb-readouts" id="tb-readouts"></div>
       <div class="tb-btns hidden" id="tb-btns">
         <button id="tb-min" title="最小化">─</button>
@@ -131,7 +131,7 @@
         </header>
         <!-- 只读预览提示条：截断 / 非 UTF-8 文件常驻警示（textarea 同步置 readOnly） -->
         <div id="cp-readonly-bar" class="cp-readonly-bar hidden">该文件为只读预览（超过 200KB 截断或非 UTF-8 内容，保存已禁用）</div>
-        <div id="cp-editor-empty" class="cp-editor-empty"><div class="empty-mark"><svg class="mark-svg" width="56" height="56" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72"/><path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05"/><path d="M 108.28 229.95 A 150 150 0 0 1 282.05 108.28"/><path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95"/></g></svg></div>在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
+        <div id="cp-editor-empty" class="cp-editor-empty"><div class="empty-mark" data-mark="56"></div>在左侧选择一个文件开始查看 / 编辑<br/>保存经网关写回工作区（自动留检查点与审计）</div>
         <!-- 编辑器三明治：行号列（左）/ 当前行高亮条（底）/ 文本层（顶）；滚动由 JS 同步 -->
         <div id="cp-editor-wrap" class="hidden">
           <div id="cp-curline" aria-hidden="true" class="hidden"></div>
