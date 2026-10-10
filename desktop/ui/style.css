@@ -88,12 +88,15 @@ button { font-family: inherit; cursor: pointer; }
 #splash.splash-out { opacity: 0; pointer-events: none; }
 .splash-svg { width: 210px; height: 210px; display: block; color: #ffffff; animation: splash-in 0.6s ease both; }
 .splash-svg .mark-svg { width: 100%; height: 100%; }
-/* 充能：八段弧槽依次点亮（槽位序号 --mk-i 由 mark.js 注入），中枢环同拍呼吸。
-   空槽（90°/270°）不占 path 但占用序号，于是每圈走到上下时自然有一拍停顿。 */
-.splash-svg .mk-slot { animation: mk-charge 1.9s ease-in-out infinite; animation-delay: calc(var(--mk-i, 0) * 0.13s); }
-.splash-svg .mk-ring { animation: mk-core-breathe 1.9s ease-in-out infinite; }
-@keyframes mk-charge     { 0% { opacity: 0.16; } 16% { opacity: 1; } 62% { opacity: 0.16; } 100% { opacity: 0.16; } }
-@keyframes mk-core-breathe { 0%, 100% { opacity: 0.42; } 50% { opacity: 1; } }
+/* 充能：**整枚同拍呼吸** —— 八段弧槽与中枢环共用同一条 keyframes、同周期、零延迟，
+   因此任一时刻全部笔画的灰度完全一致。
+   原先按槽位序号错开相位（--mk-i × 0.13s），静帧里六段弧的实测灰度是
+   61 / 158 / 199 / 208 / 254 / 255 —— 同一枚徽记读成了「花」的，与 mark.js 里
+   「全部弧与中枢环同亮度」的口径直接冲突。徽记是品牌资产，加载态也必须读得出原形。
+   槽位序号 --mk-i 仍由 mark.js 注入，留作备用相位，不再参与默认动效。 */
+.splash-svg .mk-slot,
+.splash-svg .mk-ring { animation: mk-breathe 1.9s ease-in-out infinite; }
+@keyframes mk-breathe { 0%, 100% { opacity: 0.62; } 50% { opacity: 1; } }
 @keyframes splash-in { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }
 .splash-word { font-weight: 700; letter-spacing: 0.42em; text-indent: 0.42em; font-size: 15px; color: var(--text); }
 .splash-status { font-size: 12px; color: var(--text-faint); letter-spacing: 0.08em; }
@@ -973,12 +976,9 @@ button:focus:not(:focus-visible) { outline: none; }
 .mark-svg { display: block; }
 .mark-accent { color: var(--accent-2); }
 .mark-dim { color: var(--text-faint); }
-/* 加载态小徽记：按序充能（不旋转——旋转会让徽记的缺口相位一直在变，读不成图形） */
-.mark-charge .mk-slot, .mark-svg.mark-charge .mk-slot {
-  animation: mk-charge 1.6s ease-in-out infinite;
-  animation-delay: calc(var(--mk-i, 0) * 0.11s);
-}
-.mark-charge .mk-ring, .mark-svg.mark-charge .mk-ring { animation: mk-core-breathe 1.6s ease-in-out infinite; }
+/* 加载态小徽记：同样整枚同拍呼吸（不旋转——旋转会让缺口相位一直在变，读不成图形） */
+.mark-charge .mk-slot, .mark-svg.mark-charge .mk-slot,
+.mark-charge .mk-ring, .mark-svg.mark-charge .mk-ring { animation: mk-breathe 1.6s ease-in-out infinite; }
 /* 空态背景大标：超低透明度 + 极缓漂旋（居中于欢迎块，避免被滚动容器裁切） */
 .welcome { position: relative; }
 .welcome-mark {

@@ -219,14 +219,12 @@ body {
 /* 常态动效：整枚徽记缓慢呼吸（不旋转 —— 旋转会让缺口相位一直在变，读不成图形）。 */
 .emblem-animated .emblem-ring,
 .emblem-animated .emblem-slot { animation: emblem-breathe 4.2s ease-in-out infinite; }
-/* 加载态：八段弧槽按序充能（相位来自槽位序号 --mk-i），中枢环同拍呼吸。 */
-.emblem-charging .emblem-slot {
-  animation: emblem-charge 1.9s ease-in-out infinite;
-  animation-delay: calc(var(--mk-i, 0) * 0.13s);
-}
-.emblem-charging .emblem-ring { animation: emblem-breathe 1.9s ease-in-out infinite; }
+/* 加载态：整枚同拍呼吸（做法与 .emblem-animated 相同，只是周期更短）。
+   不再按槽位序号 --mk-i 错开相位 —— 错开会让静帧里八段弧的灰度各不相同
+   （桌面端同款动效实测 61 / 158 / 199 / 208 / 254 / 255），品牌徽记在加载态读不出原形。 */
+.emblem-charging .emblem-ring,
+.emblem-charging .emblem-slot { animation: emblem-breathe 1.9s ease-in-out infinite; }
 @keyframes emblem-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
-@keyframes emblem-charge  { 0% { opacity: 0.16; } 16% { opacity: 1; } 62% { opacity: 0.16; } 100% { opacity: 0.16; } }
 /* 幽灵态：空态淡纹。0.16 会把缺口一起糊掉，整枚徽记退化成一团灰；
    给到 0.3 后仍明显退居文案之后，但弧槽与中枢环读得出来。 */
 .emblem-faint { opacity: 0.3; }

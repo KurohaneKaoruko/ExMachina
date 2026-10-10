@@ -1,19 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
-  <!-- 启动动画源文件（独立预览用；应用内实际动效见 mark.js + style.css 的 mk-charge）。
-       动效不旋转：八段弧槽按序充能，中枢环同拍呼吸。
+  <!-- 启动画面源文件（独立预览用；应用内实际动效见 mark.js + style.css 的 mk-breathe）。
+       动效不旋转，且**整枚同拍呼吸**：弧槽与中枢环共用同一条 keyframes、同周期、零延迟，
+       因此任一时刻全部笔画灰度一致（按槽位错开相位会让静帧里的弧散成深浅不一，徽记读不出原形）。
        几何口径与 mark.js 完全一致（400 画布 / 圆心 200,200 / 线宽 24.5）。 -->
   <rect width="400" height="400" fill="#000000"/>
   <style>
-    .slot { animation: charge 1.9s ease-in-out infinite; }
-    .slot:nth-child(1) { animation-delay: 0s; }
-    .slot:nth-child(2) { animation-delay: 0.13s; }
-    .slot:nth-child(3) { animation-delay: 0.39s; }
-    .slot:nth-child(4) { animation-delay: 0.52s; }
-    .slot:nth-child(5) { animation-delay: 0.65s; }
-    .slot:nth-child(6) { animation-delay: 0.91s; }
-    .core { animation: breathe 1.9s ease-in-out infinite; }
-    @keyframes charge  { 0% { opacity: 0.16; } 16% { opacity: 1; } 62% { opacity: 0.16; } 100% { opacity: 0.16; } }
-    @keyframes breathe { 0%, 100% { opacity: 0.42; } 50% { opacity: 1; } }
+    .slot, .core { animation: breathe 1.9s ease-in-out infinite; }
+    @keyframes breathe { 0%, 100% { opacity: 0.62; } 50% { opacity: 1; } }
   </style>
   <circle class="core" cx="200" cy="200" r="56.5" fill="none" stroke="#ffffff" stroke-width="24.5"/>
   <g fill="none" stroke="#ffffff" stroke-width="24.5" stroke-linecap="butt">
