@@ -2295,3 +2295,52 @@ input, textarea { caret-color: var(--accent); }
 .ant-pagination-item, .ant-pagination-item-link,
 .ant-message-notice-content, .ant-notification-notice, .ant-tooltip-inner,
 .md code, .md pre { border-radius: 0; }
+
+/* ============ 底边遥测条（品牌常驻读数：与桌面端底栏同一套 HUD 语汇） ============
+   链路 / 会话 / 模型 / 版本常驻窗口底边，让 Web 控制台与桌面端读同一组系统读数。
+   只新增容器与读数样式；.app-shell 让出底栏高度，其余组件一律不动。 */
+:root { --tel-h: 26px; }
+
+.telemetry-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 120;
+  height: var(--tel-h);
+  display: flex; align-items: stretch;
+  background: var(--bg);
+  border-top: 1px solid var(--line-strong);
+  font-family: var(--mono); font-size: 10.5px;
+  user-select: none; -webkit-user-select: none;
+}
+/* 顶缘起点高亮短线：给底栏一个「从哪里开始读」的起点 */
+.telemetry-bar::before {
+  content: ""; position: absolute; left: 0; top: -1px; width: 74px; height: 1px;
+  background: var(--accent); pointer-events: none;
+}
+.tbar-brand {
+  display: inline-flex; align-items: center; gap: 7px; padding: 0 12px;
+  color: var(--accent); font-weight: 700; letter-spacing: 2px;
+  border-right: 1px solid var(--line);
+}
+.tbar-brand .emblem { flex: none; }
+.tbar-seg {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
+  border-right: 1px solid var(--line);
+}
+.tbar-k { color: var(--muted-dim); letter-spacing: 1.3px; font-size: 9.5px; text-transform: uppercase; }
+.tbar-v { color: var(--text); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tbar-v.ok { color: var(--green); }
+.tbar-v.warn { color: var(--amber); }
+.tbar-v.err { color: var(--red); }
+.tbar-led { width: 6px; height: 6px; flex: none; background: var(--green); animation: led-pulse 2.4s ease-in-out infinite; }
+.tbar-led.err { background: var(--red); animation-duration: 1.1s; }
+.tbar-spacer { flex: 1; }
+.tbar-seg.sys { border-right: none; border-left: 1px solid var(--line); }
+/* 内容区让出底栏高度：app-shell 与两个 shell 必须同步收窄，
+   否则 shell 按 100vh 硬算会比可用空间高出一截、把内容顶出视口 */
+@media (min-width: 861px) {
+  .app-shell { height: calc(100vh - var(--tel-h)); }
+  .chat-shell, .code-shell { height: calc(100vh - var(--tel-h) - 32px); }
+}
+/* 移动端：底部空间紧张，隐藏遥测条 */
+@media (max-width: 860px) {
+  .telemetry-bar { display: none; }
+}

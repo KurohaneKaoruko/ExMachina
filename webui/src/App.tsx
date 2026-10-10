@@ -28,6 +28,7 @@ import { ACCENTS, accentOf, useTheme } from "./theme";
 import { CharStream } from "./components/CharStream";
 import { AsciiDivider } from "./components/Ascii";
 import { Emblem } from "./components/Emblem";
+import { TelemetryBar } from "./components/TelemetryBar";
 /* 视图懒加载（React.lazy + 动态 import）：按视图切分 chunk，首屏只拉 shell + 当前视图，
  * 其余视图在导航到时才加载（vendor 三方库另行在 vite.config.ts 的 manualChunks 分组缓存） */
 const LoginView = lazy(() => import("./views/LoginView").then((m) => ({ default: m.LoginView })));
@@ -335,6 +336,8 @@ export default function App(): React.ReactElement {
           </div>
         </ViewSuspense>
       </main>
+      {/* 底边遥测条：position:fixed 通栏贴窗口底，不参与 .app-shell 的 flex 布局 */}
+      <TelemetryBar />
     </div>
   );
 }

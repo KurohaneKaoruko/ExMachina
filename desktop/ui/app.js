@@ -495,6 +495,38 @@ function brandMark(cls = "", size = 16) {
   return `<svg class="mark-svg ${cls}" width="${size}" height="${size}" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/><path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/><path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/><path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/></g></svg>`;
 }
 
+/** 空态捕获盘：四弧徽记 + 径向刻度环 + 扫描扇 + 准星（HUD「目标捕获」母题的完整表达） */
+function captureDisc(size = 360) {
+  const P = (deg, r) => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return [256 + Math.cos(a) * r, 256 + Math.sin(a) * r];
+  };
+  let ticks = "";
+  for (let i = 0; i < 72; i++) {
+    const deg = i * 5, major = deg % 30 === 0;
+    const [x1, y1] = P(deg, 218), [x2, y2] = P(deg, major ? 240 : 230);
+    ticks += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke-width="${major ? 4 : 2}"/>`;
+  }
+  return `<svg class="mark-svg capture-disc" width="${size}" height="${size}" viewBox="0 0 512 512" aria-hidden="true">
+    <g fill="none" stroke="currentColor" opacity="0.9">
+      <circle cx="256" cy="256" r="218" stroke-width="2"/>
+      <circle cx="256" cy="256" r="188" stroke-width="1" stroke-dasharray="2 12" opacity="0.7"/>
+    </g>
+    <g class="ring-rot rev" fill="none" stroke="currentColor">${ticks}</g>
+    <g class="ring-rot" fill="none" stroke="currentColor">
+      <path d="M 256 256 L 256 38 A 218 218 0 0 1 365 62 Z" fill="currentColor" stroke="none" opacity="0.16"/>
+    </g>
+    <g fill="none" stroke="currentColor" opacity="0.85">
+      <line x1="256" y1="14" x2="256" y2="54" stroke-width="2"/>
+      <line x1="256" y1="458" x2="256" y2="498" stroke-width="2"/>
+      <line x1="14" y1="256" x2="54" y2="256" stroke-width="2"/>
+      <line x1="458" y1="256" x2="498" y2="256" stroke-width="2"/>
+    </g>
+    <circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/>
+    <g fill="none" stroke="currentColor" stroke-width="46"><path d="M 396.95 307.30 A 150 150 0 0 1 256 406"/><path d="M 204.70 396.95 A 150 150 0 0 1 106 256"/><path d="M 115.05 204.70 A 150 150 0 0 1 256 106"/><path d="M 307.30 115.05 A 150 150 0 0 1 406 256"/></g>
+  </svg>`;
+}
+
 // 列表 stagger 入场：递增延迟（默认 36ms，封顶 10 档——长列表尾部不拖尾，全部动画只走合成器）
 function staggerIn(els, { step = 36, cap = 10 } = {}) {
   let i = 0;
@@ -520,6 +552,54 @@ function setConn(ok) {
   const el = $("conn-status");
   el.className = `conn ${ok ? "ok" : "err"}`;
   $("conn-text").textContent = ok ? "已连接" : "重连中…";
+  renderChrome();
+}
+
+// ─────────────────────── 品牌层：标题读数簇 + 底边遥测条 ───────────────────────
+// HUD 常驻读数（域名 / 链路 / 目标 / 会话数 / 模型 / 版次）。签名比对后重绘：
+// 读数未变则完全不碰 DOM，避免高频重建打断 LED 呼吸与入场动画。
+let chromeVer = ""; // /version 拉到一次后缓存（本机版本号）
+let chromeSig = "";
+
+function renderChrome() {
+  const host = GW.url.replace(/^https?:\/\//, "");
+  const target = S.target
+    ? `${S.target.mode === "group" ? "GROUP" : "SOLO"} · ${S.target.name ?? S.target.id ?? "—"}`
+    : "未选定";
+  const model = S.profiles.find((p) => p.id === S.activeProfileId)?.name ?? "未配置";
+  const nSess = String(S.sessions.length).padStart(2, "0");
+  const sig = [S.connected, host, target, nSess, model, chromeVer, S.view].join("|");
+  if (sig === chromeSig) return;
+  chromeSig = sig;
+
+  const tb = $("tb-readouts");
+  if (tb) {
+    tb.innerHTML =
+      `<span class="readout"><span class="k">GW</span><span class="v">${esc(host)}</span></span>` +
+      `<span class="readout"><span class="k">SESS</span><span class="v">${nSess}</span></span>`;
+  }
+
+  const tel = $("telemetry");
+  if (!tel) return;
+  tel.innerHTML =
+    `<span class="tel-brand">${brandMark("", 12)}EXM</span>` +
+    `<span class="tel-seg"><span class="tel-led ${S.connected ? "" : "err"}"></span>` +
+    `<span class="tel-k">LINK</span><span class="tel-v ${S.connected ? "ok" : "err"}">${S.connected ? "ONLINE" : "RECONN"}</span></span>` +
+    `<span class="tel-seg"><span class="tel-k">TGT</span><span class="tel-v">${esc(target)}</span></span>` +
+    `<span class="tel-seg"><span class="tel-k">SESS</span><span class="tel-v">${nSess}</span></span>` +
+    `<span class="tel-seg"><span class="tel-k">MODEL</span><span class="tel-v ${model === "未配置" ? "warn" : ""}">${esc(model)}</span></span>` +
+    `<span class="tel-spacer"></span>` +
+    `<span class="tel-seg sys"><span class="tel-k">VER</span><span class="tel-v">${esc(chromeVer || "dev")}</span></span>`;
+  // 遥测条是对话视图的常驻底栏；独立整页（设置 / 编码 / 任务）各自独占窗口，隐藏之
+  tel.classList.toggle("hidden", S.view !== "chat");
+}
+
+/** 本机版本读数：拉一次 /version 填进遥测条（失败保持 dev 占位，不打扰） */
+function loadChromeVersion() {
+  req("/version").then((v) => {
+    chromeVer = v?.version ?? "";
+    renderChrome();
+  }).catch(() => {});
 }
 
 function setRunning(on) {
@@ -568,6 +648,7 @@ function renderSidebar() {
   else if (activeSig !== sidebarActiveSig) nav.querySelector(".session-item.active")?.classList.add("flash-in");
   sidebarIdsSig = idsSig;
   sidebarActiveSig = activeSig;
+  renderChrome(); // 会话数 / 目标读数跟随侧栏重建同步
 }
 
 // 侧栏动效签名（模块级记忆：与上次渲染比对决定放不放动画）
@@ -703,10 +784,20 @@ function orchestratorId() {
 function welcomeEl() {
   const el = document.createElement("div");
   el.className = "welcome";
+  const tgt = S.target
+    ? `${S.target.mode === "group" ? "组" : "个体"} · ${S.target.name ?? S.target.id ?? ""}`
+    : "未选定";
   el.innerHTML = `
     <div class="welcome-mark">${brandMark("", 360)}</div>
+    <div class="welcome-capture">${captureDisc(196)}</div>
     <h1>有什么可以帮你？</h1>
     <p>对话交由当前对象（智能体或智能体组）协作完成；侧栏「编码」进入工作台、「任务」看派发与台账</p>
+    <div class="welcome-readout">
+      <span class="readout"><span class="k">LINK</span><span class="v ok">ONLINE</span></span>
+      <span class="readout"><span class="k">TGT</span><span class="v">${esc(tgt)}</span></span>
+      <span class="readout"><span class="k">SESS</span><span class="v">${String(S.sessions.length).padStart(2, "0")}</span></span>
+      <span class="readout"><span class="k">MODE</span><span class="v">ACQUIRE</span></span>
+    </div>
     <div class="suggest">
       <button data-q="帮我梳理一下这个项目的整体结构，给出模块说明">梳理项目结构，输出模块说明</button>
       <button data-q="写一个 Python 脚本：批量重命名当前目录下的图片文件，按日期编号">写一个批量重命名图片的脚本</button>
@@ -977,6 +1068,7 @@ function showView(v) {
   else if (v === "code") enterCode();
   else if (v === "tasks") enterTasks();
   else renderStream(true);
+  renderChrome(); // 遥测条随视图显隐
 }
 
 function renderView() {
@@ -3255,6 +3347,7 @@ async function init() {
 
   // 上下文（组/智能体/模型/目录）与配置；模型未配置 → 引导设置
   await refreshContext();
+  loadChromeVersion(); // 遥测条版本读数（异步，不阻塞启动路径）
   // 待审批角标：启动即拉一次；即时性走 WS 事件 + 窗口聚焦校准，60s 轮询仅作兜底
   void refreshApprovalsBadge();
   window.addEventListener("focus", () => void refreshApprovalsBadge());

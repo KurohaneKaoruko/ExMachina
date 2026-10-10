@@ -24,6 +24,7 @@
     <!-- 自绘标题栏：拖拽区 + 窗口控制（桌面端显示按钮，浏览器调试隐藏） -->
     <header id="titlebar" data-tauri-drag-region>
       <span class="tb-brand" data-tauri-drag-region><svg class="tb-mark" viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="72" fill="none" stroke="currentColor" stroke-width="50"/><g fill="none" stroke="currentColor" stroke-width="46"><path d="M 403.72 282.05 A 150 150 0 0 1 282.05 403.72"/><path d="M 229.95 403.72 A 150 150 0 0 1 108.28 282.05"/><path d="M 108.28 229.95 A 150 150 0 0 1 282.05 108.28"/><path d="M 282.05 108.28 A 150 150 0 0 1 403.72 229.95"/></g></svg>EXMACHINA</span>
+      <div class="tb-readouts" id="tb-readouts"></div>
       <div class="tb-btns hidden" id="tb-btns">
         <button id="tb-min" title="最小化">─</button>
         <button id="tb-max" title="最大化 / 还原">▢</button>
@@ -93,6 +94,8 @@
         <div id="rp-body"></div>
       </aside>
     </div>
+    <!-- 分段遥测条：窗口底边通栏系统读数（对话视图常驻，其余整页隐藏） -->
+    <div id="telemetry" class="telemetry" aria-hidden="true"></div>
     <!-- 设置（独立整页）：原生管理面，直连环口 API -->
     <div id="settings-page" class="hidden">
       <aside class="sp-nav">

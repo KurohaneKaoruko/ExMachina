@@ -1017,6 +1017,239 @@ button:focus:not(:focus-visible) { outline: none; }
 .btn-send:not(:disabled):hover { transform: translateY(-1px) scale(1.05); }
 .btn-send:not(:disabled):active { transform: translateY(0) scale(0.94); }
 
+/* ═══════════════════ HUD 品牌层（incremental） ═══════════════════
+   与 Web 控制台共用同一套「神机」品牌语汇，让两个前端看起来是同一件产品：
+   坐标网格底 / CRT 扫描线 / HUD 扫掠光带 / 四角 L 形角框 / 方括号读数 /
+   刻度尺 / 分段遥测条。实现纪律与底盘一致 —— 纯色填充（linear-gradient(C 0 0)
+   与重复硬停渐变都只是「纯色线段」的画笔，不产生色彩过渡）、全站直角、
+   无柔光无辉光；动画只用 transform / opacity。 */
+
+:root {
+  /* 品牌线条层级：结构线（暗青）→ 强调线 → 高亮（--accent） */
+  --hud-line: #0a4a4d;
+  --hud-line-strong: #0e6e6e;
+  --hud-grid: rgba(0, 229, 255, 0.022);
+  --hud-tick: rgba(0, 229, 255, 0.34);
+  --hud-telemetry-h: 26px;
+}
+
+/* ── 环境层：坐标网格（工程图纸底）── */
+body {
+  background:
+    repeating-linear-gradient(90deg, var(--hud-grid) 0 1px, transparent 1px 44px),
+    repeating-linear-gradient(0deg, var(--hud-grid) 0 1px, transparent 1px 44px),
+    var(--bg);
+}
+/* 静态扫描线：极淡 CRT 质感（压在所有内容之上，不吃事件） */
+body::after {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 50;
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.013) 0 1px, transparent 1px 3px);
+}
+/* 动态扫掠光带：一条极淡青带缓慢纵掠全屏（HUD 侦察感） */
+body::before {
+  content: "";
+  position: fixed; left: 0; right: 0; top: 0; height: 9vh; pointer-events: none; z-index: 49;
+  background: repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.016) 0 1px, transparent 1px 4px);
+  animation: hud-sweep 13s linear infinite;
+}
+@keyframes hud-sweep {
+  from { transform: translateY(-12vh); }
+  to { transform: translateY(112vh); }
+}
+
+/* ── 四角 L 形角框：面板不靠整框框死，四角画 2px × 12px 纯色刻线 ── */
+.hud { position: relative; }
+.hud::before,
+.hud::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 12px;
+  pointer-events: none; z-index: 3;
+}
+.hud::before {
+  top: 0;
+  background:
+    linear-gradient(var(--accent) 0 0) no-repeat left top / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat left top / 2px 12px,
+    linear-gradient(var(--accent) 0 0) no-repeat right top / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat right top / 2px 12px;
+}
+.hud::after {
+  bottom: 0;
+  background:
+    linear-gradient(var(--accent) 0 0) no-repeat left bottom / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat left bottom / 2px 12px,
+    linear-gradient(var(--accent) 0 0) no-repeat right bottom / 12px 2px,
+    linear-gradient(var(--accent) 0 0) no-repeat right bottom / 2px 12px;
+}
+/* 更轻的一档：仅上下两条收尾短线（用于行内卡片，避免角框过密） */
+.hud-lite { position: relative; }
+.hud-lite::before {
+  content: ""; position: absolute; left: 0; top: 0; width: 14px; height: 2px;
+  background: var(--accent); pointer-events: none;
+}
+
+/* ── 读数：方括号键 + 值（[KEY] VALUE 技术注记）── */
+.readout {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap;
+}
+.readout .k {
+  color: var(--accent); font-size: 10px; letter-spacing: 1.4px;
+  text-transform: uppercase; opacity: 0.9;
+}
+.readout .k::before { content: "["; opacity: 0.7; }
+.readout .k::after { content: "]"; opacity: 0.7; }
+.readout .v { color: var(--text); }
+.readout .v.ok { color: var(--ok); }
+.readout .v.warn { color: var(--warn); }
+.readout .v.err { color: var(--err); }
+
+/* ── 刻度尺：通栏短刻线（图纸标尺），用重复硬停画纯色线段 ── */
+.tick-rule {
+  height: 5px;
+  background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 6px);
+  opacity: 0.6; pointer-events: none;
+}
+.tick-rule.dense { background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 4px); }
+
+/* ── 分段遥测条：窗口底边通栏的系统读数（品牌常驻） ── */
+.telemetry {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 110;
+  height: var(--hud-telemetry-h);
+  display: flex; align-items: stretch;
+  background: var(--bg);
+  border-top: 1px solid var(--hud-line-strong);
+  font-family: var(--font-mono); font-size: 10.5px;
+  user-select: none; -webkit-user-select: none;
+}
+/* 顶缘一截高亮短标：给底条一个「起点」 */
+.telemetry::before {
+  content: ""; position: absolute; left: 0; top: -1px; width: 74px; height: 1px;
+  background: var(--accent); pointer-events: none;
+}
+.tel-brand {
+  display: inline-flex; align-items: center; gap: 7px; padding: 0 12px;
+  color: var(--accent); font-weight: 700; letter-spacing: 2px; font-size: 10.5px;
+  border-right: 1px solid var(--hud-line);
+}
+.tel-brand .mark-svg { width: 12px; height: 12px; }
+.tel-seg {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
+  border-right: 1px solid var(--hud-line); position: relative;
+}
+.tel-k { color: var(--text-faint); letter-spacing: 1.3px; font-size: 9.5px; text-transform: uppercase; }
+.tel-v { color: var(--text-dim); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tel-v.ok { color: var(--ok); }
+.tel-v.warn { color: var(--warn); }
+.tel-v.err { color: var(--err); }
+.tel-led { width: 6px; height: 6px; flex: none; background: var(--ok); animation: led-blink 2.4s ease-in-out infinite; }
+.tel-led.err { background: var(--err); }
+.tel-led.warn { background: var(--warn); }
+@keyframes led-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.tel-spacer { flex: 1; }
+.tel-seg.sys { border-right: none; border-left: 1px solid var(--hud-line); }
+/* 消息流底衬渐隐：遥测条压住内容时给出可读性缓冲（纯色垂直淡出） */
+.telemetry.near-stream { box-shadow: 0 -8px 0 rgba(0, 0, 0, 0.55); }
+
+/* 内容区让出底条高度（对话页） */
+#app { padding-bottom: var(--hud-telemetry-h); }
+
+/* ── 标题栏读数簇：品牌区右侧常驻系统读数 ── */
+.tb-readouts { display: flex; align-items: center; margin-left: 18px; }
+.tb-readouts .readout { margin-right: 14px; }
+.tb-readouts .readout .k { font-size: 9.5px; }
+
+/* ── 标题栏加刻度收尾：底缘一截标尺 ── */
+#titlebar::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 5px;
+  background: repeating-linear-gradient(90deg, var(--hud-tick) 0 1px, transparent 1px 6px);
+  opacity: 0.5; pointer-events: none;
+}
+
+/* ── 传输块：消息的 HUD 化（左缘语义色条 + 等宽读数头）── */
+.msg.user .msg-bubble { box-shadow: inset 3px 0 0 var(--warn); }
+.msg.assistant .msg-bubble { box-shadow: inset 3px 0 0 var(--accent); }
+.msg.assistant.error .msg-bubble { box-shadow: inset 3px 0 0 var(--err); }
+.msg-meta {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 1.4px;
+  text-transform: uppercase; display: flex; align-items: center; gap: 7px;
+}
+/* 读数头前的方块标记（传输块身份点） */
+.msg-meta::before {
+  content: ""; width: 6px; height: 6px; flex: none;
+  background: var(--accent); 
+}
+.msg.user .msg-meta::before { background: var(--warn); }
+.msg.assistant.error .msg-meta::before { background: var(--err); }
+.msg-meta::after {
+  content: ""; flex: 1; height: 1px; background: var(--hud-line);
+}
+
+/* 陈述块标签：方括号角标化 */
+.stmt-tag { background: rgba(0, 229, 255, 0.06); }
+
+/* ── 侧栏会话项：左缘方位刻度点 ── */
+.session-item::before {
+  content: ""; position: absolute; left: 3px; top: 50%; width: 3px; height: 3px;
+  transform: translateY(-50%); background: var(--hud-line-strong);
+}
+.session-item.active::before { background: var(--accent); }
+.session-item.active {
+  box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.12);
+}
+
+/* ── 面板：设置卡 / 任务卡 / 右栏卡统一挂四角角框语言（轻）── */
+.set-card, .task-card, .unit-card, .cp-file-row { position: relative; }
+.set-card::before, .task-card::before, .unit-card::before, .cp-file-row::before {
+  content: ""; position: absolute; left: 0; top: 0; width: 12px; height: 2px;
+  background: var(--accent); opacity: 0.75; pointer-events: none;
+}
+
+/* ── 输入区：聚焦时角框点亮（扁平信号）── */
+.composer-box::before,
+.composer-box::after {
+  content: ""; position: absolute; width: 0; height: 0;
+  border: 0 solid var(--accent); opacity: 0;
+  transition: width var(--dur-base) var(--ease-out), height var(--dur-base) var(--ease-out), opacity var(--dur-fast);
+  pointer-events: none;
+}
+.composer-box::before { left: -1px; top: -1px; border-top-width: 2px; border-left-width: 2px; }
+.composer-box::after { right: -1px; bottom: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+.composer-box:focus-within::before,
+.composer-box:focus-within::after { width: 18px; height: 18px; opacity: 1; }
+.composer-box:focus-within { border-color: rgba(0, 229, 255, 0.55); }
+
+/* 发送按钮：捕获式主行动（纯青底黑字 + 悬停微光靠色值不靠 shadow） */
+.btn-send { position: relative; }
+.btn-send::after {
+  content: ""; position: absolute; inset: 3px; border: 1px solid rgba(0, 0, 0, 0.35);
+  pointer-events: none; opacity: 0.6;
+}
+
+/* ── 空态捕获盘：欢迎区主视觉（四弧徽记 + 径向刻度环 + 扫描扇 + 准星） ── */
+/* 修复：`.welcome > *` 与 `.welcome-mark` 同特异性且在后声明，把背景纹的
+   position:absolute 盖成了 relative —— 380px 淡影因此在流内占位、把标题挤出视口。
+   这里用更高特异性恢复其绝对居中（只多点一条 position，不改其余任何属性）。 */
+.welcome > .welcome-mark { position: absolute; top: 50%; left: 50%; }
+.welcome-capture {
+  display: flex; justify-content: center;
+  margin: 2px 0 14px; color: var(--accent); opacity: 0.92;
+}
+.welcome-capture .capture-disc { display: block; }
+/* SVG 用户坐标系内绕中心慢旋：刻度环逆时针、扫描扇顺时针 */
+.capture-disc .ring-rot {
+  transform-box: view-box; transform-origin: 256px 256px;
+  animation: cap-spin 48s linear infinite;
+}
+.capture-disc .ring-rot.rev { animation-direction: reverse; animation-duration: 72s; }
+@keyframes cap-spin { to { transform: rotate(360deg); } }
+/* 欢迎区读数行：与底边遥测条同一套读数语汇 */
+.welcome-readout {
+  display: flex; justify-content: center; flex-wrap: wrap; gap: 18px 22px;
+  margin: 16px 0 2px;
+}
+.welcome-readout .readout .v { color: var(--text-dim); }
+
 /* ── 动效降级：系统开启「减少动态效果」时全部动画与过渡趋于瞬时 ── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
