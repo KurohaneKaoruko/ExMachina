@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Button, Card, Select, Space, Spin, Tag } from "antd";
 import { BrandEmpty } from "../components/BrandEmpty";
+import { TimelineTag } from "../components/TimelineTag";
 import { ReloadOutlined } from "@ant-design/icons";
 import { api, type StoredEvent } from "../api";
 import { PageHeader } from "../components/PageHeader";
@@ -234,9 +235,7 @@ function EventsPane(): React.ReactElement {
             .reverse()
             .map((tl, i) => (
               <div key={i} className={`timeline-item tl-${tl.kind}`}>
-                <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
-                  {tl.kind === "dispatch" ? t("activity.tl.dispatch") : tl.kind === "sync" ? t("activity.tl.sync") : tl.kind === "arbitration" ? t("activity.tl.arbitration") : t("activity.tl.error")}
-                </Tag>
+                <TimelineTag kind={tl.kind} ns="activity" />
                 <span className="tl-text">{tl.text}</span>
               </div>
             ))

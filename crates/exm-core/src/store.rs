@@ -60,6 +60,33 @@ impl Store {
         Ok(s)
     }
 
+    /// 子会话（派发运行台账）：归属父会话的组，标注 parent_session。
+    /// 每个节点派发建一个——子个体的过程流与最终消息落在这里，主会话只留派发/回流标记。
+    pub fn create_child_session(&self, parent_id: &str, title: &str) -> Result<Session> {
+        let parent = match self.get_session(parent_id)? {
+            Some(s) => s,
+            None => anyhow::bail!("会话不存在: {parent_id}"),
+        };
+        let now = now_iso();
+        let child = Session {
+            id: new_id(),
+            title: title.to_string(),
+            status: "active".into(),
+            group_id: parent.group_id.clone(),
+            rolling_summary: None,
+            summary_upto: None,
+            parent_session: Some(parent.id.clone()),
+            parent_upto: None,
+            last_message_preview: None,
+            last_active_at: None,
+            ledger: SessionLedger::default(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.db.put("sessions", &child.id, &child)?;
+        Ok(child)
+    }
+
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         self.db.get("sessions", id)
     }
@@ -165,6 +192,7 @@ impl Store {
             token_usage: None,
             thinking: None,
             tool_calls: Vec::new(),
+            steps: Vec::new(),
             last_message_preview: None,
             last_active_at: None,
         };
@@ -172,7 +200,7 @@ impl Store {
         Ok(msg)
     }
 
-    /// 带过程数据的消息落盘（思维链 + 工具轨迹；过程收起栏的数据来源）
+    /// 带过程数据的消息落盘（思维链 + 工具轨迹 + 有序步骤；过程收起栏的数据来源）
     pub fn add_message_full(
         &self,
         session_id: &str,
@@ -181,10 +209,12 @@ impl Store {
         statements: Vec<Statement>,
         thinking: Option<String>,
         tool_calls: Vec<crate::round_trace::ToolCallRecord>,
+        steps: Vec<crate::round_trace::TraceStep>,
     ) -> Result<ChatMessage> {
         let mut msg = self.add_message(session_id, role, agent_id, statements)?;
         msg.thinking = thinking.filter(|s| !s.trim().is_empty());
         msg.tool_calls = tool_calls;
+        msg.steps = steps;
         // 消息是 jsonl 追加日志:add_message 已追加无过程数据的行,这里按 id 原位替换。
         // (此前用 put 写独立文档,read_lines 只读 jsonl——思维链/工具轨迹刷新后即失)
         let mut all: Vec<ChatMessage> = self.db.read_lines("messages", session_id, 0)?;

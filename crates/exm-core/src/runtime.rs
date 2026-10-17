@@ -46,6 +46,8 @@ impl AgentRuntime {
     /// 执行一个节点，产出 SyncReport。
     /// `chain` = 按个体/组默认模型展开的回退候选链（含全局档案兜底）。
     /// `on_delta` 用于把流式增量推给渠道（正文 / 思维链分轨）。
+    /// `trace` = 过程数据（工具记录 / 工具事件）归集键：派发运行指向子会话；
+    /// 用量记账与停止判定仍按 `session_id`（保持主会话口径）。
     /// `attach_images` = 目标模型具备视觉能力：工具副产物截图以图像消息回灌（computer use 闭环）。
     pub async fn execute<F>(
         &self,
@@ -53,6 +55,7 @@ impl AgentRuntime {
         order: &DispatchOrder,
         chain: crate::provider::ModelChain,
         session_id: &str,
+        trace: &str,
         attach_images: bool,
         mut on_delta: F,
     ) -> anyhow::Result<SyncReport>
@@ -139,7 +142,7 @@ impl AgentRuntime {
                 let feedbacks = self
                     .run_tool_calls(
                         &def.identifier,
-                        session_id,
+                        trace,
                         &order.tool_allowlist,
                         &calls,
                         attach_images,
@@ -164,7 +167,7 @@ impl AgentRuntime {
                 if let Some((tool, args)) = parse::as_tool_call(&raw) {
                     let result = self
                         .tools
-                        .execute(&def.identifier, session_id, &order.tool_allowlist, tool, &args)
+                        .execute(&def.identifier, trace, &order.tool_allowlist, tool, &args)
                         .await;
                     messages.push(ChatMessage::assistant(text));
                     let feedback = if result.ok {
@@ -241,12 +244,14 @@ impl AgentRuntime {
     /// 直接对话执行(常见单 agent 应用同款):系统提示 + 会话历史 + 工具循环,
     /// 无派发概念、无 SyncReport 契约——模型产出不含工具调用的文本即为终点。
     /// 供智能体模式使用;工具面 = 个体 allowlist + 可见自定义工具 + MCP。
+    /// `trace` = 过程数据归集键（单聊与用量同键）。
     pub async fn chat_execute<F>(
         &self,
         def: &AgentDefinition,
         system_prompt: String,
         history: Vec<ChatMessage>,
         session_id: &str,
+        trace: &str,
         chain: crate::provider::ModelChain,
         attach_images: bool,
         mut on_delta: F,
@@ -297,7 +302,7 @@ impl AgentRuntime {
                 let feedbacks = self
                     .run_tool_calls(
                         &def.identifier,
-                        session_id,
+                        trace,
                         &def.tools,
                         &calls,
                         attach_images,
@@ -321,7 +326,7 @@ impl AgentRuntime {
                 if let Some((tool, args)) = parse::as_tool_call(&raw) {
                     let result = self
                         .tools
-                        .execute(&def.identifier, session_id, &def.tools, tool, &args)
+                        .execute(&def.identifier, trace, &def.tools, tool, &args)
                         .await;
                     messages.push(ChatMessage::assistant(text));
                     let feedback = if result.ok {
@@ -363,10 +368,11 @@ impl AgentRuntime {
 
     /// 同轮工具调用：只读工具并发（join_all），写工具与 MCP 按原顺序串行。
     /// 返回与 `calls` 同序的（回填文本, 截图回灌材料）——保证与 tool_call_id 配对。
+    /// `trace` = 工具记录与工具事件的归集键（派发运行指向子会话）。
     async fn run_tool_calls(
         &self,
         agent_id: &str,
-        session_id: &str,
+        trace: &str,
         allowlist: &[ToolName],
         calls: &[ToolCall],
         attach_images: bool,
@@ -391,7 +397,7 @@ impl AgentRuntime {
                     let tool = ToolName::parse(&c.name).unwrap_or(ToolName::Read);
                     let r = self
                         .tools
-                        .execute(agent_id, session_id, allowlist, tool, &c.arguments)
+                        .execute(agent_id, trace, allowlist, tool, &c.arguments)
                         .await;
                     (tool_feedback(&c.name, &r), None)
                 }
@@ -405,12 +411,12 @@ impl AgentRuntime {
         for i in serial {
             let c = &calls[i];
             let (r, name) = if c.name.starts_with("mcp:") {
-                (self.tools.execute_mcp(agent_id, session_id, &c.name, &c.arguments).await, c.name.clone())
+                (self.tools.execute_mcp(agent_id, trace, &c.name, &c.arguments).await, c.name.clone())
             } else {
                 // 统一入口：内置按白名单放行，声明式自定义按 agents 可见性放行
                 (
                     self.tools
-                        .execute_named(agent_id, session_id, allowlist, &c.name, &c.arguments)
+                        .execute_named(agent_id, trace, allowlist, &c.name, &c.arguments)
                         .await,
                     c.name.clone(),
                 )
@@ -625,7 +631,7 @@ mod timeout_tests {
             failover: Arc::new(FailoverState::default()),
         };
         let started = std::time::Instant::now();
-        let r = rt.execute(&def, &order, chain, "ses-timeout", false, |_| {}).await;
+        let r = rt.execute(&def, &order, chain, "ses-timeout", "ses-timeout", false, |_| {}).await;
         let elapsed = started.elapsed();
         let err = r.expect_err("挂死流应在时限内失败");
         assert!(err.to_string().contains("超时"), "错误应可诊断为超时: {err}");
@@ -646,7 +652,7 @@ mod timeout_tests {
             failover: Arc::new(FailoverState::default()),
         };
         let report = rt
-            .execute(&def, &order, chain, "ses-ok", false, |_| {})
+            .execute(&def, &order, chain, "ses-ok", "ses-ok", false, |_| {})
             .await
             .expect("时限充裕时应正常执行");
         assert_eq!(report.task_node_id, "T1");

@@ -536,6 +536,13 @@ async fn 单体直接循环_工具回灌与过程留痕() {
         .expect("应有单体最终回复");
     assert!(!final_msg.tool_calls.is_empty(), "工具调用轨迹应留痕");
     assert!(
+        final_msg
+            .steps
+            .iter()
+            .any(|s| matches!(s, exm_core::round_trace::TraceStep::Tool { .. })),
+        "有序步骤应含工具调用（按调用顺序展示的数据源）"
+    );
+    assert!(
         final_msg.tool_calls.iter().any(|c| c.tool == "terminal" && c.ok),
         "应记录 terminal 工具调用且执行成功"
     );
@@ -636,11 +643,32 @@ async fn 端到端_对话到收束全链路() {
     assert!(!ledger.task.goal.is_empty(), "任务账应有目标");
     assert!(!ledger.evidence.confirmed.is_empty(), "证据账应有确认项");
 
-    // 收束消息：user / unit / orchestrator 齐备
+    // 收束消息：user / orchestrator 齐备；子个体输出落子会话（个体消息 + 有序步骤）
     let messages = core.store.list_messages(&session.id, 200).unwrap();
-    for role in [MessageRole::User, MessageRole::Unit, MessageRole::Orchestrator] {
+    for role in [MessageRole::User, MessageRole::Orchestrator] {
         assert!(messages.iter().any(|m| m.role == role), "缺少 {role:?} 消息");
     }
+    assert!(
+        !messages.iter().any(|m| m.role == MessageRole::Unit),
+        "个体消息不应留在主会话（应落子会话）"
+    );
+    let child = core
+        .store
+        .list_sessions()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.parent_session.as_deref() == Some(session.id.as_str()))
+        .expect("派发应创建子会话");
+    assert!(child.title.starts_with("sub:"), "子会话标题应带 sub: 前缀: {}", child.title);
+    let child_messages = core.store.list_messages(&child.id, 50).unwrap();
+    assert!(
+        child_messages.iter().any(|m| m.role == MessageRole::Unit),
+        "子会话应含个体收束消息"
+    );
+    assert!(
+        child_messages.iter().any(|m| !m.steps.is_empty()),
+        "子会话消息应带有序过程步骤（思考/工具交错）"
+    );
 }
 
 /// 独立临时注册表（自带 default 组），不触碰仓库 agents/ 数据

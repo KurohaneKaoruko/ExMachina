@@ -599,6 +599,12 @@ input, textarea { caret-color: var(--accent); }
   background: var(--line-strong);
 }
 .tl-text { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.tl-sub-link {
+  margin-left: 6px; padding: 0; border: none; background: none;
+  color: var(--accent); font-size: 11px; font-family: var(--mono);
+  cursor: pointer;
+}
+.tl-sub-link:hover { text-decoration: underline; }
 .tl-dispatch::before { background: var(--blue); }
 .tl-sync::before { background: var(--green); }
 .tl-arbitration::before { background: var(--amber); }
@@ -1319,10 +1325,12 @@ input, textarea { caret-color: var(--accent); }
   color: var(--muted);
   font-family: var(--mono); font-size: 11px; font-weight: 600;
 }
-/* 类型徽标：通道会话用琥珀色，普通会话中性 —— 与「类型」过滤器呼应，扫一眼就能挑出要的那类 */
+/* 类型徽标：通道会话用琥珀色，子会话（派发台账）用蓝色，普通会话中性 —— 与「类型」过滤器呼应，扫一眼就能挑出要的那类 */
 .session-avatar.kind-channel { background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--amber); }
+.session-avatar.kind-sub { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
 .session-row.active .session-avatar { background: var(--accent-soft); color: var(--accent); }
-.session-row.active .session-avatar.kind-channel { background: var(--accent-soft); color: var(--accent); }
+.session-row.active .session-avatar.kind-channel,
+.session-row.active .session-avatar.kind-sub { background: var(--accent-soft); color: var(--accent); }
 /* 行主体：标题 + 副标题两行；窄屏块同样用两行 */
 .session-main {
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
@@ -1781,19 +1789,27 @@ input, textarea { caret-color: var(--accent); }
 .ant-card .ant-card-head { min-height: 42px; }
 .ant-modal .ant-form-item { margin-bottom: 14px; }
 
-/* ============ 弹窗防溢出 ============
+/* ============ 弹窗防溢出 + 滚动治理 ============
  * 内容壳的类名：antd v6 是 .ant-modal-container（v5 及以前为 .ant-modal-content）。
- * 两者都写上：只写 v6 会让 v5 样式完全落空，表现为长表单把「创建/保存」顶出视口。 */
+ * 两者都写上：只写 v6 会让 v5 样式完全落空，表现为长表单把「创建/保存」顶出视口。
+ * 高度预算：antd 非 centered 弹窗固定 top:100px，另有 .ant-modal 的底衬 16px；
+ * 旧预算 (100vh-88) 少算了 top+底衬 → 整叠恒超视口 28px，.ant-modal-wrap 便多出可滚，
+ * 滚轮落在遮罩上会把弹窗整体推移（外部可滚 bug）。132 = top 100 + 底衬 16 + 呼吸 16。 */
 .ant-modal { max-width: calc(100vw - 24px); padding-bottom: 16px; }
 .ant-modal .ant-modal-container,
 .ant-modal .ant-modal-content {
-  max-height: calc(100vh - 88px);
+  max-height: calc(100vh - 132px);
   display: flex;
   flex-direction: column;
 }
-.ant-modal .ant-modal-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ant-modal .ant-modal-body { overflow: auto; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; }
 .ant-modal .ant-modal-header { flex: none; }
 .ant-modal .ant-modal-footer { flex: none; }
+
+/* 弹窗打开时锁住后台滚动：antd 只锁 body，本应用的滚动容器是 .app-content。
+ * wrap 一并遏制滚动链：极端视口下若仍需滚动，也只滚弹窗堆叠、不带动背景。 */
+body:has(.ant-modal-root) .app-content { overflow: hidden; }
+.ant-modal-wrap { overscroll-behavior: contain; }
 
 /* ============ 组卡片网格 ============ */
 .group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }

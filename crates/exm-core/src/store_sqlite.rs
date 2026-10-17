@@ -389,6 +389,7 @@ impl SqliteStore {
                 .and_then(|s| serde_json::from_str(&s).ok()),
             thinking: r.get("thinking")?,
             tool_calls: serde_json::from_str(&r.get::<_, String>("tool_calls")?).unwrap_or_default(),
+            steps: Vec::new(),
             last_message_preview: None,
             last_active_at: None,
         })
@@ -411,6 +412,7 @@ impl SqliteStore {
             token_usage: None,
             thinking: None,
             tool_calls: Vec::new(),
+            steps: Vec::new(),
             last_message_preview: None,
             last_active_at: None,
         };
@@ -424,7 +426,7 @@ impl SqliteStore {
         Ok(msg)
     }
 
-    /// 带过程数据的消息落盘(思维链 + 工具轨迹)
+    /// 带过程数据的消息落盘(思维链 + 工具轨迹 + 有序步骤)
     pub fn add_message_full(
         &self,
         session_id: &str,
@@ -433,10 +435,12 @@ impl SqliteStore {
         statements: Vec<Statement>,
         thinking: Option<String>,
         tool_calls: Vec<crate::round_trace::ToolCallRecord>,
+        steps: Vec<crate::round_trace::TraceStep>,
     ) -> Result<ChatMessage> {
         let mut msg = self.add_message(session_id, role, agent_id, statements)?;
         msg.thinking = thinking.filter(|s| !s.trim().is_empty());
         msg.tool_calls = tool_calls;
+        msg.steps = steps;
         let conn = self.conn.lock().unwrap();
         let seq: i64 = conn.query_row(
             "SELECT seq FROM messages WHERE id=?1",

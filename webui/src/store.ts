@@ -18,7 +18,16 @@ export interface TimelineItem {
   kind: "dispatch" | "sync" | "arbitration" | "memory" | "error" | "cron";
   agentId?: string;
   nodeId?: string;
+  /** 派发对应的子会话（可点击跳转查看子个体过程流） */
+  childSessionId?: string;
   text: string;
+}
+
+/** 子个体实时过程流的一段（思考 / 正文 / 工具，按事件到达顺序交错） */
+export interface LivePart {
+  kind: "thinking" | "text" | "tool";
+  text?: string;
+  callId?: string;
 }
 
 interface WsEvent {
@@ -40,14 +49,15 @@ interface ExmState {
   liveOrch: string;
   /** 指挥体思维链（分轨流式，不与回答混流） */
   liveThinking: string;
-  liveUnits: Record<string, string>;
-  /** 子个体思维链 */
-  liveUnitThinking: Record<string, string>;
+  /** 子个体实时过程流：思考/工具/输出按发生顺序交错（子会话实时视图数据源） */
+  liveParts: Record<string, LivePart[]>;
   /** 当前轮工具执行轨迹（编程软件式过程透明；run.finished 后并入最终消息） */
   runToolCalls: ToolCallItem[];
   /** 待人工审批单（聊天内联裁决） */
   approvals: ApprovalItem[];
   timeline: TimelineItem[];
+  /** 时间线归属会话：切到子会话/其它会话时不在那里展示别处的调度轨迹 */
+  timelineSession: string | null;
   lastRecall: RecallHit[];
   memoryVersion: number;
   groups: GroupMeta[];
@@ -130,6 +140,23 @@ function fireNotificationLocal(title: string, body: string, sessionId?: string):
 function shouldNotifySession(sessionId?: string): boolean {
   if (document.visibilityState !== "hidden" && sessionId && sessionId === useExm.getState().sessionId) return false;
   return true;
+}
+
+/** 实时过程流追加：同类（思考/正文）并入末段，避免逐字成条 */
+function appendPart(map: Record<string, LivePart[]>, agent: string, part: LivePart): Record<string, LivePart[]> {
+  const list = [...(map[agent] ?? [])];
+  const last = list[list.length - 1];
+  if (last && last.kind === part.kind && (part.kind === "thinking" || part.kind === "text")) {
+    list[list.length - 1] = { ...last, text: (last.text ?? "") + (part.text ?? "") };
+  } else {
+    list.push(part);
+  }
+  return { ...map, [agent]: list };
+}
+
+/** 会话列表默认选中：跳过子会话（自动落到最近的主会话） */
+function firstMainSession(list: Session[]): Session | undefined {
+  return list.find((s) => !s.title.startsWith("sub:")) ?? list[0];
 }
 
 let ws: WebSocket | null = null;
@@ -237,11 +264,11 @@ export const useExm = create<ExmState>((set, get) => ({
   wsConnected: false,
   liveOrch: "",
   liveThinking: "",
-  liveUnits: {},
-  liveUnitThinking: {},
+  liveParts: {},
   runToolCalls: [],
   approvals: [],
   timeline: [],
+  timelineSession: null,
   lastRecall: [],
   memoryVersion: 0,
   groups: [],
@@ -256,8 +283,9 @@ export const useExm = create<ExmState>((set, get) => ({
     set({ sessions, agents, config });
     get().markSessionsLoaded();
     await get().loadGroups();
-    if (sessions.length > 0) {
-      await get().selectSession(sessions[0].id);
+    const main = firstMainSession(sessions);
+    if (main) {
+      await get().selectSession(main.id);
     } else {
       await get().newSession();
     }
@@ -277,16 +305,17 @@ export const useExm = create<ExmState>((set, get) => ({
       sessions,
       graph: null,
       timeline: [],
+      timelineSession: null,
       liveOrch: "",
       liveThinking: "",
-      liveUnits: {},
-      liveUnitThinking: {},
+      liveParts: {},
       runToolCalls: [],
       approvals: [],
       messages: [],
     });
-    if (sessions.length > 0) {
-      await get().selectSession(sessions[0].id);
+    const main = firstMainSession(sessions);
+    if (main) {
+      await get().selectSession(main.id);
     } else {
       await get().newSession();
     }
@@ -303,17 +332,18 @@ export const useExm = create<ExmState>((set, get) => ({
       sessions,
       graph: null,
       timeline: [],
+      timelineSession: null,
       liveOrch: "",
       liveThinking: "",
-      liveUnits: {},
-      liveUnitThinking: {},
+      liveParts: {},
       runToolCalls: [],
       approvals: [],
       messages: [],
     });
     await get().loadGroups();
-    if (sessions.length > 0) {
-      await get().selectSession(sessions[0].id);
+    const main = firstMainSession(sessions);
+    if (main) {
+      await get().selectSession(main.id);
     } else {
       await get().newSession();
     }
@@ -341,10 +371,11 @@ export const useExm = create<ExmState>((set, get) => ({
       ledger: session.ledger,
       liveOrch: "",
       liveThinking: "",
-      liveUnits: {},
-      liveUnitThinking: {},
+      liveParts: {},
       runToolCalls: [],
       approvals: [],
+      timeline: [],
+      timelineSession: null,
       running: false,
     });
     connectWs(get);
@@ -364,11 +395,11 @@ export const useExm = create<ExmState>((set, get) => ({
       running: true,
       liveOrch: "",
       liveThinking: "",
-      liveUnits: {},
-      liveUnitThinking: {},
+      liveParts: {},
       runToolCalls: [],
       approvals: [],
       timeline: [],
+      timelineSession: null,
       lastRecall: [],
       messages: [
         ...get().messages,
@@ -427,8 +458,35 @@ export const useExm = create<ExmState>((set, get) => ({
   },
 
   handleEvent: (evt) => {
-    if (evt.sessionId !== get().sessionId) return;
     const p = evt.payload as Record<string, unknown>;
+    // 审批不受当前会话限制：子会话（子个体）里的审批请求同样要在视图内可裁决
+    if (evt.type === "approval.required") {
+      const prefs = loadNotifyPrefs();
+      if (prefs.enabled && prefs.approval && document.visibilityState === "hidden" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+        fireNotification(
+          "审批请求待处理",
+          String(p.command ?? p.agentId ?? ""),
+          evt.sessionId || undefined,
+        );
+      }
+      set({
+        approvals: [
+          ...get().approvals.filter((a) => a.approvalId !== String(p.approvalId)),
+          {
+            approvalId: String(p.approvalId),
+            agentId: String(p.agentId ?? ""),
+            command: String(p.command ?? ""),
+            sessionId: evt.sessionId || undefined,
+          },
+        ],
+      });
+      return;
+    }
+    if (evt.type === "approval.resolved") {
+      set({ approvals: get().approvals.filter((a) => a.approvalId !== String(p.approvalId)) });
+      return;
+    }
+    if (evt.sessionId !== get().sessionId) return;
     switch (evt.type) {
       case "orchestrator.token":
         set({ liveOrch: get().liveOrch + String(p.delta ?? "") });
@@ -438,12 +496,7 @@ export const useExm = create<ExmState>((set, get) => ({
         break;
       case "unit.thinking": {
         const agent = String(p.agentId ?? "");
-        set({
-          liveUnitThinking: {
-            ...get().liveUnitThinking,
-            [agent]: (get().liveUnitThinking[agent] ?? "") + String(p.delta ?? ""),
-          },
-        });
+        set({ liveParts: appendPart(get().liveParts, agent, { kind: "thinking", text: String(p.delta ?? "") }) });
         break;
       }
       case "tool.call": {
@@ -454,7 +507,10 @@ export const useExm = create<ExmState>((set, get) => ({
           args: (p.args ?? {}) as Record<string, unknown>,
           status: "running",
         };
-        set({ runToolCalls: [...get().runToolCalls.filter((c) => c.callId !== call.callId), call] });
+        set({
+          runToolCalls: [...get().runToolCalls.filter((c) => c.callId !== call.callId), call],
+          liveParts: appendPart(get().liveParts, String(p.agentId ?? ""), { kind: "tool", callId: call.callId }),
+        });
         break;
       }
       case "tool.result": {
@@ -474,56 +530,58 @@ export const useExm = create<ExmState>((set, get) => ({
         });
         break;
       }
-      case "approval.required": {
-        const prefs = loadNotifyPrefs();
-        if (prefs.enabled && prefs.approval && document.visibilityState === "hidden" && typeof Notification !== "undefined" && Notification.permission === "granted") {
-          fireNotification(
-            "审批请求待处理",
-            String(p.command ?? p.agentId ?? ""),
-            evt.sessionId || undefined,
-          );
-        }
-        set({
-          approvals: [
-            ...get().approvals.filter((a) => a.approvalId !== String(p.approvalId)),
-            {
-              approvalId: String(p.approvalId),
-              agentId: String(p.agentId ?? ""),
-              command: String(p.command ?? ""),
-            },
-          ],
-        });
-        break;
-      }
-      case "approval.resolved":
-        set({ approvals: get().approvals.filter((a) => a.approvalId !== String(p.approvalId)) });
-        break;
       case "unit.token": {
         const agent = String(p.agentId ?? "");
-        set({
-          liveUnits: {
-            ...get().liveUnits,
-            [agent]: (get().liveUnits[agent] ?? "") + String(p.delta ?? ""),
-          },
-        });
+        set({ liveParts: appendPart(get().liveParts, agent, { kind: "text", text: String(p.delta ?? "") }) });
+        break;
+      }
+      case "unit.finished": {
+        // 子会话实时视图收尾：清实时段并回拉持久消息（含有序步骤）
+        const agent = String(p.agentId ?? "");
+        const parts = { ...get().liveParts };
+        delete parts[agent];
+        set({ liveParts: parts });
+        const sid2 = evt.sessionId;
+        void (async () => {
+          try {
+            const msgs = await api.messages(sid2);
+            if (useExm.getState().sessionId === sid2) useExm.setState({ messages: msgs });
+          } catch {
+            /* 回拉失败静默：刷新/切会话时自然补齐 */
+          }
+        })();
         break;
       }
       case "graph.updated":
         set({ graph: p as unknown as TaskGraph });
         break;
-      case "dispatch.sent":
+      case "dispatch.sent": {
+        const childSessionId =
+          typeof p.childSessionId === "string" && p.childSessionId ? String(p.childSessionId) : undefined;
         set({
+          timelineSession: evt.sessionId,
           timeline: [
             ...get().timeline,
             {
               kind: "dispatch",
               agentId: String(p.agentIdentifier),
               nodeId: String(p.nodeId),
+              childSessionId,
               text: tr("store.tl.dispatch", { agent: String(p.agentIdentifier), node: String(p.nodeId) }),
             },
           ],
         });
+        // 子会话是运行中新出现的会话：列表补拉一次（派发频率低，开销可忽略）
+        if (childSessionId && !get().sessions.some((s) => s.id === childSessionId)) {
+          void api
+            .listSessions()
+            .then((list) => set({ sessions: list }))
+            .catch(() => {
+              /* 列表补拉失败静默 */
+            });
+        }
         break;
+      }
       case "sync.received": {
         const report = p.report as {
           sourceAgent: string;
@@ -531,10 +589,11 @@ export const useExm = create<ExmState>((set, get) => ({
           summary: string;
           confidence: number;
         };
-        const units = { ...get().liveUnits };
-        delete units[report.sourceAgent];
+        const parts = { ...get().liveParts };
+        delete parts[report.sourceAgent];
         set({
-          liveUnits: units,
+          liveParts: parts,
+          timelineSession: evt.sessionId,
           timeline: [
             ...get().timeline,
             {
@@ -551,6 +610,7 @@ export const useExm = create<ExmState>((set, get) => ({
         const hits = (p.hits ?? []) as RecallHit[];
         set({
           lastRecall: hits,
+          timelineSession: evt.sessionId,
           timeline: [...get().timeline, { kind: "memory", text: tr("store.tl.memory", { n: hits.length }) }],
         });
         break;
@@ -558,6 +618,7 @@ export const useExm = create<ExmState>((set, get) => ({
       case "memory.written": {
         const entries = (p.entries ?? []) as unknown[];
         set({
+          timelineSession: evt.sessionId,
           timeline: [
             ...get().timeline,
             {
@@ -571,6 +632,7 @@ export const useExm = create<ExmState>((set, get) => ({
       }
       case "arbitration.required":
         set({
+          timelineSession: evt.sessionId,
           timeline: [
             ...get().timeline,
             { kind: "arbitration", text: tr("store.tl.arbitration") },
@@ -598,8 +660,7 @@ export const useExm = create<ExmState>((set, get) => ({
           running: false,
           liveOrch: "",
           liveThinking: "",
-          liveUnits: {},
-          liveUnitThinking: {},
+          liveParts: {},
           runToolCalls: [],
           messages: [
             ...get().messages,
@@ -617,6 +678,15 @@ export const useExm = create<ExmState>((set, get) => ({
         });
         const finText = statements.map((st) => st.text).join(" ");
         if (finText.trim()) get().updateSessionPreview(id, finText);
+        // 权威回填：最终消息含服务端留存的有序步骤（本地乐观消息只带聚合过程）
+        void (async () => {
+          try {
+            const msgs = await api.messages(id);
+            if (useExm.getState().sessionId === id) useExm.setState({ messages: msgs });
+          } catch {
+            /* 回拉失败静默：保留本地乐观消息 */
+          }
+        })();
         break;
       }
       case "cron.finished": {
@@ -626,12 +696,16 @@ export const useExm = create<ExmState>((set, get) => ({
           const status = String(p.status ?? "");
           fireNotificationLocal(`定时任务${status === "done" ? "完成" : "失败"}：${name}`, String(p.summary ?? status), undefined);
         }
-        set({ timeline: [...get().timeline, { kind: "cron", text: tr("store.tl.cron", { name: String(p.jobName ?? ""), status: String(p.status ?? "") }) }] });
+        set({
+          timelineSession: evt.sessionId,
+          timeline: [...get().timeline, { kind: "cron", text: tr("store.tl.cron", { name: String(p.jobName ?? ""), status: String(p.status ?? "") }) }],
+        });
         break;
       }
       case "run.error":
         set({
           running: false,
+          timelineSession: evt.sessionId,
           timeline: [...get().timeline, { kind: "error", text: tr("store.tl.error", { msg: String(p.message) }) }],
         });
         break;

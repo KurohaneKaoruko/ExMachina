@@ -229,6 +229,16 @@ let mut cfg = ExmConfig::load(&root);
                 .unwrap_or(false)
     });
     c.check("技能包随派发注入", skill_injected);
+    // 流式修复回归：token/thinking 增量只走实时广播、不落事件库（否则事件页被逐字刷屏）
+    c.check(
+        "流式增量不落事件库",
+        !events.iter().any(|e| {
+            matches!(
+                e["payload"]["kind"].as_str(),
+                Some("orchestrator.token") | Some("orchestrator.thinking") | Some("unit.token") | Some("unit.thinking")
+            )
+        }),
+    );
     let _ = std::fs::remove_file(skills_dir.join("e2e-skill.json"));
 
     // 任务图 / 证据 / 三账
@@ -263,9 +273,41 @@ let mut cfg = ExmConfig::load(&root);
         .filter_map(|m| m["role"].as_str().map(|s| s.to_string()))
         .collect();
     c.check(
-        "消息含 user/unit/orchestrator",
-        ["user", "unit", "orchestrator"].iter().all(|r| roles.iter().any(|x| x == r)),
+        "消息含 user/orchestrator",
+        ["user", "orchestrator"].iter().all(|r| roles.iter().any(|x| x == r)),
     );
+    c.check("个体消息不留主会话（落子会话）", !roles.iter().any(|r| r == "unit"));
+    // 子会话：sub: 前缀 + parentSession 归属 + 个体消息带有序步骤（思考/工具交错）
+    let all_sessions: serde_json::Value = client.get(format!("{base}/sessions?all=true")).send().await?.json().await?;
+    let child = all_sessions
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|s| {
+            s["parentSession"].as_str() == Some(sid.as_str())
+                && s["title"].as_str().map(|t| t.starts_with("sub:")).unwrap_or(false)
+        });
+    c.check("派发创建子会话（sub: 前缀 + parentSession 归属）", child.is_some());
+    if let Some(child) = child {
+        let cm: serde_json::Value = client
+            .get(format!("{base}/sessions/{}/messages", child["id"].as_str().unwrap_or("")))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let unit = cm
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|m| m["role"] == "unit");
+        c.check("子会话含个体消息", unit.is_some());
+        c.check(
+            "子会话消息带有序步骤（思考/工具交错）",
+            unit.map(|m| m["steps"].as_array().map(|a| !a.is_empty()).unwrap_or(false)).unwrap_or(false),
+        );
+    }
 
     // 配置接口 + Schema
     let cfg_before: serde_json::Value = client.get(format!("{base}/config")).send().await?.json().await?;

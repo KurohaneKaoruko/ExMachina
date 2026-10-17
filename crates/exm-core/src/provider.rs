@@ -1540,6 +1540,9 @@ impl LlmProvider for MockLlmProvider {
         tx: UnboundedSender<StreamDelta>,
     ) -> anyhow::Result<ChatResponse> {
         let content = respond(&req);
+        // 思维链分轨：先流一段确定性思考（与真实推理模型同形状：思考 → 正文），
+        // 让过程轨迹（有序步骤）在 Mock 联调/验收环境同样有数据可走。
+        let _ = tx.send(StreamDelta::Thinking("（模拟思维链）先读契约与上下文，再产出确定性结果。".to_string()));
         // 按字符边界切块（每块 ≈48 字节）：此前按字节切，边界落在多字节字符中间时
         // from_utf8_lossy 会把残字替换成 U+FFFD——中文模拟输出满屏「���」。
         for piece in char_chunks(&content, 48) {

@@ -589,6 +589,9 @@ pub struct ChatMessage {
     /// 本轮工具调用轨迹（收束时由服务端留存）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<crate::round_trace::ToolCallRecord>,
+    /// 有序过程步骤（思考段落 / 工具调用按发生顺序交错；「按调用顺序显示每一次」数据源）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<crate::round_trace::TraceStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

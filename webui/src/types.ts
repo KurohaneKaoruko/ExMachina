@@ -22,6 +22,15 @@ export interface ChatMessage {
   toolCalls?: ToolCallItem[];
   /** 本轮思维链（本地组装：随收束留存，刷新后不在） */
   thinking?: string;
+  /** 有序过程步骤（思考段落 / 工具调用按发生顺序交错；服务端留存） */
+  steps?: MessageStep[];
+}
+
+/** 有序过程步骤：kind=tool 时 callId 关联 toolCalls 记录 */
+export interface MessageStep {
+  kind: "thinking" | "tool";
+  text?: string;
+  callId?: string;
 }
 
 /** 工具执行轨迹（tool.call / tool.result 事件组装）：编程软件式过程透明 */
@@ -41,6 +50,8 @@ export interface ApprovalItem {
   approvalId: string;
   agentId: string;
   command: string;
+  /** 审批来源会话（子会话里的审批也在此可见，可跳转） */
+  sessionId?: string;
 }
 
 export interface LedgerTask {
@@ -77,6 +88,9 @@ export interface Session {
   status: string;
   /** 会话归属的智能体组（组是交互对象） */
   groupId: string;
+  /** 派生来源会话（fork 分支 / 派发子会话） */
+  parentSession?: string;
+  parentUpto?: number;
   ledger: SessionLedger;
   createdAt: string;
   updatedAt: string;

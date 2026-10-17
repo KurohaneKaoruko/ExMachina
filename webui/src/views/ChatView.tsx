@@ -5,7 +5,7 @@ import { ArrowLeftOutlined, CheckOutlined, CloudUploadOutlined, CloseOutlined, E
 import { useIsNarrow, NARROW_QUERY } from "../useIsNarrow";
 import { api } from "../api";
 import { agentIdEn } from "../models";
-import { useExm } from "../store";
+import { useExm, type TimelineItem } from "../store";
 import { useT } from "../i18n/core";
 
 interface TargetInfo { mode: "group" | "single"; id: string; name?: string }
@@ -15,6 +15,8 @@ import { AsciiMeter } from "../components/Ascii";
 import { ToolCallList } from "../components/ToolCall";
 import { copyText } from "../components/Markdown";
 import { UsageBar } from "../components/UsageBar";
+import { ProcessSteps } from "../components/ProcessSteps";
+import { TimelineTag } from "../components/TimelineTag";
 import { SkeletonList } from "../components/SkeletonList";
 import { TurnOps } from "../components/HistoryOps";
 import { Emblem } from "../components/Emblem";
@@ -26,6 +28,8 @@ function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: num
   const title = isUser ? tb("chat.role.user") : m.role === "orchestrator" ? (orchLabel ?? tb("chat.role.orchestrator")) : (m.agentId ?? tb("chat.role.system"));
   const hasThinking = Boolean(m.thinking && m.thinking.trim());
   const hasTools = Boolean(m.toolCalls && m.toolCalls.length > 0);
+  const steps = m.steps ?? [];
+  const hasProcess = hasThinking || hasTools || steps.length > 0;
   return (
     <Card size="small" className={`msg-bubble ${isUser ? "msg-user" : "msg-agent"}`}>
       <div className="msg-head">
@@ -47,20 +51,29 @@ function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: num
         )}
         {ops && <span className="msg-ops">{ops}</span>}
       </div>
-      {(hasThinking || hasTools) && (
-        <div className="msg-process">
-          {hasThinking && (
-            <UsageBar label={tUsage(tb, m.thinking!.length)}>
-              <pre className="usage-think">{m.thinking}</pre>
-            </UsageBar>
-          )}
-          {hasTools && (
-            <UsageBar label={tb("chat.usedTools", { n: m.toolCalls!.length })}>
-              <ToolCallList calls={m.toolCalls!} />
-            </UsageBar>
-          )}
-        </div>
-      )}
+      {hasProcess &&
+        (steps.length > 0 ? (
+          // 有序步骤：思考/工具按发生顺序交错逐次显示（服务端留存，刷新后仍在）
+          <ProcessSteps
+            parts={steps.map((s) => ({ kind: s.kind, text: s.text, callId: s.callId }))}
+            toolCalls={m.toolCalls ?? []}
+            labelThinking={(n) => tUsage(tb, n)}
+            labelTools={(n) => tb("chat.usedTools", { n: String(n) })}
+          />
+        ) : (
+          <div className="msg-process">
+            {hasThinking && (
+              <UsageBar label={tUsage(tb, m.thinking!.length)}>
+                <pre className="usage-think">{m.thinking}</pre>
+              </UsageBar>
+            )}
+            {hasTools && (
+              <UsageBar label={tb("chat.usedTools", { n: m.toolCalls!.length })}>
+                <ToolCallList calls={m.toolCalls!} />
+              </UsageBar>
+            )}
+          </div>
+        ))}
       <Markdown text={m.statements.map((s) => s.text).join("\n\n")} />
     </Card>
   );
@@ -69,6 +82,31 @@ function MessageBubble({ m, turn, ops, orchLabel }: { m: ChatMessage; turn?: num
 /** 思考栏摘要文案（OpenCode 口径：使用了 N 个思考；本地思维流以字数计量） */
 function tUsage(tb: (k: string, v?: Record<string, string>) => string, chars: number): string {
   return tb("chat.usedThinking", { n: String(chars) });
+}
+
+/** 时间线行（派发/回流/记忆/裁决…）：派发条目带「查看子会话」跳转（子个体过程流入口） */
+function TimelineRows({ items, tb, onOpenSub }: { items: TimelineItem[]; tb: (k: string, v?: Record<string, string>) => string; onOpenSub: (id: string) => void }): React.ReactElement {
+  return (
+    <>
+      {items.map((tl, i) => (
+        <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
+          <TimelineTag kind={tl.kind} ns="chat" />
+          <span className="tl-text">{tl.text}</span>
+          {tl.childSessionId && (
+            <button
+              className="tl-sub-link"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenSub(tl.childSessionId!);
+              }}
+            >
+              {tb("chat.openSubSession")} →
+            </button>
+          )}
+        </div>
+      ))}
+    </>
+  );
 }
 
 /** 相对时间（chat-ergonomics）：刚刚 / N 分钟前 / N 小时前 / 昨天 / N 天前 / 日期 */
@@ -90,8 +128,8 @@ export function relativeTime(iso?: string): string {
 
 export function ChatView(): React.ReactElement {
   const t = useT();
-  const {     messages, liveOrch, liveThinking, liveUnits, liveUnitThinking, runToolCalls, approvals,
-    timeline, running, send, wsConnected, decideApproval,
+  const {     messages, liveOrch, liveThinking, liveParts, runToolCalls, approvals,
+    timeline, timelineSession, running, send, wsConnected, decideApproval,
     sessions, sessionId, selectSession, newSession,
     groups, activeGroup, setTarget,
     refreshAgents,
@@ -99,6 +137,9 @@ export function ChatView(): React.ReactElement {
   } = useExm();
   const [target, setTargetInfo] = useState<TargetInfo>({ mode: "group", id: activeGroup });
   const [singles, setSinglesList] = useState<{ identifier: string; name: string }[]>([]);
+  // 确认弹窗走 useModal 演出器：静态 Modal.confirm 渲染在 React 树外、吃不到 ConfigProvider，
+  // 暗色主题下会落回默认白底（与全局自绘样式打架）；演出器版本随主题/语言/令牌同步。
+  const [modal, modalContextHolder] = Modal.useModal();
 
   const loadTarget = useCallback(async () => {
     try {
@@ -170,7 +211,11 @@ export function ChatView(): React.ReactElement {
     reader.readAsDataURL(file);
   };
 
+  // 子会话 = 派发运行台账：只读查看子个体过程流（不允许在子会话里开工新轮次）
+  const isSubSession = Boolean(sessions.find((s) => s.id === sessionId)?.title.startsWith("sub:"));
+
   const doSend = () => {
+    if (isSubSession) return;
     if (text.trim()) {
       void send(text, images);
       setText("");
@@ -197,7 +242,7 @@ export function ChatView(): React.ReactElement {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     setShowBottomBtn(false);
-  }, [messages, liveOrch, liveUnits, runToolCalls, timeline]);
+  }, [messages, liveOrch, liveParts, runToolCalls, timeline]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -210,7 +255,7 @@ export function ChatView(): React.ReactElement {
     })();
   }, [sessionId, messages.length, running]);
 
-  const liveUnitEntries = Object.entries(liveUnits).filter(([, v]) => v);
+  const liveUnitEntries = Object.entries(liveParts).filter(([, v]) => v.length > 0);
   const activeMeta = groups.find((g) => g.id === activeGroup);
   // 指挥体显示名（10）：智能体模式显示该智能体名；组模式显示「指挥体 [组名]」
   const orchLabel = target.mode === "single"
@@ -385,6 +430,7 @@ export function ChatView(): React.ReactElement {
 
   return (
     <div className={`chat-shell screen-${screen}`} data-screen={screen}>
+      {modalContextHolder}
       {/* 左栏 = 移动端「会话列表页」，桌面端是常驻侧栏（见 styles.css 的屏幕切换） */}
       <aside className="chat-rail">
         {/* 列表页标题栏（窄屏显示）：标题 + 会话计数 */}
@@ -485,13 +531,31 @@ export function ChatView(): React.ReactElement {
                     <span className="session-bar" />
                     {/* 头像承载「会话类型」而非组名首字母：副标题已经写了组名，
                      * 首字母与之一一对应（整组同字母）＝零信息；类型恰好是列表里可筛的维度。 */}
-                    <span className={`session-avatar kind-${s.title.startsWith("channel:") ? "channel" : "normal"}`} aria-hidden="true">
-                      {s.title.startsWith("channel:") ? <CloudUploadOutlined /> : <MessageOutlined />}
-                    </span>
-                    <span className="session-main">
-                      <span className="session-title">{s.title.replace(/^channel:[^:]+:/, "↗ ")}</span>
-                      <span className="session-sub">{groupNameOf(s.groupId)}</span>
-                    </span>
+                    {(() => {
+                      const isChannel = s.title.startsWith("channel:");
+                      const isSub = s.title.startsWith("sub:");
+                      const subAgent = isSub ? s.title.split(":")[1] : "";
+                      const kind = isChannel ? "channel" : isSub ? "sub" : "normal";
+                      return (
+                        <>
+                          <span className={`session-avatar kind-${kind}`} aria-hidden="true">
+                            {isChannel ? <CloudUploadOutlined /> : isSub ? <TeamOutlined /> : <MessageOutlined />}
+                          </span>
+                          <span className="session-main">
+                            <span className="session-title">
+                              {isChannel
+                                ? s.title.replace(/^channel:[^:]+:/, "↗ ")
+                                : isSub
+                                  ? s.title.replace(/^sub:[^:]+:/, "")
+                                  : s.title}
+                            </span>
+                            <span className="session-sub">
+                              {isSub ? `@${subAgent} · ${t("chat.subSession")}` : groupNameOf(s.groupId)}
+                            </span>
+                          </span>
+                        </>
+                      );
+                    })()}
                     {/* 操作收进「⋮」菜单：此前三个图标常驻，窄屏上既挤占标题又换行 */}
                     <span className="session-ops" onClick={(e) => e.stopPropagation()}>
                       <Dropdown
@@ -508,7 +572,7 @@ export function ChatView(): React.ReactElement {
                             if (key === "export") void exportSession(s.id, s.title);
                             else if (key === "rename") setRenaming({ id: s.id, title: s.title });
                             else {
-                              Modal.confirm({
+                              modal.confirm({
                                 title: t("chat.deleteConfirm"),
                                 okText: t("common.confirm"),
                                 okButtonProps: { danger: true },
@@ -602,6 +666,11 @@ export function ChatView(): React.ReactElement {
               <Button size="small" danger onClick={() => void decideApproval(a.approvalId, false)}>
                 {t("chat.approvalDeny")}
               </Button>
+              {a.sessionId && a.sessionId !== sessionId && (
+                <Button size="small" type="link" onClick={() => void selectSession(a.sessionId!)}>
+                  {t("chat.openSubSession")}
+                </Button>
+              )}
               <span className="approval-hint">{t("chat.approvalHint")}</span>
             </div>
           </Card>
@@ -652,14 +721,7 @@ export function ChatView(): React.ReactElement {
                     )}
                     {(timeline.length > 0 || runToolCalls.length > 0) && (
                       <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
-                        {timeline.map((tl, i) => (
-                          <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
-                            <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
-                              {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
-                            </Tag>
-                            <span className="tl-text">{tl.text}</span>
-                          </div>
-                        ))}
+                        <TimelineRows items={timeline} tb={t} onOpenSub={(id) => void selectSession(id)} />
                         {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
                       </UsageBar>
                     )}
@@ -669,17 +731,30 @@ export function ChatView(): React.ReactElement {
             </Card>
           )}
 
-          {liveUnitEntries.map(([agent, content]) => (
+          {/* 本轮调度轨迹（收束后保留）：派发/回流条目 + 子会话入口，直到下一次发送或切会话 */}
+          {!running && timeline.length > 0 && timelineSession === sessionId && (
+            <Card size="small" className="msg-bubble msg-agent turn-timeline-card">
+              <div className="msg-process">
+                <UsageBar label={t("chat.turnTimeline", { n: String(timeline.length) })} defaultOpen>
+                  <TimelineRows items={timeline} tb={t} onOpenSub={(id) => void selectSession(id)} />
+                </UsageBar>
+              </div>
+            </Card>
+          )}
+
+          {liveUnitEntries.map(([agent, parts]) => (
             <Card key={agent} size="small" className="msg-bubble msg-agent live-card">
               <div className="msg-head">
                 <RobotOutlined /> <b>{agent}</b> <Tag color="processing">{t("chat.executing")}</Tag>
               </div>
-              {(liveUnitThinking[agent] ?? "").trim() && (
-                <UsageBar label={t("chat.usedThinking", { n: String((liveUnitThinking[agent] ?? "").length) })} live>
-                  <pre className="usage-think">{liveUnitThinking[agent]}</pre>
-                </UsageBar>
-              )}
-              <pre className="live-pre">{content}</pre>
+              {/* 思考/工具/输出按发生顺序交错展示（连续工具调用聚合为同一列表） */}
+              <ProcessSteps
+                parts={parts}
+                toolCalls={runToolCalls}
+                live
+                labelThinking={(n) => t("chat.usedThinking", { n: String(n) })}
+                labelTools={(n) => t("chat.usedTools", { n: String(n) })}
+              />
             </Card>
           ))}
 
@@ -697,14 +772,7 @@ export function ChatView(): React.ReactElement {
                   )}
                   {(timeline.length > 0 || runToolCalls.length > 0) && (
                     <UsageBar label={t("chat.usedTools", { n: runToolCalls.length + timeline.length })} live>
-                      {timeline.map((tl, i) => (
-                        <div key={`tl-${i}`} className={`timeline-item tl-${tl.kind}`}>
-                          <Tag color={tl.kind === "dispatch" ? "blue" : tl.kind === "sync" ? "green" : tl.kind === "arbitration" ? "volcano" : "red"}>
-                            {tl.kind === "dispatch" ? t("chat.tl.dispatch") : tl.kind === "sync" ? t("chat.tl.sync") : tl.kind === "arbitration" ? t("chat.tl.arbitration") : t("chat.tl.error")}
-                          </Tag>
-                          <span className="tl-text">{tl.text}</span>
-                        </div>
-                      ))}
+                      <TimelineRows items={timeline} tb={t} onOpenSub={(id) => void selectSession(id)} />
                       {runToolCalls.length > 0 && <ToolCallList calls={runToolCalls} />}
                     </UsageBar>
                   )}
@@ -744,16 +812,17 @@ export function ChatView(): React.ReactElement {
           )}
           <Input.TextArea
             value={text}
+            disabled={isSubSession}
             onChange={(e) => {
               setText(e.target.value);
               if (sessionId) useExm.getState().setDraft(sessionId, e.target.value);
             }}
-            placeholder={`> ${narrow ? t("chat.inputPlaceholderNarrow") : t("chat.inputPlaceholder")}`}
+            placeholder={`> ${isSubSession ? t("chat.subSessionReadonly") : narrow ? t("chat.inputPlaceholderNarrow") : t("chat.inputPlaceholder")}`}
             autoSize={{ minRows: 1, maxRows: 6 }}
             onPressEnter={(e) => {
               if (!e.shiftKey) {
                 e.preventDefault();
-                if (text.trim() && !running) {
+                if (text.trim() && !running && !isSubSession) {
                   doSend();
                 }
               }
@@ -799,6 +868,7 @@ export function ChatView(): React.ReactElement {
             type="primary"
             icon={<SendOutlined />}
             loading={running}
+            disabled={isSubSession}
             onClick={doSend}
           >
             {t("chat.send")}

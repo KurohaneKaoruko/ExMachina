@@ -418,7 +418,22 @@ export const api = {
   sessionArchive: (id: string) => req<ChatMessage[]>(`/sessions/${id}/archive`),
   sessionSnapshots: (id: string) =>
     req<{ turn: number; messageCount: number; status: string }[]>(`/sessions/${id}/snapshots`),
-  messages: (id: string) => req<ChatMessage[]>(`/sessions/${id}/messages`),
+  messages: (id: string) =>
+    req<ChatMessage[]>(`/sessions/${id}/messages`).then((list) =>
+      // 服务端 ToolCallRecord 用 ok:bool（收束落库形态），前端统一水合为 status 三态；
+      // 否则刷新后工具卡读到 undefined 会误显「失败」图标。
+      list.map((m) =>
+        m.toolCalls?.some((c) => !(c as { status?: string }).status)
+          ? {
+              ...m,
+              toolCalls: m.toolCalls.map((c) => ({
+                ...c,
+                status: (c as { ok?: boolean }).ok === false ? "error" : "ok",
+              })),
+            }
+          : m,
+      ),
+    ),
   nexusLinks: () => req<{ links: NexusLink[] }>("/nexus/links"),
   saveNexusLink: (body: NexusLink) =>
     req<{ ok: boolean; link: NexusLink }>("/nexus/links", { method: "POST", body: JSON.stringify(body) }),
